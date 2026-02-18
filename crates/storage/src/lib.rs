@@ -269,8 +269,8 @@ pub trait Storage: Send + Sync {
         &self,
         space_id: Uuid,
         since: i64,
-        on_meta: &dyn Fn(PullStreamMeta) -> Result<(), StorageError>,
-        on_entry: &dyn Fn(PullEntry) -> Result<(), StorageError>,
+        on_meta: &(dyn Fn(PullStreamMeta) -> Result<(), StorageError> + Send + Sync),
+        on_entry: &(dyn Fn(PullEntry) -> Result<(), StorageError> + Send + Sync),
     ) -> Result<(), StorageError>;
     async fn push(
         &self,

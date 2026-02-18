@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use less_sync_core::protocol::{Change, Space};
 use less_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -11,7 +12,7 @@ use uuid::Uuid;
 use crate::{
     AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochConflict,
     FederationKey, FileDekRecord, FileMetadata, Invitation, MembersLogEntry, PullEntry,
-    PullEntryKind, PullResult, PullStreamMeta, PushOptions, PushResult, StorageError,
+    PullEntryKind, PullResult, PullStreamMeta, PushOptions, PushResult, Storage, StorageError,
 };
 
 const MAX_RECORDS_LIMIT: usize = 100_000;
@@ -232,8 +233,8 @@ impl PostgresStorage {
         &self,
         space_id: Uuid,
         since: i64,
-        on_meta: &dyn Fn(PullStreamMeta) -> Result<(), StorageError>,
-        on_entry: &dyn Fn(PullEntry) -> Result<(), StorageError>,
+        on_meta: &(dyn Fn(PullStreamMeta) -> Result<(), StorageError> + Send + Sync),
+        on_entry: &(dyn Fn(PullEntry) -> Result<(), StorageError> + Send + Sync),
     ) -> Result<(), StorageError> {
         let mut tx = self
             .pool
@@ -1374,6 +1375,236 @@ impl PostgresStorage {
     }
 }
 
+#[async_trait]
+impl Storage for PostgresStorage {
+    async fn ping(&self) -> Result<(), StorageError> {
+        PostgresStorage::ping(self).await
+    }
+
+    async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
+        PostgresStorage::get_space(self, space_id).await
+    }
+
+    async fn get_spaces(&self, space_ids: &[Uuid]) -> Result<HashMap<Uuid, Space>, StorageError> {
+        PostgresStorage::get_spaces(self, space_ids).await
+    }
+
+    async fn create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+        root_public_key: Option<&[u8]>,
+    ) -> Result<Space, StorageError> {
+        PostgresStorage::create_space(self, space_id, client_id, root_public_key).await
+    }
+
+    async fn get_or_create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+    ) -> Result<Space, StorageError> {
+        PostgresStorage::get_or_create_space(self, space_id, client_id).await
+    }
+
+    async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError> {
+        PostgresStorage::pull(self, space_id, since).await
+    }
+
+    async fn stream_pull(
+        &self,
+        space_id: Uuid,
+        since: i64,
+        on_meta: &(dyn Fn(PullStreamMeta) -> Result<(), StorageError> + Send + Sync),
+        on_entry: &(dyn Fn(PullEntry) -> Result<(), StorageError> + Send + Sync),
+    ) -> Result<(), StorageError> {
+        PostgresStorage::stream_pull(self, space_id, since, on_meta, on_entry).await
+    }
+
+    async fn push(
+        &self,
+        space_id: Uuid,
+        changes: &[Change],
+        opts: Option<&PushOptions>,
+    ) -> Result<PushResult, StorageError> {
+        PostgresStorage::push(self, space_id, changes, opts).await
+    }
+
+    async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError> {
+        PostgresStorage::record_exists(self, space_id, record_id).await
+    }
+
+    async fn record_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        record_id: Uuid,
+        size: i64,
+        wrapped_dek: &[u8],
+    ) -> Result<(), StorageError> {
+        PostgresStorage::record_file(self, space_id, file_id, record_id, size, wrapped_dek).await
+    }
+
+    async fn get_file_metadata(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<FileMetadata, StorageError> {
+        PostgresStorage::get_file_metadata(self, space_id, file_id).await
+    }
+
+    async fn file_exists(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, StorageError> {
+        PostgresStorage::file_exists(self, space_id, file_id).await
+    }
+
+    async fn get_file_deks(
+        &self,
+        space_id: Uuid,
+        since: i64,
+    ) -> Result<Vec<FileDekRecord>, StorageError> {
+        PostgresStorage::get_file_deks(self, space_id, since).await
+    }
+
+    async fn rewrap_file_deks(
+        &self,
+        space_id: Uuid,
+        deks: &[FileDekRecord],
+    ) -> Result<(), StorageError> {
+        PostgresStorage::rewrap_file_deks(self, space_id, deks).await
+    }
+
+    async fn delete_files_for_records(
+        &self,
+        space_id: Uuid,
+        record_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>, StorageError> {
+        PostgresStorage::delete_files_for_records(self, space_id, record_ids).await
+    }
+
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
+        PostgresStorage::is_revoked(self, space_id, ucan_cid).await
+    }
+
+    async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError> {
+        PostgresStorage::revoke_ucan(self, space_id, ucan_cid).await
+    }
+
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError> {
+        PostgresStorage::create_invitation(self, invitation).await
+    }
+
+    async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        limit: usize,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Invitation>, StorageError> {
+        PostgresStorage::list_invitations(self, mailbox_id, limit, after).await
+    }
+
+    async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError> {
+        PostgresStorage::get_invitation(self, id, mailbox_id).await
+    }
+
+    async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError> {
+        PostgresStorage::delete_invitation(self, id, mailbox_id).await
+    }
+
+    async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError> {
+        PostgresStorage::count_recent_actions(self, action, actor_hash, since).await
+    }
+
+    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError> {
+        PostgresStorage::record_action(self, action, actor_hash).await
+    }
+
+    async fn cleanup_expired_actions(&self, before: SystemTime) -> Result<i64, StorageError> {
+        PostgresStorage::cleanup_expired_actions(self, before).await
+    }
+
+    async fn purge_expired_invitations(&self) -> Result<i64, StorageError> {
+        PostgresStorage::purge_expired_invitations(self).await
+    }
+
+    async fn append_member(
+        &self,
+        space_id: Uuid,
+        expected_version: i32,
+        entry: &MembersLogEntry,
+    ) -> Result<AppendLogResult, StorageError> {
+        PostgresStorage::append_member(self, space_id, expected_version, entry).await
+    }
+
+    async fn get_members(
+        &self,
+        space_id: Uuid,
+        since_seq: i32,
+    ) -> Result<Vec<MembersLogEntry>, StorageError> {
+        PostgresStorage::get_members(self, space_id, since_seq).await
+    }
+
+    async fn advance_epoch(
+        &self,
+        space_id: Uuid,
+        requested_epoch: i32,
+        opts: Option<&AdvanceEpochOptions>,
+    ) -> Result<AdvanceEpochResult, StorageError> {
+        PostgresStorage::advance_epoch(self, space_id, requested_epoch, opts).await
+    }
+
+    async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
+        PostgresStorage::complete_rewrap(self, space_id, epoch).await
+    }
+
+    async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError> {
+        PostgresStorage::get_deks(self, space_id, since).await
+    }
+
+    async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError> {
+        PostgresStorage::rewrap_deks(self, space_id, deks).await
+    }
+
+    async fn get_space_home_server(&self, space_id: Uuid) -> Result<Option<String>, StorageError> {
+        PostgresStorage::get_space_home_server(self, space_id).await
+    }
+
+    async fn set_space_home_server(
+        &self,
+        space_id: Uuid,
+        home_server: &str,
+    ) -> Result<(), StorageError> {
+        PostgresStorage::set_space_home_server(self, space_id, home_server).await
+    }
+
+    async fn ensure_federation_key(
+        &self,
+        kid: &str,
+        private_key: &[u8],
+        public_key: &[u8],
+    ) -> Result<(), StorageError> {
+        PostgresStorage::ensure_federation_key(self, kid, private_key, public_key).await
+    }
+
+    async fn get_federation_private_key(&self, kid: &str) -> Result<Vec<u8>, StorageError> {
+        PostgresStorage::get_federation_private_key(self, kid).await
+    }
+
+    async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError> {
+        PostgresStorage::list_federation_public_keys(self).await
+    }
+
+    fn close(&self) -> Result<(), StorageError> {
+        // Calling close() marks the pool closed immediately; we intentionally don't await
+        // the shutdown future in this synchronous trait method.
+        std::mem::drop(self.pool.close());
+        Ok(())
+    }
+}
+
 async fn get_space_cursor_for_update(
     tx: &mut Transaction<'_, Postgres>,
     space_id: Uuid,
@@ -1586,7 +1817,7 @@ mod tests {
     use super::PostgresStorage;
     use crate::{
         AdvanceEpochOptions, DekRecord, EpochConflict, FileDekRecord, Invitation, MembersLogEntry,
-        PullEntry, PullStreamMeta, StorageError,
+        PullEntry, PullStreamMeta, Storage, StorageError,
     };
 
     async fn test_storage() -> Option<PostgresStorage> {
@@ -3084,6 +3315,25 @@ mod tests {
         assert_eq!(entries[2].kind, crate::PullEntryKind::File);
         assert!(entries[0].cursor < entries[1].cursor);
         assert!(entries[1].cursor < entries[2].cursor);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn storage_trait_dispatch_smoke() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let backend: &dyn Storage = &storage;
+        let space_id = uuid::Uuid::new_v4();
+
+        backend
+            .create_space(space_id, "client-trait", None)
+            .await
+            .expect("create via trait");
+        let fetched = backend.get_space(space_id).await.expect("get via trait");
+        assert_eq!(fetched.id, space_id.to_string());
+        assert_eq!(fetched.client_id, "client-trait");
 
         cleanup_space(&storage, space_id).await;
     }
