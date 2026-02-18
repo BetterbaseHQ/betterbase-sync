@@ -8,5 +8,6 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 less-sync-core = { path = "../core" }
+sqlx.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

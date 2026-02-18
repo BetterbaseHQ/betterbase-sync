@@ -39,6 +39,12 @@ pub enum StorageError {
     FederationKeyNotFound,
     #[error("storage unavailable")]
     Unavailable,
+    #[error("database error: {0}")]
+    Database(String),
+    #[error("migration error: {0}")]
+    Migration(String),
+    #[error("DATABASE_URL is not set")]
+    MissingDatabaseUrl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,5 +355,20 @@ pub trait Storage: Send + Sync {
 }
 
 pub async fn migrate() -> Result<(), StorageError> {
+    let database_url =
+        std::env::var("DATABASE_URL").map_err(|_| StorageError::MissingDatabaseUrl)?;
+    let pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+    migrate_with_pool(&pool).await?;
+    pool.close().await;
+    Ok(())
+}
+
+pub async fn migrate_with_pool(pool: &sqlx::PgPool) -> Result<(), StorageError> {
+    sqlx::migrate!("./migrations")
+        .run(pool)
+        .await
+        .map_err(|error| StorageError::Migration(error.to_string()))?;
     Ok(())
 }
