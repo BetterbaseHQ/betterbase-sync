@@ -6,8 +6,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 less-sync-auth = { path = "../auth" }
 less-sync-core = { path = "../core" }
 less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
+
+[dev-dependencies]
+tokio.workspace = true
+tower = "0.5"
