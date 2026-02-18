@@ -7,6 +7,10 @@ use async_trait::async_trait;
 use less_sync_core::protocol::{Change, Space};
 use uuid::Uuid;
 
+pub mod postgres;
+
+pub use postgres::PostgresStorage;
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum StorageError {
     #[error("space not found")]
