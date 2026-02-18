@@ -1094,6 +1094,7 @@ dependencies = [
  "less-sync-auth",
  "less-sync-core",
  "less-sync-storage",
+ "thiserror",
  "tokio",
 ]
 

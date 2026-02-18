@@ -9,4 +9,5 @@ rust-version.workspace = true
 less-sync-auth = { path = "../auth" }
 less-sync-core = { path = "../core" }
 less-sync-storage = { path = "../storage" }
+thiserror.workspace = true
 tokio.workspace = true
