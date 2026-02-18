@@ -51,6 +51,10 @@ pub enum StorageError {
     PushRecordLimitExceeded,
     #[error("push exceeds payload limit")]
     PushPayloadLimitExceeded,
+    #[error("wrapped DEK must be exactly 44 bytes")]
+    InvalidWrappedDek,
+    #[error("file size must be non-negative")]
+    InvalidFileSize,
     #[error("storage unavailable")]
     Unavailable,
     #[error("database error: {0}")]
