@@ -41,6 +41,16 @@ pub enum StorageError {
     RecordNotFound,
     #[error("federation key not found")]
     FederationKeyNotFound,
+    #[error("invalid record ID")]
+    InvalidRecordId,
+    #[error("duplicate record ID in push")]
+    DuplicateRecordId,
+    #[error("blob exceeds limit")]
+    BlobTooLarge,
+    #[error("push exceeds record limit")]
+    PushRecordLimitExceeded,
+    #[error("push exceeds payload limit")]
+    PushPayloadLimitExceeded,
     #[error("storage unavailable")]
     Unavailable,
     #[error("database error: {0}")]
