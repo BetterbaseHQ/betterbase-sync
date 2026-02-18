@@ -31,6 +31,8 @@ pub enum StorageError {
     KeyGenerationStale,
     #[error("epoch mismatch")]
     EpochMismatch,
+    #[error("{0}")]
+    EpochConflict(EpochConflict),
     #[error("DEK epoch mismatch")]
     DekEpochMismatch,
     #[error("DEK record not found")]

@@ -9,8 +9,9 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    FederationKey, FileDekRecord, FileMetadata, Invitation, PullEntry, PullEntryKind, PullResult,
-    PushOptions, PushResult, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochConflict,
+    FederationKey, FileDekRecord, FileMetadata, Invitation, MembersLogEntry, PullEntry,
+    PullEntryKind, PullResult, PullStreamMeta, PushOptions, PushResult, StorageError,
 };
 
 const MAX_RECORDS_LIMIT: usize = 100_000;
@@ -225,6 +226,177 @@ impl PostgresStorage {
             record_count,
             cursor,
         })
+    }
+
+    pub async fn stream_pull(
+        &self,
+        space_id: Uuid,
+        since: i64,
+        on_meta: &dyn Fn(PullStreamMeta) -> Result<(), StorageError>,
+        on_entry: &dyn Fn(PullEntry) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        // Keep all reads within one consistent snapshot.
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let meta_row = sqlx::query_as::<_, PullMetaRow>(
+            "SELECT cursor, key_generation, rewrap_epoch FROM spaces WHERE id = $1",
+        )
+        .bind(space_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+            _ => StorageError::Database(error.to_string()),
+        })?;
+
+        on_meta(PullStreamMeta {
+            cursor: meta_row.cursor,
+            key_generation: meta_row.key_generation,
+            rewrap_epoch: meta_row.rewrap_epoch,
+        })?;
+
+        let rows = sqlx::query_as::<_, StreamPullRow>(
+            r#"
+            SELECT
+                'r' AS kind,
+                id,
+                cursor,
+                blob,
+                wrapped_dek,
+                NULL::uuid AS record_id,
+                NULL::bigint AS size,
+                deleted,
+                NULL::int AS chain_seq,
+                NULL::bytea AS prev_hash,
+                NULL::bytea AS entry_hash,
+                NULL::bytea AS payload
+            FROM records
+            WHERE space_id = $1
+              AND cursor > $2
+              AND ($2 <> 0 OR deleted = FALSE)
+            UNION ALL
+            SELECT
+                'm' AS kind,
+                NULL::uuid AS id,
+                cursor,
+                NULL::bytea AS blob,
+                NULL::bytea AS wrapped_dek,
+                NULL::uuid AS record_id,
+                NULL::bigint AS size,
+                FALSE AS deleted,
+                chain_seq,
+                prev_hash,
+                entry_hash,
+                payload
+            FROM members
+            WHERE space_id = $1
+              AND cursor > $2
+            UNION ALL
+            SELECT
+                'f' AS kind,
+                id,
+                cursor,
+                NULL::bytea AS blob,
+                wrapped_dek,
+                record_id,
+                size,
+                deleted,
+                NULL::int AS chain_seq,
+                NULL::bytea AS prev_hash,
+                NULL::bytea AS entry_hash,
+                NULL::bytea AS payload
+            FROM files
+            WHERE space_id = $1
+              AND cursor > $2
+              AND ($2 <> 0 OR deleted = FALSE)
+            ORDER BY cursor ASC
+            "#,
+        )
+        .bind(space_id)
+        .bind(since)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        for row in rows {
+            match row.kind.as_str() {
+                "r" => {
+                    let id = row.id.ok_or_else(|| {
+                        StorageError::Database("stream pull record missing id".to_owned())
+                    })?;
+                    on_entry(PullEntry {
+                        kind: PullEntryKind::Record,
+                        cursor: row.cursor,
+                        record: Some(Change {
+                            id: id.to_string(),
+                            blob: row.blob,
+                            cursor: row.cursor,
+                            wrapped_dek: row.wrapped_dek,
+                            deleted: row.deleted,
+                        }),
+                        member: None,
+                        file: None,
+                    })?;
+                }
+                "m" => {
+                    on_entry(PullEntry {
+                        kind: PullEntryKind::Membership,
+                        cursor: row.cursor,
+                        record: None,
+                        member: Some(MembersLogEntry {
+                            space_id,
+                            chain_seq: row.chain_seq.ok_or_else(|| {
+                                StorageError::Database(
+                                    "stream pull member missing chain_seq".to_owned(),
+                                )
+                            })?,
+                            cursor: row.cursor,
+                            prev_hash: row.prev_hash.unwrap_or_default(),
+                            entry_hash: row.entry_hash.unwrap_or_default(),
+                            payload: row.payload.unwrap_or_default(),
+                        }),
+                        file: None,
+                    })?;
+                }
+                "f" => {
+                    let id = row.id.ok_or_else(|| {
+                        StorageError::Database("stream pull file missing id".to_owned())
+                    })?;
+                    let record_id = row.record_id.ok_or_else(|| {
+                        StorageError::Database("stream pull file missing record_id".to_owned())
+                    })?;
+                    on_entry(PullEntry {
+                        kind: PullEntryKind::File,
+                        cursor: row.cursor,
+                        record: None,
+                        member: None,
+                        file: Some(crate::FileEntry {
+                            id,
+                            record_id,
+                            size: row.size.unwrap_or_default(),
+                            deleted: row.deleted,
+                            wrapped_dek: row.wrapped_dek.unwrap_or_default(),
+                            cursor: row.cursor,
+                        }),
+                    })?;
+                }
+                _ => {}
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
     }
 
     pub async fn record_exists(
@@ -651,6 +823,298 @@ impl PostgresStorage {
         Ok(result.rows_affected() as i64)
     }
 
+    pub async fn append_member(
+        &self,
+        space_id: Uuid,
+        expected_version: i32,
+        entry: &MembersLogEntry,
+    ) -> Result<AppendLogResult, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let current_version: i32 =
+            sqlx::query_scalar("SELECT metadata_version FROM spaces WHERE id = $1 FOR UPDATE")
+                .bind(space_id)
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(|error| match error {
+                    sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                    _ => StorageError::Database(error.to_string()),
+                })?;
+        if current_version != expected_version {
+            return Err(StorageError::VersionConflict);
+        }
+
+        let mut last_seq = 0;
+        match sqlx::query_as::<_, LastMemberRow>(
+            "SELECT chain_seq, entry_hash FROM members WHERE space_id = $1 ORDER BY chain_seq DESC LIMIT 1",
+        )
+        .bind(space_id)
+        .fetch_one(tx.as_mut())
+        .await
+        {
+            Ok(last) => {
+                last_seq = last.chain_seq;
+                if entry.prev_hash.is_empty() || entry.prev_hash != last.entry_hash {
+                    return Err(StorageError::HashChainBroken);
+                }
+            }
+            Err(sqlx::Error::RowNotFound) => {
+                if !entry.prev_hash.is_empty() {
+                    return Err(StorageError::HashChainBroken);
+                }
+            }
+            Err(error) => return Err(StorageError::Database(error.to_string())),
+        }
+
+        let new_chain_seq = last_seq + 1;
+        let new_cursor: i64 = sqlx::query_scalar(
+            "UPDATE spaces SET cursor = cursor + 1 WHERE id = $1 RETURNING cursor",
+        )
+        .bind(space_id)
+        .fetch_one(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let prev_hash = if entry.prev_hash.is_empty() {
+            None
+        } else {
+            Some(entry.prev_hash.as_slice())
+        };
+
+        sqlx::query(
+            "INSERT INTO members (space_id, chain_seq, cursor, prev_hash, entry_hash, payload) VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(space_id)
+        .bind(new_chain_seq)
+        .bind(new_cursor)
+        .bind(prev_hash)
+        .bind(&entry.entry_hash)
+        .bind(&entry.payload)
+        .execute(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let new_version = current_version + 1;
+        sqlx::query("UPDATE spaces SET metadata_version = $1 WHERE id = $2")
+            .bind(new_version)
+            .bind(space_id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        Ok(AppendLogResult {
+            chain_seq: new_chain_seq,
+            cursor: new_cursor,
+            metadata_version: new_version,
+        })
+    }
+
+    pub async fn get_members(
+        &self,
+        space_id: Uuid,
+        since_seq: i32,
+    ) -> Result<Vec<MembersLogEntry>, StorageError> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spaces WHERE id = $1)")
+            .bind(space_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        if !exists {
+            return Err(StorageError::SpaceNotFound);
+        }
+
+        let rows = sqlx::query_as::<_, MemberRow>(
+            r#"
+            SELECT space_id, chain_seq, cursor, prev_hash, entry_hash, payload
+            FROM members
+            WHERE space_id = $1
+              AND chain_seq > $2
+            ORDER BY chain_seq ASC
+            "#,
+        )
+        .bind(space_id)
+        .bind(since_seq)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| MembersLogEntry {
+                space_id: row.space_id,
+                chain_seq: row.chain_seq,
+                cursor: row.cursor,
+                prev_hash: row.prev_hash.unwrap_or_default(),
+                entry_hash: row.entry_hash,
+                payload: row.payload,
+            })
+            .collect())
+    }
+
+    pub async fn advance_epoch(
+        &self,
+        space_id: Uuid,
+        requested_epoch: i32,
+        opts: Option<&AdvanceEpochOptions>,
+    ) -> Result<AdvanceEpochResult, StorageError> {
+        let set_min = opts.is_some_and(|value| value.set_min_key_generation);
+        let result = if set_min {
+            sqlx::query(
+                "UPDATE spaces SET key_generation = $1, rewrap_epoch = $1, min_key_generation = $1 WHERE id = $2 AND key_generation = $3 AND rewrap_epoch IS NULL",
+            )
+            .bind(requested_epoch)
+            .bind(space_id)
+            .bind(requested_epoch - 1)
+            .execute(&self.pool)
+            .await
+        } else {
+            sqlx::query(
+                "UPDATE spaces SET key_generation = $1, rewrap_epoch = $1 WHERE id = $2 AND key_generation = $3 AND rewrap_epoch IS NULL",
+            )
+            .bind(requested_epoch)
+            .bind(space_id)
+            .bind(requested_epoch - 1)
+            .execute(&self.pool)
+            .await
+        }
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            let state = sqlx::query_as::<_, EpochStateRow>(
+                "SELECT key_generation, rewrap_epoch FROM spaces WHERE id = $1",
+            )
+            .bind(space_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })?;
+            return Err(StorageError::EpochConflict(EpochConflict {
+                current_epoch: state.key_generation,
+                rewrap_epoch: state.rewrap_epoch,
+            }));
+        }
+
+        Ok(AdvanceEpochResult {
+            epoch: requested_epoch,
+        })
+    }
+
+    pub async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            "UPDATE spaces SET rewrap_epoch = NULL WHERE id = $1 AND rewrap_epoch = $2",
+        )
+        .bind(space_id)
+        .bind(epoch)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        if result.rows_affected() == 0 {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spaces WHERE id = $1)")
+                    .bind(space_id)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|error| StorageError::Database(error.to_string()))?;
+            if !exists {
+                return Err(StorageError::SpaceNotFound);
+            }
+            return Err(StorageError::EpochMismatch);
+        }
+        Ok(())
+    }
+
+    pub async fn get_deks(
+        &self,
+        space_id: Uuid,
+        since: i64,
+    ) -> Result<Vec<DekRecord>, StorageError> {
+        let rows = sqlx::query_as::<_, DekRow>(
+            r#"
+            SELECT id, wrapped_dek, cursor
+            FROM records
+            WHERE space_id = $1
+              AND cursor > $2
+              AND wrapped_dek IS NOT NULL
+            ORDER BY cursor ASC, id ASC
+            "#,
+        )
+        .bind(space_id)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| DekRecord {
+                id: row.id.to_string(),
+                wrapped_dek: row.wrapped_dek,
+                cursor: row.cursor,
+            })
+            .collect())
+    }
+
+    pub async fn rewrap_deks(
+        &self,
+        space_id: Uuid,
+        deks: &[DekRecord],
+    ) -> Result<(), StorageError> {
+        if deks.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let key_generation: i32 =
+            sqlx::query_scalar("SELECT key_generation FROM spaces WHERE id = $1 FOR UPDATE")
+                .bind(space_id)
+                .fetch_one(tx.as_mut())
+                .await
+                .map_err(|error| match error {
+                    sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                    _ => StorageError::Database(error.to_string()),
+                })?;
+
+        for dek in deks {
+            let epoch = parse_dek_epoch(&dek.wrapped_dek).ok_or(StorageError::DekEpochMismatch)?;
+            if epoch != key_generation {
+                return Err(StorageError::DekEpochMismatch);
+            }
+
+            let record_id = Uuid::parse_str(&dek.id).map_err(|_| StorageError::InvalidRecordId)?;
+            let result =
+                sqlx::query("UPDATE records SET wrapped_dek = $1 WHERE id = $2 AND space_id = $3")
+                    .bind(&dek.wrapped_dek)
+                    .bind(record_id)
+                    .bind(space_id)
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(|error| StorageError::Database(error.to_string()))?;
+            if result.rows_affected() != 1 {
+                return Err(StorageError::DekRecordNotFound);
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
     pub async fn get_space_home_server(
         &self,
         space_id: Uuid,
@@ -959,6 +1423,58 @@ struct RecordPullRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+struct PullMetaRow {
+    cursor: i64,
+    key_generation: i32,
+    rewrap_epoch: Option<i32>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct StreamPullRow {
+    kind: String,
+    id: Option<Uuid>,
+    cursor: i64,
+    blob: Option<Vec<u8>>,
+    wrapped_dek: Option<Vec<u8>>,
+    record_id: Option<Uuid>,
+    size: Option<i64>,
+    deleted: bool,
+    chain_seq: Option<i32>,
+    prev_hash: Option<Vec<u8>>,
+    entry_hash: Option<Vec<u8>>,
+    payload: Option<Vec<u8>>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct LastMemberRow {
+    chain_seq: i32,
+    entry_hash: Vec<u8>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MemberRow {
+    space_id: Uuid,
+    chain_seq: i32,
+    cursor: i64,
+    prev_hash: Option<Vec<u8>>,
+    entry_hash: Vec<u8>,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct EpochStateRow {
+    key_generation: i32,
+    rewrap_epoch: Option<i32>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct DekRow {
+    id: Uuid,
+    wrapped_dek: Vec<u8>,
+    cursor: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
 struct FileMetadataRow {
     id: Uuid,
     record_id: Uuid,
@@ -1068,7 +1584,10 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::PostgresStorage;
-    use crate::{FileDekRecord, Invitation, StorageError};
+    use crate::{
+        AdvanceEpochOptions, DekRecord, EpochConflict, FileDekRecord, Invitation, MembersLogEntry,
+        PullEntry, PullStreamMeta, StorageError,
+    };
 
     async fn test_storage() -> Option<PostgresStorage> {
         let database_url = match env::var("DATABASE_URL") {
@@ -1120,6 +1639,30 @@ mod tests {
         record_id
     }
 
+    async fn create_record_with_dek(
+        storage: &PostgresStorage,
+        space_id: uuid::Uuid,
+        wrapped_dek: Vec<u8>,
+    ) -> uuid::Uuid {
+        let record_id = uuid::Uuid::new_v4();
+        let id = record_id.to_string();
+        storage
+            .push(
+                space_id,
+                &[Change {
+                    id,
+                    blob: Some(b"record".to_vec()),
+                    cursor: 0,
+                    wrapped_dek: Some(wrapped_dek),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("create record with DEK");
+        record_id
+    }
+
     fn wrapped_dek(fill: u8) -> Vec<u8> {
         vec![fill; super::WRAPPED_DEK_LENGTH]
     }
@@ -1145,6 +1688,17 @@ mod tests {
             payload: payload.to_vec(),
             created_at: SystemTime::UNIX_EPOCH,
             expires_at: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn member_entry(prev_hash: &[u8], entry_hash: &[u8], payload: &[u8]) -> MembersLogEntry {
+        MembersLogEntry {
+            space_id: uuid::Uuid::nil(),
+            chain_seq: 0,
+            cursor: 0,
+            prev_hash: prev_hash.to_vec(),
+            entry_hash: entry_hash.to_vec(),
+            payload: payload.to_vec(),
         }
     }
 
@@ -2168,5 +2722,369 @@ mod tests {
         assert!(key_b.is_some());
         assert_eq!(key_a.expect("key a").public_key, public_a);
         assert_eq!(key_b.expect("key b").public_key, public_b);
+    }
+
+    #[tokio::test]
+    async fn append_member_chains_and_updates_metadata_version() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let hash1 = vec![0x11; 32];
+        let first = storage
+            .append_member(space_id, 0, &member_entry(&[], &hash1, b"entry-1"))
+            .await
+            .expect("append first member");
+        assert_eq!(first.chain_seq, 1);
+        assert_eq!(first.metadata_version, 1);
+
+        let hash2 = vec![0x22; 32];
+        let second = storage
+            .append_member(space_id, 1, &member_entry(&hash1, &hash2, b"entry-2"))
+            .await
+            .expect("append second member");
+        assert_eq!(second.chain_seq, 2);
+        assert_eq!(second.metadata_version, 2);
+
+        let members = storage.get_members(space_id, 0).await.expect("get members");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].chain_seq, 1);
+        assert_eq!(members[1].chain_seq, 2);
+        assert_eq!(members[1].prev_hash, hash1);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn append_member_rejects_cas_and_hash_chain_conflicts() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let cas_error = storage
+            .append_member(
+                space_id,
+                999,
+                &member_entry(&[], &[0x33; 32], b"entry-with-bad-version"),
+            )
+            .await
+            .expect_err("expected version conflict");
+        assert_eq!(cas_error, StorageError::VersionConflict);
+
+        let first_prev_hash_error = storage
+            .append_member(
+                space_id,
+                0,
+                &member_entry(b"should-not-exist", &[0x44; 32], b"entry"),
+            )
+            .await
+            .expect_err("first entry with prev_hash should fail");
+        assert_eq!(first_prev_hash_error, StorageError::HashChainBroken);
+
+        storage
+            .append_member(space_id, 0, &member_entry(&[], &[0x55; 32], b"entry-1"))
+            .await
+            .expect("append baseline member");
+        let chained_error = storage
+            .append_member(
+                space_id,
+                1,
+                &member_entry(b"wrong-prev-hash", &[0x66; 32], b"entry-2"),
+            )
+            .await
+            .expect_err("chained entry with wrong prev_hash should fail");
+        assert_eq!(chained_error, StorageError::HashChainBroken);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn append_member_and_get_members_require_existing_space() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let missing = uuid::Uuid::new_v4();
+
+        let append_error = storage
+            .append_member(missing, 0, &member_entry(&[], &[0x11; 32], b"entry"))
+            .await
+            .expect_err("missing space append should fail");
+        assert_eq!(append_error, StorageError::SpaceNotFound);
+
+        let members_error = storage
+            .get_members(missing, 0)
+            .await
+            .expect_err("missing space get members should fail");
+        assert_eq!(members_error, StorageError::SpaceNotFound);
+    }
+
+    #[tokio::test]
+    async fn advance_epoch_conflict_and_rewrap_flow() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let advanced = storage
+            .advance_epoch(space_id, 2, None)
+            .await
+            .expect("advance to epoch 2");
+        assert_eq!(advanced.epoch, 2);
+
+        let conflict = storage
+            .advance_epoch(space_id, 3, None)
+            .await
+            .expect_err("advance while rewrap pending should fail");
+        match conflict {
+            StorageError::EpochConflict(EpochConflict {
+                current_epoch,
+                rewrap_epoch,
+            }) => {
+                assert_eq!(current_epoch, 2);
+                assert_eq!(rewrap_epoch, Some(2));
+            }
+            other => panic!("expected epoch conflict, got {other:?}"),
+        }
+
+        storage
+            .complete_rewrap(space_id, 2)
+            .await
+            .expect("complete rewrap");
+        storage
+            .advance_epoch(space_id, 3, None)
+            .await
+            .expect("advance to epoch 3");
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn advance_epoch_sets_min_generation_and_handles_mismatch() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let mismatch = storage
+            .advance_epoch(space_id, 3, None)
+            .await
+            .expect_err("skip-epoch advance should fail");
+        match mismatch {
+            StorageError::EpochConflict(EpochConflict {
+                current_epoch,
+                rewrap_epoch,
+            }) => {
+                assert_eq!(current_epoch, 1);
+                assert_eq!(rewrap_epoch, None);
+            }
+            other => panic!("expected epoch conflict, got {other:?}"),
+        }
+
+        storage
+            .advance_epoch(
+                space_id,
+                2,
+                Some(&AdvanceEpochOptions {
+                    set_min_key_generation: true,
+                }),
+            )
+            .await
+            .expect("advance with set_min_key_generation");
+        let space = storage.get_space(space_id).await.expect("get space");
+        assert_eq!(space.min_key_generation, 2);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn complete_rewrap_validates_epoch_and_space_existence() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let no_rewrap_error = storage
+            .complete_rewrap(space_id, 1)
+            .await
+            .expect_err("completing absent rewrap should fail");
+        assert_eq!(no_rewrap_error, StorageError::EpochMismatch);
+
+        storage
+            .advance_epoch(space_id, 2, None)
+            .await
+            .expect("advance epoch");
+        let wrong_epoch = storage
+            .complete_rewrap(space_id, 3)
+            .await
+            .expect_err("wrong epoch should fail");
+        assert_eq!(wrong_epoch, StorageError::EpochMismatch);
+
+        storage
+            .complete_rewrap(space_id, 2)
+            .await
+            .expect("complete matching epoch");
+        let space = storage.get_space(space_id).await.expect("get space");
+        assert_eq!(space.rewrap_epoch, None);
+
+        let missing_error = storage
+            .complete_rewrap(uuid::Uuid::new_v4(), 2)
+            .await
+            .expect_err("missing space should fail");
+        assert_eq!(missing_error, StorageError::SpaceNotFound);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn get_deks_and_rewrap_deks_epoch_validation() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id =
+            create_record_with_dek(&storage, space_id, wrapped_dek_with_epoch(1, 0xaa)).await;
+
+        let initial = storage
+            .get_deks(space_id, 0)
+            .await
+            .expect("get initial DEKs");
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].id, record_id.to_string());
+
+        storage
+            .advance_epoch(space_id, 2, None)
+            .await
+            .expect("advance epoch");
+
+        let wrong_epoch = storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: record_id.to_string(),
+                    wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
+                    cursor: 0,
+                }],
+            )
+            .await
+            .expect_err("wrong DEK epoch should fail");
+        assert_eq!(wrong_epoch, StorageError::DekEpochMismatch);
+
+        let invalid_id = storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: "not-a-uuid".to_owned(),
+                    wrapped_dek: wrapped_dek_with_epoch(2, 0xbb),
+                    cursor: 0,
+                }],
+            )
+            .await
+            .expect_err("invalid record id should fail");
+        assert_eq!(invalid_id, StorageError::InvalidRecordId);
+
+        storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: record_id.to_string(),
+                    wrapped_dek: wrapped_dek_with_epoch(2, 0xcc),
+                    cursor: 0,
+                }],
+            )
+            .await
+            .expect("rewrap with matching epoch");
+        let updated = storage
+            .get_deks(space_id, 0)
+            .await
+            .expect("get updated DEKs");
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].wrapped_dek, wrapped_dek_with_epoch(2, 0xcc));
+
+        let missing_record = storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    wrapped_dek: wrapped_dek_with_epoch(2, 0xdd),
+                    cursor: 0,
+                }],
+            )
+            .await
+            .expect_err("missing record should fail");
+        assert_eq!(missing_record, StorageError::DekRecordNotFound);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn stream_pull_returns_unified_ordered_entries() {
+        use std::sync::Mutex;
+
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id = create_record(&storage, space_id).await;
+
+        let member_hash = vec![0x77; 32];
+        storage
+            .append_member(
+                space_id,
+                0,
+                &member_entry(&[], &member_hash, b"member-entry"),
+            )
+            .await
+            .expect("append member");
+        storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                100,
+                &wrapped_dek_with_epoch(1, 0xee),
+            )
+            .await
+            .expect("record file");
+
+        let meta = Mutex::new(None::<PullStreamMeta>);
+        let entries = Mutex::new(Vec::<PullEntry>::new());
+        storage
+            .stream_pull(
+                space_id,
+                0,
+                &|value| {
+                    *meta.lock().expect("lock meta") = Some(value);
+                    Ok(())
+                },
+                &|entry| {
+                    entries.lock().expect("lock entries").push(entry);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("stream pull");
+
+        let meta = meta.lock().expect("lock meta").clone().expect("meta");
+        assert_eq!(meta.key_generation, 1);
+        assert_eq!(meta.rewrap_epoch, None);
+
+        let entries = entries.lock().expect("lock entries").clone();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].kind, crate::PullEntryKind::Record);
+        assert_eq!(entries[1].kind, crate::PullEntryKind::Membership);
+        assert_eq!(entries[2].kind, crate::PullEntryKind::File);
+        assert!(entries[0].cursor < entries[1].cursor);
+        assert!(entries[1].cursor < entries[2].cursor);
+
+        cleanup_space(&storage, space_id).await;
     }
 }
