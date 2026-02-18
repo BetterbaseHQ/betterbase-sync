@@ -8,11 +8,14 @@ use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use less_sync_auth::{AuthContext, AuthError, TokenValidator};
 use serde::Deserialize;
+use std::collections::HashSet;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message as WsMessage};
+use uuid::Uuid;
 
+use super::{SubscribedSpaceState, SyncStorage};
 use crate::{router, ApiState, HealthCheck};
 
 type TestSocket =
@@ -41,6 +44,37 @@ impl TokenValidator for StubValidator {
             user_id: "user-1".to_owned(),
             client_id: "client-1".to_owned(),
             scope: self.scope.to_owned(),
+        })
+    }
+}
+
+struct StubSyncStorage {
+    fail_for: HashSet<Uuid>,
+}
+
+impl StubSyncStorage {
+    fn healthy() -> Self {
+        Self {
+            fail_for: HashSet::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl SyncStorage for StubSyncStorage {
+    async fn get_or_create_space(
+        &self,
+        space_id: Uuid,
+        _client_id: &str,
+    ) -> Result<SubscribedSpaceState, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+
+        Ok(SubscribedSpaceState {
+            cursor: 42,
+            key_generation: 3,
+            rewrap_epoch: Some(2),
         })
     }
 }
@@ -200,6 +234,110 @@ async fn websocket_unknown_method_returns_method_not_found() {
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_returns_space_metadata() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let space_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id, "since": 0 }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-1");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert_eq!(response.result.spaces[0].cursor, 42);
+    assert_eq!(response.result.spaces[0].key_generation, 3);
+    assert_eq!(response.result.spaces[0].rewrap_epoch, Some(2));
+    assert!(response.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": "not-a-uuid", "since": 0 }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-2");
+    assert!(response.result.spaces.is_empty());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-3",
+            "method": "subscribe",
+            "params": { "spaces": [] }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sub-3");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     server.handle.abort();
@@ -387,6 +525,14 @@ fn base_state_with_ws(auth_timeout: Duration, scope: &'static str) -> ApiState {
         .with_websocket_timeout(Arc::new(StubValidator { scope }), auth_timeout)
 }
 
+fn base_state_with_ws_and_storage(
+    auth_timeout: Duration,
+    scope: &'static str,
+    storage: Arc<dyn SyncStorage>,
+) -> ApiState {
+    base_state_with_ws(auth_timeout, scope).with_sync_storage_adapter(storage)
+}
+
 fn ws_request(addr: SocketAddr, subprotocol: Option<&str>) -> http::Request<()> {
     let mut request = format!("ws://{addr}/api/v1/ws")
         .into_client_request()
@@ -452,6 +598,16 @@ struct RpcErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct RpcResultResponse<T> {
+    #[serde(rename = "type")]
+    _frame_type: i32,
+    #[serde(rename = "id", default)]
+    id: String,
+    #[serde(rename = "result")]
+    result: T,
+}
+
+#[derive(Debug, Deserialize)]
 struct RpcErrorPayload {
     #[serde(rename = "code")]
     code: String,
@@ -460,6 +616,22 @@ struct RpcErrorPayload {
 }
 
 async fn read_error_response(socket: &mut TestSocket) -> RpcErrorResponse {
+    let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("read timeout")
+        .expect("response frame")
+        .expect("websocket read");
+
+    match frame {
+        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode response"),
+        other => panic!("expected binary response frame, got {other:?}"),
+    }
+}
+
+async fn read_result_response<T>(socket: &mut TestSocket) -> RpcResultResponse<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
         .await
         .expect("read timeout")

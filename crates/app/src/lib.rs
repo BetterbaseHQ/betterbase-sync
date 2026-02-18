@@ -56,7 +56,9 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         audiences: config.audiences.clone(),
         ..MultiValidatorConfig::default()
     }));
-    let api_state = ApiState::new(storage).with_websocket(validator);
+    let api_state = ApiState::new(storage.clone())
+        .with_websocket(validator)
+        .with_sync_storage(storage);
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "server listening");

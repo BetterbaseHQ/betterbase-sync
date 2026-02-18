@@ -32,6 +32,7 @@ where
 pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
+    sync_storage: Option<Arc<dyn ws::SyncStorage>>,
 }
 
 #[derive(Clone)]
@@ -46,6 +47,7 @@ impl ApiState {
         Self {
             health,
             websocket: None,
+            sync_storage: None,
         }
     }
 
@@ -69,6 +71,24 @@ impl ApiState {
 
     pub(crate) fn websocket(&self) -> Option<WebSocketState> {
         self.websocket.clone()
+    }
+
+    #[must_use]
+    pub fn with_sync_storage<T>(self, storage: Arc<T>) -> Self
+    where
+        T: Storage + Send + Sync + 'static,
+    {
+        let storage: Arc<dyn ws::SyncStorage> = storage;
+        self.with_sync_storage_adapter(storage)
+    }
+
+    pub(crate) fn with_sync_storage_adapter(mut self, storage: Arc<dyn ws::SyncStorage>) -> Self {
+        self.sync_storage = Some(storage);
+        self
+    }
+
+    pub(crate) fn sync_storage(&self) -> Option<Arc<dyn ws::SyncStorage>> {
+        self.sync_storage.clone()
     }
 }
 
