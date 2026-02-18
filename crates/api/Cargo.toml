@@ -1,0 +1,13 @@
+[package]
+name = "less-sync-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+less-sync-auth = { path = "../auth" }
+less-sync-core = { path = "../core" }
+less-sync-realtime = { path = "../realtime" }
+less-sync-storage = { path = "../storage" }

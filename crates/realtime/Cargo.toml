@@ -1,0 +1,12 @@
+[package]
+name = "less-sync-realtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+less-sync-auth = { path = "../auth" }
+less-sync-core = { path = "../core" }
+less-sync-storage = { path = "../storage" }
+tokio.workspace = true

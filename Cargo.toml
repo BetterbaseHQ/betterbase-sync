@@ -1,0 +1,30 @@
+[workspace]
+members = [
+  "crates/core",
+  "crates/auth",
+  "crates/storage",
+  "crates/realtime",
+  "crates/api",
+  "crates/app",
+  "bins/server",
+  "bins/migrate",
+  "bins/federation-keygen",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.82"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros", "ws"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time", "net", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.16", features = ["serde", "v4"] }

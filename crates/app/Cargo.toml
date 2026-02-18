@@ -1,0 +1,13 @@
+[package]
+name = "less-sync-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+less-sync-api = { path = "../api" }
+tokio.workspace = true
+tracing.workspace = true
