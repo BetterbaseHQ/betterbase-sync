@@ -4,12 +4,33 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use less_sync_core::protocol::{Change, Space};
+use sha2::Sha256;
 use uuid::Uuid;
 
 pub mod postgres;
 
 pub use postgres::PostgresStorage;
+
+/// Computes an HMAC-SHA256 of `(issuer, user_id)` used for ephemeral rate limiting.
+/// A null separator protects issuer/user boundary collisions.
+#[must_use]
+pub fn rate_limit_hash(key: &[u8], issuer: &str, user_id: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any size for SHA-256");
+    mac.update(issuer.as_bytes());
+    mac.update(&[0x00]);
+    mac.update(user_id.as_bytes());
+    let digest = mac.finalize().into_bytes();
+
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum StorageError {
@@ -391,4 +412,45 @@ pub async fn migrate_with_pool(pool: &sqlx::PgPool) -> Result<(), StorageError> 
         .await
         .map_err(|error| StorageError::Migration(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_limit_hash;
+
+    #[test]
+    fn rate_limit_hash_is_deterministic() {
+        let key = b"01234567890123456789012345678901";
+        let first = rate_limit_hash(key, "https://accounts.less.so", "user1");
+        let second = rate_limit_hash(key, "https://accounts.less.so", "user1");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn rate_limit_hash_changes_with_inputs() {
+        let key = b"01234567890123456789012345678901";
+        let first = rate_limit_hash(key, "https://accounts.less.so", "user1");
+        let second = rate_limit_hash(key, "https://accounts.less.so", "user2");
+        let third = rate_limit_hash(key, "https://other.example.com", "user1");
+        assert_ne!(first, second);
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn rate_limit_hash_uses_null_separator() {
+        let key = b"01234567890123456789012345678901";
+        let first = rate_limit_hash(key, "ab", "c");
+        let second = rate_limit_hash(key, "a", "bc");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn rate_limit_hash_changes_with_key() {
+        let key_a = b"01234567890123456789012345678901";
+        let key_b = b"abcdefghijklmnopqrstuvwxyz012345";
+        let first = rate_limit_hash(key_a, "issuer", "user");
+        let second = rate_limit_hash(key_b, "issuer", "user");
+        assert_ne!(first, second);
+    }
 }

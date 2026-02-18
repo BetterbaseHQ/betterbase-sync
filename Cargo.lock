@@ -1112,7 +1112,9 @@ name = "less-sync-storage"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hmac",
  "less-sync-core",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",
