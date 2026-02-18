@@ -3,10 +3,21 @@
 use async_trait::async_trait;
 
 pub mod did_key;
+pub mod federation_token;
+pub mod http_signature;
 pub mod permission;
 pub mod session;
 
 pub use did_key::{compress_public_key, decode_did_key, encode_did_key, DidKeyError};
+pub use federation_token::{
+    canonicalize_domain, create_fst, derive_fst_key, verify_fst, verify_fst_dual_key,
+    FederationSubscribeClaims, FederationTokenError, FST_MAX_EXPIRY, FST_TOKEN_LEN, FST_VERSION,
+};
+pub use http_signature::{
+    extract_domain_from_key_id, extract_kid_from_key_id, sign_http_request, verify_http_signature,
+    verify_http_signature_with_max_age, HttpSignatureError, HttpSignatureParams,
+    DEFAULT_SIGNATURE_MAX_AGE,
+};
 pub use permission::{parse_permission, ParsePermissionError, Permission};
 pub use session::{
     SessionClaims, SessionError, SessionManager, SESSION_TOKEN_LENGTH, SESSION_VERSION,

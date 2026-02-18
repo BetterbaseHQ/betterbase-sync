@@ -22,8 +22,11 @@ rust-version = "1.82"
 anyhow = "1.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
+base64 = "0.22"
 bs58 = "0.5"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 hmac = "0.12"
+http = "1.2"
 p256 = { version = "0.13", features = ["arithmetic"] }
 rand_core = "0.6"
 serde = { version = "1.0", features = ["derive"] }
@@ -34,4 +37,5 @@ thiserror = "2.0"
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"
 uuid = { version = "1.16", features = ["serde", "v4", "v5"] }
