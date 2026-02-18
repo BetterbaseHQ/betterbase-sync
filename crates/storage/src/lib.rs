@@ -1,26 +1,351 @@
 #![forbid(unsafe_code)]
 
-use async_trait::async_trait;
+use std::collections::HashMap;
+use std::time::SystemTime;
 
-#[derive(Debug, thiserror::Error)]
+use async_trait::async_trait;
+use less_sync_core::protocol::{Change, Space};
+use uuid::Uuid;
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum StorageError {
+    #[error("space not found")]
+    SpaceNotFound,
+    #[error("space already exists")]
+    SpaceExists,
+    #[error("file not found")]
+    FileNotFound,
+    #[error("UCAN already revoked")]
+    AlreadyRevoked,
+    #[error("invitation not found")]
+    InvitationNotFound,
+    #[error("metadata version conflict")]
+    VersionConflict,
+    #[error("hash chain broken")]
+    HashChainBroken,
+    #[error("key generation stale")]
+    KeyGenerationStale,
+    #[error("epoch mismatch")]
+    EpochMismatch,
+    #[error("DEK epoch mismatch")]
+    DekEpochMismatch,
+    #[error("DEK record not found")]
+    DekRecordNotFound,
+    #[error("file DEK record not found")]
+    FileDekNotFound,
+    #[error("record not found")]
+    RecordNotFound,
+    #[error("federation key not found")]
+    FederationKeyNotFound,
     #[error("storage unavailable")]
     Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileMetadata {
+    pub id: Uuid,
+    pub record_id: Uuid,
+    pub size: i64,
+    pub wrapped_dek: Vec<u8>,
+    pub cursor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDekRecord {
+    pub id: Uuid,
+    pub wrapped_dek: Vec<u8>,
+    pub cursor: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullEntryKind {
+    Record,
+    Membership,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullEntry {
+    pub kind: PullEntryKind,
+    pub cursor: i64,
+    pub record: Option<Change>,
+    pub member: Option<MembersLogEntry>,
+    pub file: Option<FileEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullResult {
+    pub entries: Vec<PullEntry>,
+    pub record_count: usize,
+    pub cursor: i64,
+}
+
+impl PullResult {
+    #[must_use]
+    pub fn records(&self) -> Vec<Change> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                if entry.kind == PullEntryKind::Record {
+                    entry.record.clone()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn members(&self) -> Vec<MembersLogEntry> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                if entry.kind == PullEntryKind::Membership {
+                    entry.member.clone()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn files(&self) -> Vec<FileEntry> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                if entry.kind == PullEntryKind::File {
+                    entry.file.clone()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullStreamMeta {
+    pub cursor: i64,
+    pub key_generation: i32,
+    pub rewrap_epoch: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    pub id: Uuid,
+    pub record_id: Uuid,
+    pub size: i64,
+    pub deleted: bool,
+    pub wrapped_dek: Vec<u8>,
+    pub cursor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushResult {
+    pub ok: bool,
+    pub cursor: i64,
+    pub deleted_file_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invitation {
+    pub id: Uuid,
+    pub mailbox_id: String,
+    pub payload: Vec<u8>,
+    pub created_at: SystemTime,
+    pub expires_at: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushOptions {
+    pub key_generation: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MembersLogEntry {
+    pub space_id: Uuid,
+    pub chain_seq: i32,
+    pub cursor: i64,
+    pub prev_hash: Vec<u8>,
+    pub entry_hash: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendLogResult {
+    pub chain_seq: i32,
+    pub cursor: i64,
+    pub metadata_version: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvanceEpochOptions {
+    pub set_min_key_generation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvanceEpochResult {
+    pub epoch: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpochConflict {
+    pub current_epoch: i32,
+    pub rewrap_epoch: Option<i32>,
+}
+
+impl std::fmt::Display for EpochConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.rewrap_epoch.is_some() {
+            f.write_str("epoch conflict: rewrap in progress")
+        } else {
+            f.write_str("epoch conflict: epoch mismatch")
+        }
+    }
+}
+
+impl std::error::Error for EpochConflict {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationKey {
+    pub kid: String,
+    pub public_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DekRecord {
+    pub id: String,
+    pub wrapped_dek: Vec<u8>,
+    pub cursor: i64,
 }
 
 #[async_trait]
 pub trait Storage: Send + Sync {
     async fn ping(&self) -> Result<(), StorageError>;
-}
 
-#[derive(Debug, Default)]
-pub struct NoopStorage;
+    async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError>;
+    async fn get_spaces(&self, space_ids: &[Uuid]) -> Result<HashMap<Uuid, Space>, StorageError>;
+    async fn create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+        root_public_key: Option<&[u8]>,
+    ) -> Result<Space, StorageError>;
+    async fn get_or_create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+    ) -> Result<Space, StorageError>;
 
-#[async_trait]
-impl Storage for NoopStorage {
-    async fn ping(&self) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError>;
+    async fn stream_pull(
+        &self,
+        space_id: Uuid,
+        since: i64,
+        on_meta: &dyn Fn(PullStreamMeta) -> Result<(), StorageError>,
+        on_entry: &dyn Fn(PullEntry) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError>;
+    async fn push(
+        &self,
+        space_id: Uuid,
+        changes: &[Change],
+        opts: Option<&PushOptions>,
+    ) -> Result<PushResult, StorageError>;
+    async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError>;
+
+    async fn record_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        record_id: Uuid,
+        size: i64,
+        wrapped_dek: &[u8],
+    ) -> Result<(), StorageError>;
+    async fn get_file_metadata(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<FileMetadata, StorageError>;
+    async fn file_exists(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, StorageError>;
+    async fn get_file_deks(
+        &self,
+        space_id: Uuid,
+        since: i64,
+    ) -> Result<Vec<FileDekRecord>, StorageError>;
+    async fn rewrap_file_deks(
+        &self,
+        space_id: Uuid,
+        deks: &[FileDekRecord],
+    ) -> Result<(), StorageError>;
+    async fn delete_files_for_records(
+        &self,
+        space_id: Uuid,
+        record_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>, StorageError>;
+
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError>;
+    async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError>;
+
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError>;
+    async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        limit: usize,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Invitation>, StorageError>;
+    async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError>;
+    async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError>;
+
+    async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError>;
+    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError>;
+    async fn cleanup_expired_actions(&self, before: SystemTime) -> Result<i64, StorageError>;
+    async fn purge_expired_invitations(&self) -> Result<i64, StorageError>;
+
+    async fn append_member(
+        &self,
+        space_id: Uuid,
+        expected_version: i32,
+        entry: &MembersLogEntry,
+    ) -> Result<AppendLogResult, StorageError>;
+    async fn get_members(
+        &self,
+        space_id: Uuid,
+        since_seq: i32,
+    ) -> Result<Vec<MembersLogEntry>, StorageError>;
+
+    async fn advance_epoch(
+        &self,
+        space_id: Uuid,
+        requested_epoch: i32,
+        opts: Option<&AdvanceEpochOptions>,
+    ) -> Result<AdvanceEpochResult, StorageError>;
+    async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
+    async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError>;
+    async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError>;
+
+    async fn get_space_home_server(&self, space_id: Uuid) -> Result<Option<String>, StorageError>;
+    async fn set_space_home_server(
+        &self,
+        space_id: Uuid,
+        home_server: &str,
+    ) -> Result<(), StorageError>;
+
+    async fn ensure_federation_key(
+        &self,
+        kid: &str,
+        private_key: &[u8],
+        public_key: &[u8],
+    ) -> Result<(), StorageError>;
+    async fn get_federation_private_key(&self, kid: &str) -> Result<Vec<u8>, StorageError>;
+    async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError>;
+
+    fn close(&self) -> Result<(), StorageError>;
 }
 
 pub async fn migrate() -> Result<(), StorageError> {

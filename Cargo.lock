@@ -942,6 +942,7 @@ dependencies = [
  "async-trait",
  "less-sync-core",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]
