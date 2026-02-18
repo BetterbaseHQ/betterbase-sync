@@ -5,6 +5,7 @@ use async_trait::async_trait;
 pub mod did_key;
 pub mod federation_token;
 pub mod http_signature;
+pub mod jwt;
 pub mod permission;
 pub mod session;
 
@@ -17,6 +18,10 @@ pub use http_signature::{
     extract_domain_from_key_id, extract_kid_from_key_id, sign_http_request, verify_http_signature,
     verify_http_signature_with_max_age, HttpSignatureError, HttpSignatureParams,
     DEFAULT_SIGNATURE_MAX_AGE,
+};
+pub use jwt::{
+    normalize_issuer, parse_jwk, Claims, JwksClient, JwksError, JwtValidationError, MultiValidator,
+    MultiValidatorConfig, TokenInfo, JWK, JWKS, MAX_JWKS_SIZE,
 };
 pub use permission::{parse_permission, ParsePermissionError, Permission};
 pub use session::{
@@ -32,8 +37,14 @@ pub struct AuthContext {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    #[error("missing authorization token")]
+    MissingToken,
     #[error("invalid token")]
     InvalidToken,
+    #[error("token has expired")]
+    ExpiredToken,
+    #[error("untrusted token issuer")]
+    UntrustedIssuer,
 }
 
 #[async_trait]
