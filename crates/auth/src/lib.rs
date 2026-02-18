@@ -8,6 +8,7 @@ pub mod http_signature;
 pub mod jwt;
 pub mod permission;
 pub mod session;
+pub mod ucan;
 
 pub use did_key::{compress_public_key, decode_did_key, encode_did_key, DidKeyError};
 pub use federation_token::{
@@ -26,6 +27,10 @@ pub use jwt::{
 pub use permission::{parse_permission, ParsePermissionError, Permission};
 pub use session::{
     SessionClaims, SessionError, SessionManager, SESSION_TOKEN_LENGTH, SESSION_VERSION,
+};
+pub use ucan::{
+    compute_ucan_cid, parse_ucan, validate_chain, AudienceClaim, ParsedUcan, RevocationCheck,
+    UcanClaims, UcanError, ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
