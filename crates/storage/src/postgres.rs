@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use less_sync_core::protocol::{Change, Space};
 use less_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE};
@@ -8,8 +9,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    FileDekRecord, FileMetadata, PullEntry, PullEntryKind, PullResult, PushOptions, PushResult,
-    StorageError,
+    FederationKey, FileDekRecord, FileMetadata, Invitation, PullEntry, PullEntryKind, PullResult,
+    PushOptions, PushResult, StorageError,
 };
 
 const MAX_RECORDS_LIMIT: usize = 100_000;
@@ -449,6 +450,288 @@ impl PostgresStorage {
         .map_err(|error| StorageError::Database(error.to_string()))
     }
 
+    pub async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM revocations WHERE space_id = $1 AND ucan_cid = $2)",
+        )
+        .bind(space_id)
+        .bind(ucan_cid)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(exists)
+    }
+
+    pub async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO revocations (space_id, ucan_cid)
+            VALUES ($1, $2)
+            ON CONFLICT (space_id, ucan_cid) DO NOTHING
+            "#,
+        )
+        .bind(space_id)
+        .bind(ucan_cid)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO invitations (mailbox_id, payload, expires_at)
+            VALUES ($1, $2, NOW() + INTERVAL '7 days')
+            "#,
+        )
+        .bind(&invitation.mailbox_id)
+        .bind(&invitation.payload)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        limit: usize,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Invitation>, StorageError> {
+        let limit = limit.min(i64::MAX as usize) as i64;
+
+        let rows = if let Some(after) = after {
+            sqlx::query_as::<_, InvitationRow>(
+                r#"
+                SELECT
+                    id,
+                    mailbox_id,
+                    payload,
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::BIGINT AS created_at_us,
+                    (EXTRACT(EPOCH FROM expires_at) * 1000000)::BIGINT AS expires_at_us
+                FROM invitations
+                WHERE mailbox_id = $1
+                  AND expires_at > NOW()
+                  AND (created_at, id) > (
+                      SELECT created_at, id FROM invitations
+                      WHERE id = $2 AND mailbox_id = $1
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT $3
+                "#,
+            )
+            .bind(mailbox_id)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, InvitationRow>(
+                r#"
+                SELECT
+                    id,
+                    mailbox_id,
+                    payload,
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::BIGINT AS created_at_us,
+                    (EXTRACT(EPOCH FROM expires_at) * 1000000)::BIGINT AS expires_at_us
+                FROM invitations
+                WHERE mailbox_id = $1
+                  AND expires_at > NOW()
+                ORDER BY created_at ASC, id ASC
+                LIMIT $2
+                "#,
+            )
+            .bind(mailbox_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        rows.into_iter().map(Invitation::try_from).collect()
+    }
+
+    pub async fn get_invitation(
+        &self,
+        id: Uuid,
+        mailbox_id: &str,
+    ) -> Result<Invitation, StorageError> {
+        let row = sqlx::query_as::<_, InvitationRow>(
+            r#"
+            SELECT
+                id,
+                mailbox_id,
+                payload,
+                (EXTRACT(EPOCH FROM created_at) * 1000000)::BIGINT AS created_at_us,
+                (EXTRACT(EPOCH FROM expires_at) * 1000000)::BIGINT AS expires_at_us
+            FROM invitations
+            WHERE id = $1
+              AND mailbox_id = $2
+              AND expires_at > NOW()
+            "#,
+        )
+        .bind(id)
+        .bind(mailbox_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => StorageError::InvitationNotFound,
+            _ => StorageError::Database(error.to_string()),
+        })?;
+
+        Invitation::try_from(row)
+    }
+
+    pub async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM invitations WHERE id = $1 AND mailbox_id = $2")
+            .bind(id)
+            .bind(mailbox_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::InvitationNotFound);
+        }
+        Ok(())
+    }
+
+    pub async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError> {
+        let since_micros = system_time_to_unix_micros(since)?;
+        let count = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM rate_limit_actions
+            WHERE action = $1
+              AND actor_hash = $2
+              AND created_at > to_timestamp(($3::double precision) / 1000000.0)
+            "#,
+        )
+        .bind(action)
+        .bind(actor_hash)
+        .bind(since_micros)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(count)
+    }
+
+    pub async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError> {
+        sqlx::query("INSERT INTO rate_limit_actions (action, actor_hash) VALUES ($1, $2)")
+            .bind(action)
+            .bind(actor_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn cleanup_expired_actions(&self, before: SystemTime) -> Result<i64, StorageError> {
+        let before_micros = system_time_to_unix_micros(before)?;
+        let result = sqlx::query(
+            "DELETE FROM rate_limit_actions WHERE created_at < to_timestamp(($1::double precision) / 1000000.0)",
+        )
+        .bind(before_micros)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    pub async fn purge_expired_invitations(&self) -> Result<i64, StorageError> {
+        let result = sqlx::query("DELETE FROM invitations WHERE expires_at < NOW()")
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    pub async fn get_space_home_server(
+        &self,
+        space_id: Uuid,
+    ) -> Result<Option<String>, StorageError> {
+        sqlx::query_scalar("SELECT home_server FROM spaces WHERE id = $1")
+            .bind(space_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })
+    }
+
+    pub async fn set_space_home_server(
+        &self,
+        space_id: Uuid,
+        home_server: &str,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query("UPDATE spaces SET home_server = $2 WHERE id = $1")
+            .bind(space_id)
+            .bind(home_server)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::SpaceNotFound);
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_federation_key(
+        &self,
+        kid: &str,
+        private_key: &[u8],
+        public_key: &[u8],
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO federation_signing_keys (kid, private_key, public_key)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (kid) DO NOTHING
+            "#,
+        )
+        .bind(kid)
+        .bind(private_key)
+        .bind(public_key)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_federation_private_key(&self, kid: &str) -> Result<Vec<u8>, StorageError> {
+        sqlx::query_scalar("SELECT private_key FROM federation_signing_keys WHERE kid = $1")
+            .bind(kid)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::FederationKeyNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })
+    }
+
+    pub async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError> {
+        let rows = sqlx::query_as::<_, FederationKeyRow>(
+            "SELECT kid, public_key FROM federation_signing_keys ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| FederationKey {
+                kid: row.kid,
+                public_key: row.public_key,
+            })
+            .collect())
+    }
+
     pub async fn push(
         &self,
         space_id: Uuid,
@@ -691,6 +974,21 @@ struct FileDekRow {
     cursor: i64,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct InvitationRow {
+    id: Uuid,
+    mailbox_id: String,
+    payload: Vec<u8>,
+    created_at_us: i64,
+    expires_at_us: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FederationKeyRow {
+    kid: String,
+    public_key: Vec<u8>,
+}
+
 impl From<SpaceRow> for Space {
     fn from(value: SpaceRow) -> Self {
         Self {
@@ -722,16 +1020,55 @@ fn parse_dek_epoch(wrapped_dek: &[u8]) -> Option<i32> {
     epoch.filter(|value| *value > 0)
 }
 
+fn system_time_to_unix_micros(value: SystemTime) -> Result<i64, StorageError> {
+    match value.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_micros())
+            .map_err(|_| StorageError::Database("timestamp out of range".to_owned())),
+        Err(error) => {
+            let micros = i64::try_from(error.duration().as_micros())
+                .map_err(|_| StorageError::Database("timestamp out of range".to_owned()))?;
+            Ok(-micros)
+        }
+    }
+}
+
+fn unix_micros_to_system_time(value: i64) -> Result<SystemTime, StorageError> {
+    let micros = value.unsigned_abs();
+    let duration = Duration::from_micros(micros);
+    if value >= 0 {
+        Ok(UNIX_EPOCH + duration)
+    } else {
+        UNIX_EPOCH
+            .checked_sub(duration)
+            .ok_or_else(|| StorageError::Database("timestamp out of range".to_owned()))
+    }
+}
+
+impl TryFrom<InvitationRow> for Invitation {
+    type Error = StorageError;
+
+    fn try_from(value: InvitationRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id,
+            mailbox_id: value.mailbox_id,
+            payload: value.payload,
+            created_at: unix_micros_to_system_time(value.created_at_us)?,
+            expires_at: unix_micros_to_system_time(value.expires_at_us)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
     use std::env;
+    use std::time::{Duration, SystemTime};
 
     use less_sync_core::protocol::Change;
     use sqlx::postgres::PgPoolOptions;
 
     use super::PostgresStorage;
-    use crate::{FileDekRecord, StorageError};
+    use crate::{FileDekRecord, Invitation, StorageError};
 
     async fn test_storage() -> Option<PostgresStorage> {
         let database_url = match env::var("DATABASE_URL") {
@@ -791,6 +1128,24 @@ mod tests {
         let mut wrapped = wrapped_dek(fill);
         wrapped[0..4].copy_from_slice(&epoch.to_be_bytes());
         wrapped
+    }
+
+    fn mailbox_id() -> String {
+        format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        )
+    }
+
+    fn invitation_input(mailbox_id: &str, payload: &[u8]) -> Invitation {
+        Invitation {
+            id: uuid::Uuid::nil(),
+            mailbox_id: mailbox_id.to_owned(),
+            payload: payload.to_vec(),
+            created_at: SystemTime::UNIX_EPOCH,
+            expires_at: SystemTime::UNIX_EPOCH,
+        }
     }
 
     #[tokio::test]
@@ -1443,5 +1798,375 @@ mod tests {
         assert!(deleted.is_empty());
 
         cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn revoke_ucan_roundtrip_and_space_isolation() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_a = uuid::Uuid::new_v4();
+        let space_b = uuid::Uuid::new_v4();
+        create_space(&storage, space_a).await;
+        create_space(&storage, space_b).await;
+        let ucan_cid = "bafy-test-cid-1";
+
+        let initial = storage
+            .is_revoked(space_a, ucan_cid)
+            .await
+            .expect("is revoked before insert");
+        assert!(!initial);
+
+        storage
+            .revoke_ucan(space_a, ucan_cid)
+            .await
+            .expect("first revoke");
+        storage
+            .revoke_ucan(space_a, ucan_cid)
+            .await
+            .expect("idempotent revoke");
+
+        let revoked_a = storage
+            .is_revoked(space_a, ucan_cid)
+            .await
+            .expect("is revoked for space a");
+        let revoked_b = storage
+            .is_revoked(space_b, ucan_cid)
+            .await
+            .expect("is revoked for space b");
+        assert!(revoked_a);
+        assert!(!revoked_b);
+
+        cleanup_space(&storage, space_a).await;
+        cleanup_space(&storage, space_b).await;
+    }
+
+    #[tokio::test]
+    async fn invitation_crud_and_mailbox_scope() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let mailbox_a = mailbox_id();
+        let mailbox_b = mailbox_id();
+
+        storage
+            .create_invitation(&invitation_input(&mailbox_a, b"encrypted-payload"))
+            .await
+            .expect("create invitation");
+
+        let list_a = storage
+            .list_invitations(&mailbox_a, 10, None)
+            .await
+            .expect("list mailbox a");
+        assert_eq!(list_a.len(), 1);
+        assert!(list_a[0].expires_at > list_a[0].created_at);
+
+        let list_b = storage
+            .list_invitations(&mailbox_b, 10, None)
+            .await
+            .expect("list mailbox b");
+        assert!(list_b.is_empty());
+
+        let invitation_id = list_a[0].id;
+        let got = storage
+            .get_invitation(invitation_id, &mailbox_a)
+            .await
+            .expect("get invitation");
+        assert_eq!(got.mailbox_id, mailbox_a);
+        assert_eq!(got.payload, b"encrypted-payload");
+
+        let wrong_mailbox = storage
+            .get_invitation(invitation_id, &mailbox_b)
+            .await
+            .expect_err("wrong mailbox get should fail");
+        assert_eq!(wrong_mailbox, StorageError::InvitationNotFound);
+
+        let wrong_delete = storage
+            .delete_invitation(invitation_id, &mailbox_b)
+            .await
+            .expect_err("wrong mailbox delete should fail");
+        assert_eq!(wrong_delete, StorageError::InvitationNotFound);
+
+        storage
+            .delete_invitation(invitation_id, &mailbox_a)
+            .await
+            .expect("delete invitation");
+        let after_delete = storage
+            .get_invitation(invitation_id, &mailbox_a)
+            .await
+            .expect_err("deleted invitation should not be found");
+        assert_eq!(after_delete, StorageError::InvitationNotFound);
+    }
+
+    #[tokio::test]
+    async fn list_invitations_pagination_and_expiry() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let mailbox = mailbox_id();
+
+        storage
+            .create_invitation(&invitation_input(&mailbox, b"p1"))
+            .await
+            .expect("create invitation 1");
+        storage
+            .create_invitation(&invitation_input(&mailbox, b"p2"))
+            .await
+            .expect("create invitation 2");
+        storage
+            .create_invitation(&invitation_input(&mailbox, b"p3"))
+            .await
+            .expect("create invitation 3");
+
+        let created = storage
+            .list_invitations(&mailbox, 10, None)
+            .await
+            .expect("list created invitations");
+        assert_eq!(created.len(), 3);
+        let expired_id = created[1].id;
+
+        sqlx::query(
+            "UPDATE invitations SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1",
+        )
+        .bind(expired_id)
+        .execute(storage.pool())
+        .await
+        .expect("expire invitation");
+
+        let list = storage
+            .list_invitations(&mailbox, 10, None)
+            .await
+            .expect("list non-expired");
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().all(|inv| inv.id != expired_id));
+
+        let get_expired = storage
+            .get_invitation(expired_id, &mailbox)
+            .await
+            .expect_err("expired invitation should not be found");
+        assert_eq!(get_expired, StorageError::InvitationNotFound);
+
+        let page1 = storage
+            .list_invitations(&mailbox, 1, None)
+            .await
+            .expect("list page 1");
+        assert_eq!(page1.len(), 1);
+        let page2 = storage
+            .list_invitations(&mailbox, 10, Some(page1[0].id))
+            .await
+            .expect("list page 2");
+        assert_eq!(page2.len(), 1);
+        assert_ne!(page2[0].id, page1[0].id);
+
+        let purged = storage
+            .purge_expired_invitations()
+            .await
+            .expect("purge expired invitations");
+        assert!(purged >= 1);
+    }
+
+    #[tokio::test]
+    async fn list_invitations_cursor_edge_cases() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let mailbox_a = mailbox_id();
+        let mailbox_b = mailbox_id();
+
+        storage
+            .create_invitation(&invitation_input(&mailbox_a, b"a1"))
+            .await
+            .expect("create a1");
+        storage
+            .create_invitation(&invitation_input(&mailbox_a, b"a2"))
+            .await
+            .expect("create a2");
+        storage
+            .create_invitation(&invitation_input(&mailbox_b, b"b1"))
+            .await
+            .expect("create b1");
+
+        let b = storage
+            .list_invitations(&mailbox_b, 10, None)
+            .await
+            .expect("list b");
+        assert_eq!(b.len(), 1);
+        let wrong_cursor = storage
+            .list_invitations(&mailbox_a, 10, Some(b[0].id))
+            .await
+            .expect("wrong-mailbox cursor");
+        assert!(wrong_cursor.is_empty());
+
+        let missing_cursor = storage
+            .list_invitations(&mailbox_a, 10, Some(uuid::Uuid::new_v4()))
+            .await
+            .expect("missing cursor");
+        assert!(missing_cursor.is_empty());
+
+        let zero_limit = storage
+            .list_invitations(&mailbox_a, 0, None)
+            .await
+            .expect("zero limit");
+        assert!(zero_limit.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_actions_lifecycle() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let action = format!("invitation-{}", uuid::Uuid::new_v4());
+        let other_action = format!("membership-{}", uuid::Uuid::new_v4());
+        let actor_a = "actor-hash-a";
+        let actor_b = "actor-hash-b";
+
+        storage
+            .record_action(&action, actor_a)
+            .await
+            .expect("record action #1");
+        storage
+            .record_action(&action, actor_a)
+            .await
+            .expect("record action #2");
+        storage
+            .record_action(&action, actor_b)
+            .await
+            .expect("record action #3");
+        storage
+            .record_action(&other_action, actor_a)
+            .await
+            .expect("record action #4");
+
+        let since_past = SystemTime::now() - Duration::from_secs(3600);
+        let count_a = storage
+            .count_recent_actions(&action, actor_a, since_past)
+            .await
+            .expect("count actor a");
+        let count_b = storage
+            .count_recent_actions(&action, actor_b, since_past)
+            .await
+            .expect("count actor b");
+        assert_eq!(count_a, 2);
+        assert_eq!(count_b, 1);
+
+        let since_future = SystemTime::now() + Duration::from_secs(60);
+        let count_future = storage
+            .count_recent_actions(&action, actor_a, since_future)
+            .await
+            .expect("count future");
+        assert_eq!(count_future, 0);
+
+        sqlx::query(
+            "UPDATE rate_limit_actions SET created_at = NOW() - INTERVAL '2 hours' WHERE action = $1 OR action = $2",
+        )
+        .bind(&action)
+        .bind(&other_action)
+        .execute(storage.pool())
+        .await
+        .expect("age action rows");
+
+        let removed = storage
+            .cleanup_expired_actions(SystemTime::now() - Duration::from_secs(3600))
+            .await
+            .expect("cleanup expired actions");
+        assert!(removed >= 4);
+
+        let count_after = storage
+            .count_recent_actions(&action, actor_a, since_past)
+            .await
+            .expect("count after cleanup");
+        assert_eq!(count_after, 0);
+    }
+
+    #[tokio::test]
+    async fn space_home_server_roundtrip() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let before = storage
+            .get_space_home_server(space_id)
+            .await
+            .expect("get home server");
+        assert_eq!(before, None);
+
+        storage
+            .set_space_home_server(space_id, "https://example.test")
+            .await
+            .expect("set home server");
+        let after = storage
+            .get_space_home_server(space_id)
+            .await
+            .expect("get updated home server");
+        assert_eq!(after.as_deref(), Some("https://example.test"));
+
+        let missing_get = storage
+            .get_space_home_server(uuid::Uuid::new_v4())
+            .await
+            .expect_err("missing space get should fail");
+        assert_eq!(missing_get, StorageError::SpaceNotFound);
+        let missing_set = storage
+            .set_space_home_server(uuid::Uuid::new_v4(), "https://missing.test")
+            .await
+            .expect_err("missing space set should fail");
+        assert_eq!(missing_set, StorageError::SpaceNotFound);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn federation_keys_roundtrip_and_idempotency() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let missing = storage
+            .get_federation_private_key("fed-missing")
+            .await
+            .expect_err("missing key should fail");
+        assert_eq!(missing, StorageError::FederationKeyNotFound);
+
+        let kid_a = format!("fed-{}", uuid::Uuid::new_v4());
+        let kid_b = format!("fed-{}", uuid::Uuid::new_v4());
+        let private_a = b"test-private-key-seed-32-bytes!!".to_vec();
+        let public_a = b"test-public-key-32-bytes-here!!!".to_vec();
+        let private_b = b"second-seed-32-bytes-long!!!!!!".to_vec();
+        let public_b = b"second-pub-key-32-bytes-long!!!".to_vec();
+
+        storage
+            .ensure_federation_key(&kid_a, &private_a, &public_a)
+            .await
+            .expect("ensure key a");
+        let got_a = storage
+            .get_federation_private_key(&kid_a)
+            .await
+            .expect("get key a");
+        assert_eq!(got_a, private_a);
+
+        storage
+            .ensure_federation_key(&kid_a, b"different-seed-32-bytes-long!!!!", &public_a)
+            .await
+            .expect("ensure key a idempotent");
+        let got_again = storage
+            .get_federation_private_key(&kid_a)
+            .await
+            .expect("get key a again");
+        assert_eq!(got_again, private_a);
+
+        storage
+            .ensure_federation_key(&kid_b, &private_b, &public_b)
+            .await
+            .expect("ensure key b");
+        let keys = storage
+            .list_federation_public_keys()
+            .await
+            .expect("list federation keys");
+        let key_a = keys.iter().find(|key| key.kid == kid_a).cloned();
+        let key_b = keys.iter().find(|key| key.kid == kid_b).cloned();
+        assert!(key_a.is_some());
+        assert!(key_b.is_some());
+        assert_eq!(key_a.expect("key a").public_key, public_a);
+        assert_eq!(key_b.expect("key b").public_key, public_b);
     }
 }
