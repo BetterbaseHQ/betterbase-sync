@@ -1028,6 +1028,7 @@ dependencies = [
  "anyhow",
  "axum",
  "less-sync-api",
+ "less-sync-storage",
  "tokio",
  "tracing",
 ]
