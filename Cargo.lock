@@ -1111,6 +1111,7 @@ dependencies = [
  "less-sync-core",
  "sqlx",
  "thiserror",
+ "tokio",
  "uuid",
 ]
 

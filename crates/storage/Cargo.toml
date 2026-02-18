@@ -11,3 +11,6 @@ less-sync-core = { path = "../core" }
 sqlx.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
