@@ -1034,6 +1034,7 @@ dependencies = [
  "less-sync-core",
  "less-sync-realtime",
  "less-sync-storage",
+ "serde",
  "serde_cbor",
  "serde_json",
  "tokio",

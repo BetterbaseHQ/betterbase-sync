@@ -4,10 +4,12 @@ use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
+use less_sync_core::protocol::{ERR_CODE_METHOD_NOT_FOUND, RPC_RESPONSE};
 use less_sync_realtime::ws::{
-    authenticate_first_message, validate_client_binary_frame, CloseDirective, FirstMessage,
-    WS_SUBPROTOCOL,
+    authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
+    FirstMessage, WS_SUBPROTOCOL,
 };
+use serde::Serialize;
 
 use crate::ApiState;
 
@@ -78,12 +80,22 @@ async fn serve_websocket(mut socket: WebSocket, config: crate::WebSocketState) {
         };
 
         match message {
-            Message::Binary(payload) => {
-                if let Err(close) = validate_client_binary_frame(&payload) {
+            Message::Binary(payload) => match parse_client_binary_frame(&payload) {
+                Ok(ClientFrame::Request { id, method }) => {
+                    send_method_not_found_response(&mut socket, &id, &method).await;
+                }
+                Ok(
+                    ClientFrame::Keepalive
+                    | ClientFrame::Notification { .. }
+                    | ClientFrame::Response
+                    | ClientFrame::Chunk
+                    | ClientFrame::UnknownType,
+                ) => {}
+                Err(close) => {
                     send_close(&mut socket, close).await;
                     return;
                 }
-            }
+            },
             Message::Text(_) => {
                 send_close(
                     &mut socket,
@@ -112,6 +124,40 @@ async fn send_close(socket: &mut WebSocket, close: CloseDirective) {
         reason: close.reason.into(),
     };
     let _ = socket.send(Message::Close(Some(frame))).await;
+}
+
+#[derive(Debug, Serialize)]
+struct RpcErrorFrame<'a> {
+    #[serde(rename = "type")]
+    frame_type: i32,
+    #[serde(rename = "id")]
+    id: &'a str,
+    #[serde(rename = "error")]
+    error: RpcErrorPayload,
+}
+
+#[derive(Debug, Serialize)]
+struct RpcErrorPayload {
+    #[serde(rename = "code")]
+    code: &'static str,
+    #[serde(rename = "message")]
+    message: String,
+}
+
+async fn send_method_not_found_response(socket: &mut WebSocket, id: &str, method: &str) {
+    let frame = RpcErrorFrame {
+        frame_type: RPC_RESPONSE,
+        id,
+        error: RpcErrorPayload {
+            code: ERR_CODE_METHOD_NOT_FOUND,
+            message: format!("unknown method: {method}"),
+        },
+    };
+    let encoded = match serde_cbor::to_vec(&frame) {
+        Ok(encoded) => encoded,
+        Err(_) => return,
+    };
+    let _ = socket.send(Message::Binary(encoded.into())).await;
 }
 
 #[cfg(test)]

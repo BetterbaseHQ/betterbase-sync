@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use less_sync_auth::{AuthContext, AuthError, TokenValidator};
+use serde::Deserialize;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -175,6 +176,195 @@ async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
     server.handle.abort();
 }
 
+#[tokio::test]
+async fn websocket_unknown_method_returns_method_not_found() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "req-1",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.frame_type, less_sync_core::protocol::RPC_RESPONSE);
+    assert_eq!(response.id, "req-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_request_with_empty_id_gets_response() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_unknown_frame_type_does_not_close_connection() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": 99,
+            "id": "unk-1",
+            "method": "noop"
+        }),
+    )
+    .await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "req-2",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "req-2");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_unknown_notification_is_ignored() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "some.unknown.event",
+            "params": {"foo": "bar"}
+        }),
+    )
+    .await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "req-3",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "req-3");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_client_response_frame_is_ignored() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_RESPONSE,
+            "id": "fake-resp-1",
+            "result": {"ok": true}
+        }),
+    )
+    .await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "req-4",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "req-4");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_client_chunk_frame_is_ignored() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_CHUNK,
+            "id": "fake-chunk-1",
+            "name": "pull.record",
+            "data": {"id": "r1"}
+        }),
+    )
+    .await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "req-5",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "req-5");
+
+    server.handle.abort();
+}
+
 struct TestServer {
     addr: SocketAddr,
     handle: JoinHandle<()>,
@@ -230,6 +420,14 @@ async fn send_auth(socket: &mut TestSocket) {
         .expect("send auth frame");
 }
 
+async fn send_binary_frame(socket: &mut TestSocket, frame: serde_json::Value) {
+    let encoded = serde_cbor::to_vec(&frame).expect("encode frame");
+    socket
+        .send(WsMessage::Binary(encoded.into()))
+        .await
+        .expect("send frame");
+}
+
 async fn expect_close_code(socket: &mut TestSocket) -> u16 {
     let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
         .await
@@ -240,5 +438,36 @@ async fn expect_close_code(socket: &mut TestSocket) -> u16 {
     match frame {
         WsMessage::Close(Some(close)) => u16::from(close.code),
         other => panic!("expected close frame, got {other:?}"),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcErrorResponse {
+    #[serde(rename = "type")]
+    frame_type: i32,
+    #[serde(rename = "id", default)]
+    id: String,
+    #[serde(rename = "error")]
+    error: RpcErrorPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcErrorPayload {
+    #[serde(rename = "code")]
+    code: String,
+    #[serde(rename = "message")]
+    _message: String,
+}
+
+async fn read_error_response(socket: &mut TestSocket) -> RpcErrorResponse {
+    let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("read timeout")
+        .expect("response frame")
+        .expect("websocket read");
+
+    match frame {
+        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode response"),
+        other => panic!("expected binary response frame, got {other:?}"),
     }
 }
