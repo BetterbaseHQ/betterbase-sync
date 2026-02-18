@@ -1048,9 +1048,11 @@ dependencies = [
  "anyhow",
  "axum",
  "less-sync-api",
+ "less-sync-auth",
  "less-sync-storage",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

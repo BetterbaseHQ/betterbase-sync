@@ -8,7 +8,9 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+less-sync-auth = { path = "../auth" }
 less-sync-api = { path = "../api" }
 less-sync-storage = { path = "../storage" }
 tokio.workspace = true
 tracing.workspace = true
+url.workspace = true
