@@ -30,7 +30,7 @@ pub use federation::{
     FederationAuthError, FederationAuthenticator, FederationJwk, FederationJwks,
     FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
-pub use federation_client::{FederationPeerError, FederationPeerManager};
+pub use federation_client::{FederationForwarder, FederationPeerError, FederationPeerManager};
 pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
 pub use files::ObjectStoreFileBlobStorage;
 
@@ -54,6 +54,7 @@ pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
     federation_authenticator: Option<Arc<dyn FederationAuthenticator>>,
+    federation_forwarder: Option<Arc<dyn FederationForwarder>>,
     federation_token_keys: Option<FederationTokenKeys>,
     federation_jwks: FederationJwks,
     federation_trusted_domains: Vec<String>,
@@ -78,6 +79,7 @@ impl ApiState {
             health,
             websocket: None,
             federation_authenticator: None,
+            federation_forwarder: None,
             federation_token_keys: None,
             federation_jwks: FederationJwks::default(),
             federation_trusted_domains: Vec::new(),
@@ -125,6 +127,16 @@ impl ApiState {
 
     pub(crate) fn federation_authenticator(&self) -> Option<Arc<dyn FederationAuthenticator>> {
         self.federation_authenticator.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_forwarder(mut self, forwarder: Arc<dyn FederationForwarder>) -> Self {
+        self.federation_forwarder = Some(forwarder);
+        self
+    }
+
+    pub(crate) fn federation_forwarder(&self) -> Option<Arc<dyn FederationForwarder>> {
+        self.federation_forwarder.clone()
     }
 
     #[must_use]

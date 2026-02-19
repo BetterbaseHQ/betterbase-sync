@@ -6,9 +6,10 @@ use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    InvitationCreateParams, InvitationCreateResult, InvitationDeleteParams, InvitationGetParams,
-    InvitationListParams, InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_FORBIDDEN,
-    ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
+    FederationInvitationParams, InvitationCreateParams, InvitationCreateResult,
+    InvitationDeleteParams, InvitationGetParams, InvitationListParams, InvitationListResult,
+    ERR_CODE_BAD_REQUEST, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
+    ERR_CODE_NOT_FOUND,
 };
 use less_sync_storage::{Invitation, StorageError};
 use time::format_description::well_known::Rfc3339;
@@ -24,6 +25,8 @@ struct EmptyResult {}
 pub(super) async fn handle_create_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    federation_forwarder: Option<&dyn crate::FederationForwarder>,
+    federation_trusted_domains: &[String],
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -53,6 +56,67 @@ pub(super) async fn handle_create_request(
     }
     if params.mailbox_id != mailbox_id_for_auth(auth) {
         send_error_response(outbound, id, ERR_CODE_FORBIDDEN, "forbidden".to_owned()).await;
+        return;
+    }
+
+    if !params.server.is_empty() {
+        let peer_domain = less_sync_auth::canonicalize_domain(&params.server);
+        let Some(federation_forwarder) = federation_forwarder else {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_BAD_REQUEST,
+                "federation is not enabled on this server".to_owned(),
+            )
+            .await;
+            return;
+        };
+
+        let trusted = federation_trusted_domains
+            .iter()
+            .any(|domain| domain == &peer_domain);
+        if !trusted {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_BAD_REQUEST,
+                "target server is not a trusted federation peer".to_owned(),
+            )
+            .await;
+            return;
+        }
+
+        let peer_ws_url = crate::federation_client::peer_ws_url(&params.server);
+        let forward = FederationInvitationParams {
+            mailbox_id: params.mailbox_id.clone(),
+            payload: params.payload.clone(),
+        };
+        if federation_forwarder
+            .forward_invitation(&peer_domain, &peer_ws_url, &forward)
+            .await
+            .is_err()
+        {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_INTERNAL,
+                "failed to deliver invitation to remote server".to_owned(),
+            )
+            .await;
+            return;
+        }
+
+        send_result_response(
+            outbound,
+            id,
+            &InvitationCreateResult {
+                id: "forwarded".to_owned(),
+                payload: params.payload,
+                created_at: String::new(),
+                expires_at: String::new(),
+            },
+        )
+        .await;
         return;
     }
 

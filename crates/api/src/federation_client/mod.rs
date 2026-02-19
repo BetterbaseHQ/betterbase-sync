@@ -2,13 +2,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
+use less_sync_auth::canonicalize_domain;
 use less_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, PushParams, PushRpcResult,
     SubscribeParams, SubscribeResult, WsSubscribeSpace,
 };
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
+use url::Url;
 
 mod peer;
 mod wire;
@@ -41,6 +44,23 @@ pub struct FederationPeerManager {
     signing_key: SigningKey,
     peers: Mutex<HashMap<String, Arc<peer::PeerConnection>>>,
     request_id_counter: AtomicU64,
+}
+
+#[async_trait]
+pub trait FederationForwarder: Send + Sync {
+    async fn forward_push(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        params: &PushParams,
+    ) -> Result<PushRpcResult, FederationPeerError>;
+
+    async fn forward_invitation(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        params: &FederationInvitationParams,
+    ) -> Result<(), FederationPeerError>;
 }
 
 impl FederationPeerManager {
@@ -160,6 +180,71 @@ impl FederationPeerManager {
         peer.call_raw(&self.key_id, &self.signing_key, &request_id, method, params)
             .await
     }
+}
+
+#[async_trait]
+impl FederationForwarder for FederationPeerManager {
+    async fn forward_push(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        params: &PushParams,
+    ) -> Result<PushRpcResult, FederationPeerError> {
+        FederationPeerManager::forward_push(self, peer_domain, peer_ws_url, params).await
+    }
+
+    async fn forward_invitation(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        params: &FederationInvitationParams,
+    ) -> Result<(), FederationPeerError> {
+        FederationPeerManager::forward_invitation(self, peer_domain, peer_ws_url, params).await
+    }
+}
+
+#[must_use]
+pub(crate) fn peer_ws_url(raw_peer: &str) -> String {
+    let raw_peer = raw_peer.trim();
+
+    if let Ok(url) = Url::parse(raw_peer) {
+        if matches!(url.scheme(), "ws" | "wss" | "http" | "https") {
+            let mut url = url;
+            let scheme = if url.scheme() == "http" {
+                "ws"
+            } else if url.scheme() == "https" {
+                "wss"
+            } else if url.scheme() == "ws" {
+                "ws"
+            } else {
+                "wss"
+            };
+            url.set_scheme(scheme)
+            .expect("supported websocket-compatible schemes are always mutable");
+            if url.path().is_empty() || url.path() == "/" {
+                url.set_path("/api/v1/federation/ws");
+            }
+            return url.to_string();
+        }
+    }
+
+    let peer_domain = canonicalize_domain(raw_peer);
+    let scheme = if is_local_peer(&peer_domain) {
+        "ws"
+    } else {
+        "wss"
+    };
+    format!("{scheme}://{peer_domain}/api/v1/federation/ws")
+}
+
+fn is_local_peer(peer_domain: &str) -> bool {
+    peer_domain == "localhost"
+        || peer_domain == "127.0.0.1"
+        || peer_domain.starts_with("localhost:")
+        || peer_domain.starts_with("127.0.0.1:")
+        || peer_domain == "::1"
+        || peer_domain.starts_with("[::1]")
+        || peer_domain.starts_with("[::1]:")
 }
 
 fn decode_cbor_value<T>(value: serde_cbor::Value) -> Result<T, FederationPeerError>

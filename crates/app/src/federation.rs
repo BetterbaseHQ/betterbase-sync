@@ -4,10 +4,11 @@ use std::sync::Arc;
 use anyhow::Context;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use ed25519_dalek::SigningKey;
 use ed25519_dalek::VerifyingKey;
 use less_sync_api::{
-    ApiState, FederationJwk, FederationJwks, FederationQuotaLimits, FederationTokenKeys,
-    HttpSignatureFederationAuthenticator,
+    ApiState, FederationJwk, FederationJwks, FederationPeerManager, FederationQuotaLimits,
+    FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
 use less_sync_auth::{canonicalize_domain, derive_fst_key, extract_domain_from_key_id};
 use less_sync_storage::PostgresStorage;
@@ -100,6 +101,11 @@ pub(crate) async fn apply_federation_runtime_config(
 
     let jwks = load_jwks(storage.as_ref()).await?;
     api_state = api_state.with_federation_jwks(jwks);
+
+    if let Some((key_id, signing_key)) = load_primary_signing_key(storage.as_ref()).await? {
+        let forwarder = FederationPeerManager::new(key_id, signing_key);
+        api_state = api_state.with_federation_forwarder(Arc::new(forwarder));
+    }
 
     if !config.trusted_keys.is_empty() {
         let keys_by_id = config
@@ -255,6 +261,33 @@ async fn load_jwks(storage: &PostgresStorage) -> anyhow::Result<FederationJwks> 
     }
 
     Ok(FederationJwks { keys: jwks })
+}
+
+async fn load_primary_signing_key(
+    storage: &PostgresStorage,
+) -> anyhow::Result<Option<(String, SigningKey)>> {
+    let keys = storage.list_federation_public_keys().await?;
+    let Some(primary) = keys.first() else {
+        return Ok(None);
+    };
+
+    let private_key = storage.get_federation_private_key(&primary.kid).await?;
+    let private_key: [u8; 32] = private_key.as_slice().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "stored federation private key {0:?} is not 32 bytes",
+            primary.kid
+        )
+    })?;
+
+    let signing_key = SigningKey::from_bytes(&private_key);
+    if signing_key.verifying_key().as_bytes() != primary.public_key.as_slice() {
+        return Err(anyhow::anyhow!(
+            "stored federation key pair mismatch for {0:?}",
+            primary.kid
+        ));
+    }
+
+    Ok(Some((primary.kid.clone(), signing_key)))
 }
 
 #[cfg(test)]

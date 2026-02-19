@@ -218,6 +218,7 @@ pub(super) async fn handle_push_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
+    federation_forwarder: Option<&dyn crate::FederationForwarder>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -279,6 +280,28 @@ pub(super) async fn handle_push_request(
                 },
             )
             .await;
+            return;
+        }
+    }
+
+    if let Some(federation_forwarder) = federation_forwarder {
+        let home_server = sync_storage
+            .get_space(space_id)
+            .await
+            .ok()
+            .and_then(|space| space.home_server);
+        if let Some(home_server) = home_server {
+            let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+            let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
+            let response = federation_forwarder
+                .forward_push(&peer_domain, &peer_ws_url, &params)
+                .await
+                .unwrap_or_else(|_| PushRpcResult {
+                    ok: false,
+                    cursor: 0,
+                    error: ERR_CODE_INTERNAL.to_owned(),
+                });
+            send_result_response(outbound, id, &response).await;
             return;
         }
     }

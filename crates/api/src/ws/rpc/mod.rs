@@ -24,6 +24,8 @@ pub(crate) struct RequestContext<'a> {
     pub sync_storage: Option<&'a dyn SyncStorage>,
     pub realtime: Option<&'a RealtimeSession>,
     pub presence_registry: Option<&'a PresenceRegistry>,
+    pub federation_forwarder: Option<&'a dyn crate::FederationForwarder>,
+    pub federation_trusted_domains: &'a [String],
 }
 
 pub(crate) enum RequestMode<'a> {
@@ -87,6 +89,8 @@ async fn handle_client_request(
         sync_storage,
         realtime,
         presence_registry,
+        federation_forwarder,
+        federation_trusted_domains,
     } = context;
 
     match method {
@@ -156,7 +160,16 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            invitation::handle_create_request(outbound, sync_storage, auth, id, payload).await;
+            invitation::handle_create_request(
+                outbound,
+                sync_storage,
+                federation_forwarder,
+                federation_trusted_domains,
+                auth,
+                id,
+                payload,
+            )
+            .await;
         }
         "invitation.list" => {
             let Some(sync_storage) = sync_storage else {
@@ -308,8 +321,16 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            handlers::handle_push_request(outbound, sync_storage, realtime, auth, id, payload)
-                .await;
+            handlers::handle_push_request(
+                outbound,
+                sync_storage,
+                realtime,
+                federation_forwarder,
+                auth,
+                id,
+                payload,
+            )
+            .await;
         }
         "pull" => {
             let Some(sync_storage) = sync_storage else {

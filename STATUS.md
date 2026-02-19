@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `9f200bd` (`Tighten federation HTTP parity semantics`)
-- Working tree status at update time: in progress (federation outbound peer-manager forwarding slice)
+- HEAD: `7c53de4` (`Add federation outbound peer manager client`)
+- Working tree status at update time: in progress (runtime federation forwarding integration slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `131`
+1. `less-sync-api`: `135`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
 7. `less-sync-federation-keygen`: `3`
-8. Total passing tests: `323`
+8. Total passing tests: `327`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -101,14 +101,19 @@ Go baseline (reference from original local suite):
 - Per-peer connection reuse and per-space FST token tracking.
 - Forwarding primitives now implemented for `subscribe`, `push`, and `fed.invitation`.
 - Local tests now cover Go-equivalent federation client scenarios for request forwarding and FST token persistence/fallback behavior.
+12. Runtime federation forwarding integration:
+- Client websocket `push` now forwards to remote home servers when `space.home_server` is set and a federation forwarder is configured.
+- `invitation.create` now supports remote delivery via `params.server` for trusted peers, including explicit bad-request and internal-error mappings.
+- API state now carries a pluggable federation forwarder, and app startup wires one from stored federation signing keys when available.
+- New websocket tests cover forwarded push, trusted/untrusted invitation forwarding, and forwarding failure behavior.
 
 ## Gaps and Open Work
-1. Federation outbound manager exists, but server integration paths are still pending (client `push` and invitation routing still local-only).
+1. Outbound runtime forwarding is in place for `push` and invitations, but active peer-manager orchestration (`subscribe`/`pull` scheduling, reconnect behavior) is still pending.
 2. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
 3. Benchmark parity with Go has not been ported.
 4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Integrate outbound manager into runtime forwarding paths (home-server `push` forwarding and remote invitation delivery).
+1. Add federation peer orchestration flows (`subscribe` and `pull` manager usage with reconnect/refresh behavior).
 2. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
 3. Expand federation integration coverage for peer status/trusted metadata endpoints.

@@ -12,10 +12,10 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `9f200bd` (`Tighten federation HTTP parity semantics`).
+- Latest commit: `7c53de4` (`Add federation outbound peer manager client`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `323` tests passing.
-1. `less-sync-api`: `131`
+- Rust local test totals (all features): `327` tests passing.
+1. `less-sync-api`: `135`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
@@ -29,6 +29,7 @@
 3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
 4. `federation-keygen` now generates Ed25519 keys, emits trust entries, and can persist key material to Postgres.
 5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing and per-peer token tracking for `subscribe`/`push`/`fed.invitation` forwarding.
+6. Runtime forwarding is now wired for client `push` on remote-home spaces and `invitation.create` with `server` targeting trusted federation peers.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 

@@ -38,7 +38,9 @@ struct WebSocketRuntimeContext {
     realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
     presence_registry: Option<Arc<PresenceRegistry>>,
     connection_mode: ConnectionMode,
+    federation_forwarder: Option<Arc<dyn crate::FederationForwarder>>,
     federation_token_keys: Option<crate::FederationTokenKeys>,
+    federation_trusted_domains: Vec<String>,
     federation_quota_tracker: Arc<crate::FederationQuotaTracker>,
 }
 
@@ -86,7 +88,9 @@ pub(crate) async fn federation_websocket_upgrade(
         realtime_broker: state.realtime_broker(),
         presence_registry: state.presence_registry(),
         connection_mode: ConnectionMode::Federation { peer_domain },
+        federation_forwarder: state.federation_forwarder(),
         federation_token_keys: state.federation_token_keys(),
+        federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
     };
     ws.protocols([WS_SUBPROTOCOL])
@@ -113,7 +117,9 @@ async fn websocket_upgrade_with_mode(
         realtime_broker: state.realtime_broker(),
         presence_registry: state.presence_registry(),
         connection_mode: ConnectionMode::Client,
+        federation_forwarder: state.federation_forwarder(),
         federation_token_keys: state.federation_token_keys(),
+        federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
     };
 
@@ -317,6 +323,8 @@ async fn serve_websocket(
                             sync_storage: runtime_context.sync_storage.as_deref(),
                             realtime: realtime_session.as_ref(),
                             presence_registry: runtime_context.presence_registry.as_deref(),
+                            federation_forwarder: runtime_context.federation_forwarder.as_deref(),
+                            federation_trusted_domains: &runtime_context.federation_trusted_domains,
                         },
                         request_mode,
                         &mut auth_context,
