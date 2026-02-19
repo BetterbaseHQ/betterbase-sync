@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `7896c5c` (`Document current port inventory and next execution plan`)
-- Working tree status at update time: pending local changes
+- HEAD: `5639509` (`Refactor federation RPC handlers into focused modules`)
+- Working tree status at update time: clean
 
 ## Workspace Inventory
 1. Crates:
@@ -22,13 +22,13 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `99`
+1. `less-sync-api`: `115`
 2. `less-sync-app`: `16`
-3. `less-sync-auth`: `77`
+3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
-7. Total passing tests: `280`
+7. Total passing tests: `297`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -57,7 +57,13 @@ Go baseline (reference from original local suite):
 - `deks.get|rewrap`.
 - `file.deks.get|rewrap` and legacy aliases.
 - Presence/event notifications and broker fanout behavior.
-5. HTTP/API:
+5. Federation WS/runtime path (partial):
+- Dedicated `/api/v1/federation/ws` upgrade boundary with HTTP-signature trust validation.
+- Federation-only RPC surface split from client RPC methods.
+- Federation `subscribe` supports UCAN or FST validation and returns refreshed FST tokens.
+- Federation `push`/`pull` enforce UCAN authorization independent of client JWT DID context.
+- Federation route tests cover unsupported-method rejection and UCAN/FST subscribe-push-pull behavior.
+6. HTTP/API:
 - Bearer auth middleware and `/health`.
 - `/api/v1/ws`.
 - File endpoints `/api/v1/spaces/{space_id}/files/{id}` with:
@@ -68,19 +74,20 @@ Go baseline (reference from original local suite):
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
-6. File storage backends:
+7. File storage backends:
 - Disabled mode.
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
 - S3 coverage is currently config/builder-level (no full MinIO integration suite yet).
 
 ## Gaps and Open Work
-1. Federation server/runtime paths are not yet ported in `api`/`realtime` server flow.
-2. `bins/federation-keygen` is still scaffold-level output.
-3. Benchmark parity with Go has not been ported.
-4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+1. Federation quotas/limits and additional federation HTTP surfaces are not yet ported.
+2. Federation peer manager and forwarding/integration paths are not yet ported.
+3. `bins/federation-keygen` is still scaffold-level output.
+4. Benchmark parity with Go has not been ported.
+5. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Start federation transport/server module implementation behind explicit boundaries.
-2. Add minimal end-to-end coverage for federation auth handshake and one routed RPC path.
-3. Optionally add one minimal MinIO smoke test path (`PUT` -> `GET` -> `HEAD`) for backend confidence.
+1. Add federation quotas and enforcement semantics for subscribe/push limits.
+2. Port federation HTTP/JWKS status endpoints and key lifecycle wiring.
+3. Port peer-manager forwarding flows and additional federation local tests.

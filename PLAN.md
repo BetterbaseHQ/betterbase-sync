@@ -12,12 +12,12 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `7896c5c` (`Document current port inventory and next execution plan`).
+- Latest commit: `5639509` (`Refactor federation RPC handlers into focused modules`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `280` tests passing.
-1. `less-sync-api`: `99`
+- Rust local test totals (all features): `297` tests passing.
+1. `less-sync-api`: `115`
 2. `less-sync-app`: `16`
-3. `less-sync-auth`: `77`
+3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
@@ -29,9 +29,9 @@
 2. Phase 1 (core protocol/ids/validation): complete.
 3. Phase 2 (auth/crypto primitives): complete.
 4. Phase 3 (storage + Postgres): complete for current local parity scope.
-5. Phase 4 (WebSocket transport + broker): complete for non-federation paths.
-6. Phase 5 (core server features, non-federation): mostly complete.
-7. Phase 6 (federation): not started in Rust runtime path.
+5. Phase 4 (WebSocket transport + broker): complete.
+6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
+7. Phase 6 (federation): in progress (HTTP-signature WS auth route and dedicated federation `subscribe`/`push`/`pull` handlers with UCAN/FST checks are landed).
 8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
 
 ## Baseline Inventory (Current Go Project)
@@ -243,9 +243,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Wire UCAN revocation checks into HTTP file and WS shared-space auth paths (parity with Go `IsRevoked` flow).
-2. Begin Phase 6 federation transport/server implementation behind explicit modules.
-3. Decide whether to add a minimal MinIO smoke test (single put/get/head path) or keep S3 coverage at config/builder level for now.
+1. Implement federation quota and limit enforcement on the federation WS path.
+2. Port federation HTTP/JWKS server surfaces and wire key bootstrap lifecycle beyond scaffold-level binaries.
+3. Port peer-manager/forwarding paths and remaining federation integration scenarios from local Go tests.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.
