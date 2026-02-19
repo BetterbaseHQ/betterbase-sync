@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use less_sync_core::protocol::Change;
+use less_sync_core::protocol::Space;
 use less_sync_storage::{PullResult, PushResult, Storage, StorageError};
 use uuid::Uuid;
 
@@ -12,6 +13,8 @@ pub(crate) struct SubscribedSpaceState {
 
 #[async_trait]
 pub(crate) trait SyncStorage: Send + Sync {
+    async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError>;
+
     async fn get_or_create_space(
         &self,
         space_id: Uuid,
@@ -28,6 +31,10 @@ impl<T> SyncStorage for T
 where
     T: Storage + Send + Sync,
 {
+    async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
+        Storage::get_space(self, space_id).await
+    }
+
     async fn get_or_create_space(
         &self,
         space_id: Uuid,

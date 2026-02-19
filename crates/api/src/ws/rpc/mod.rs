@@ -42,7 +42,8 @@ pub(crate) async fn handle_request(
                 .await;
                 return;
             };
-            handlers::handle_push_request(outbound, sync_storage, realtime, id, payload).await;
+            handlers::handle_push_request(outbound, sync_storage, realtime, auth, id, payload)
+                .await;
         }
         "pull" => {
             let Some(sync_storage) = sync_storage else {

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::ApiState;
 
+mod authz;
 mod realtime;
 mod rpc;
 mod storage;

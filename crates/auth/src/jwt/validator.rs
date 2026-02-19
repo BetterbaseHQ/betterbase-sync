@@ -177,8 +177,12 @@ impl TokenValidator for MultiValidator {
             .await
             .map_err(AuthError::from)?;
         Ok(AuthContext {
+            issuer: token_info.issuer,
             user_id: token_info.user_id,
             client_id: token_info.client_id,
+            personal_space_id: token_info.personal_space_id,
+            did: token_info.did,
+            mailbox_id: token_info.mailbox_id,
             scope: token_info.scope,
         })
     }

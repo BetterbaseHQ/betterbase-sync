@@ -43,8 +43,12 @@ impl TokenValidator for StubValidator {
             return Err(AuthError::InvalidToken);
         }
         Ok(AuthContext {
+            issuer: "https://accounts.less.so".to_owned(),
             user_id: "user-1".to_owned(),
             client_id: "client-1".to_owned(),
+            personal_space_id: test_personal_space_id(),
+            did: "did:key:zDnaStub".to_owned(),
+            mailbox_id: "mailbox-1".to_owned(),
             scope: self.scope.to_owned(),
         })
     }
@@ -88,6 +92,31 @@ impl StubSyncStorage {
 
 #[async_trait]
 impl SyncStorage for StubSyncStorage {
+    async fn get_space(
+        &self,
+        space_id: Uuid,
+    ) -> Result<less_sync_core::protocol::Space, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+
+        if space_id != test_personal_space_uuid() {
+            return Err(less_sync_storage::StorageError::SpaceNotFound);
+        }
+
+        Ok(less_sync_core::protocol::Space {
+            id: space_id.to_string(),
+            client_id: "client-1".to_owned(),
+            root_public_key: None,
+            key_generation: 3,
+            min_key_generation: 0,
+            metadata_version: 0,
+            cursor: 42,
+            rewrap_epoch: Some(2),
+            home_server: None,
+        })
+    }
+
     async fn get_or_create_space(
         &self,
         space_id: Uuid,
@@ -297,7 +326,7 @@ async fn websocket_subscribe_returns_space_metadata() {
     .await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
-    let space_id = Uuid::new_v4().to_string();
+    let space_id = test_personal_space_id();
 
     send_auth(&mut socket).await;
     send_binary_frame(
@@ -364,6 +393,44 @@ async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
 }
 
 #[tokio::test]
+async fn websocket_subscribe_non_personal_space_without_ucan_reports_forbidden() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-forbidden-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": Uuid::new_v4().to_string(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-forbidden-1");
+    assert!(response.result.spaces.is_empty());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
@@ -401,7 +468,7 @@ async fn websocket_push_returns_cursor_on_success() {
     .await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
-    let space_id = Uuid::new_v4().to_string();
+    let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
@@ -477,6 +544,50 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
 }
 
 #[tokio::test]
+async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let record_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-forbidden-1",
+            "method": "push",
+            "params": {
+                "space": Uuid::new_v4().to_string(),
+                "changes": [{
+                    "id": record_id,
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "push-forbidden-1");
+    assert!(!response.result.ok);
+    assert_eq!(
+        response.result.error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_pull_streams_chunks_and_terminal_result() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
@@ -486,7 +597,7 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
     .await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
-    let space_id = Uuid::new_v4().to_string();
+    let space_id = test_personal_space_id();
 
     send_auth(&mut socket).await;
     send_binary_frame(
@@ -526,6 +637,56 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
 }
 
 #[tokio::test]
+async fn websocket_pull_skips_unauthorized_space_entries() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let forbidden_space = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "pull-multi-1",
+            "method": "pull",
+            "params": {
+                "spaces": [
+                    { "id": test_personal_space_id(), "since": 100, "ucan": "" },
+                    { "id": forbidden_space, "since": 100, "ucan": "" }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(begin.id, "pull-multi-1");
+    assert_eq!(begin.data.space, test_personal_space_id());
+
+    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(record.data.space, test_personal_space_id());
+
+    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(commit.data.space, test_personal_space_id());
+    assert_eq!(commit.data.count, 1);
+
+    let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
+    assert_eq!(result.id, "pull-multi-1");
+    assert_eq!(result.result.chunks, 3);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_push_broadcasts_sync_to_other_subscribers() {
     let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let server = spawn_server(base_state_with_ws_storage_and_broker(
@@ -542,7 +703,7 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
     let (mut watcher_socket, _) = connect_async(request)
         .await
         .expect("connect websocket watcher");
-    let space_id = Uuid::new_v4().to_string();
+    let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut sender_socket).await;
@@ -637,7 +798,7 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
     let (mut watcher_socket, _) = connect_async(request)
         .await
         .expect("connect websocket watcher");
-    let space_id = Uuid::new_v4().to_string();
+    let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut sender_socket).await;
@@ -926,6 +1087,14 @@ async fn spawn_server(state: ApiState) -> TestServer {
 fn base_state_with_ws(auth_timeout: Duration, scope: &'static str) -> ApiState {
     ApiState::new(Arc::new(StubHealth))
         .with_websocket_timeout(Arc::new(StubValidator { scope }), auth_timeout)
+}
+
+fn test_personal_space_id() -> String {
+    "cf78fa75-e714-5073-8972-126a66255b39".to_owned()
+}
+
+fn test_personal_space_uuid() -> Uuid {
+    Uuid::parse_str("cf78fa75-e714-5073-8972-126a66255b39").expect("valid personal test UUID")
 }
 
 fn base_state_with_ws_and_storage(

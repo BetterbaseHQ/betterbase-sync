@@ -35,8 +35,12 @@ pub use ucan::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthContext {
+    pub issuer: String,
     pub user_id: String,
     pub client_id: String,
+    pub personal_space_id: String,
+    pub did: String,
+    pub mailbox_id: String,
     pub scope: String,
 }
 

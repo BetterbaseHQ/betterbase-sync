@@ -1,3 +1,4 @@
+use super::super::authz::{self, SpaceAuthzError};
 use super::super::realtime::OutboundSender;
 use super::super::{realtime::RealtimeSession, SyncStorage};
 use super::decode_frame_params;
@@ -7,8 +8,9 @@ use less_sync_core::protocol::{
     Change, PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult,
     UnsubscribeParams, WsMembershipData, WsMembershipEntry, WsPullBeginData, WsPullCommitData,
     WsPullFileData, WsPullRecordData, WsSpaceError, WsSubscribedSpace, WsSyncRecord,
-    ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
-    ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
+    ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
+    ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND,
+    ERR_CODE_PAYLOAD_TOO_LARGE,
 };
 use less_sync_storage::{PullEntryKind, StorageError};
 use serde::Serialize;
@@ -71,10 +73,7 @@ pub(super) async fn handle_subscribe_request(
             }
         };
 
-        match sync_storage
-            .get_or_create_space(space_id, &auth.client_id)
-            .await
-        {
+        match authz::authorize_read_space(sync_storage, auth, space_id, &requested.ucan).await {
             Ok(space) => {
                 added_spaces.push(requested.id.clone());
                 spaces.push(WsSubscribedSpace {
@@ -86,7 +85,11 @@ pub(super) async fn handle_subscribe_request(
                     peers: Vec::new(),
                 })
             }
-            Err(_) => errors.push(WsSpaceError {
+            Err(SpaceAuthzError::Forbidden) => errors.push(WsSpaceError {
+                space: requested.id.clone(),
+                error: ERR_CODE_FORBIDDEN.to_owned(),
+            }),
+            Err(SpaceAuthzError::Internal) => errors.push(WsSpaceError {
                 space: requested.id.clone(),
                 error: ERR_CODE_INTERNAL.to_owned(),
             }),
@@ -104,6 +107,7 @@ pub(super) async fn handle_push_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
+    auth: &AuthContext,
     id: &str,
     payload: &[u8],
 ) {
@@ -137,6 +141,36 @@ pub(super) async fn handle_push_request(
             return;
         }
     };
+
+    match authz::authorize_write_space(sync_storage, auth, space_id, &params.ucan).await {
+        Ok(_) => {}
+        Err(SpaceAuthzError::Forbidden) => {
+            send_result_response(
+                outbound,
+                id,
+                &PushRpcResult {
+                    ok: false,
+                    cursor: 0,
+                    error: ERR_CODE_FORBIDDEN.to_owned(),
+                },
+            )
+            .await;
+            return;
+        }
+        Err(SpaceAuthzError::Internal) => {
+            send_result_response(
+                outbound,
+                id,
+                &PushRpcResult {
+                    ok: false,
+                    cursor: 0,
+                    error: ERR_CODE_INTERNAL.to_owned(),
+                },
+            )
+            .await;
+            return;
+        }
+    }
 
     let changes = params
         .changes
@@ -244,12 +278,15 @@ pub(super) async fn handle_pull_request(
             Err(_) => continue,
         };
 
-        let space_state = match sync_storage
-            .get_or_create_space(space_id, &auth.client_id)
-            .await
+        let space_state = match authz::authorize_read_space(
+            sync_storage,
+            auth,
+            space_id,
+            &requested.ucan,
+        )
+        .await
         {
             Ok(space_state) => space_state,
-            Err(StorageError::SpaceNotFound) => continue,
             Err(_) => continue,
         };
         let pull_result = match sync_storage.pull(space_id, requested.since).await {

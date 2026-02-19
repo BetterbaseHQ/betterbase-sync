@@ -100,7 +100,11 @@ pub(crate) async fn register_session(
     };
 
     let subscriber = Arc::new(ConnectionSubscriber {
-        mailbox_id: auth.client_id.clone(),
+        mailbox_id: if auth.mailbox_id.is_empty() {
+            auth.client_id.clone()
+        } else {
+            auth.mailbox_id.clone()
+        },
         exclude_id: connection_id.to_owned(),
         outbound,
         closed,

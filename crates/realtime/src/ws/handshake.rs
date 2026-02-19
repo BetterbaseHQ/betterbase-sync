@@ -121,8 +121,12 @@ mod tests {
     async fn authenticates_first_auth_notification() {
         let validator = StubValidator {
             context: Some(AuthContext {
+                issuer: "https://accounts.less.so".to_owned(),
                 user_id: "user-1".to_owned(),
                 client_id: "client-1".to_owned(),
+                personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                did: "did:key:zDnaStub".to_owned(),
+                mailbox_id: "mailbox-1".to_owned(),
                 scope: "sync".to_owned(),
             }),
         };
@@ -155,8 +159,12 @@ mod tests {
     async fn rejects_non_auth_first_frame() {
         let validator = StubValidator {
             context: Some(AuthContext {
+                issuer: "https://accounts.less.so".to_owned(),
                 user_id: "user-1".to_owned(),
                 client_id: "client-1".to_owned(),
+                personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                did: "did:key:zDnaStub".to_owned(),
+                mailbox_id: "mailbox-1".to_owned(),
                 scope: "sync".to_owned(),
             }),
         };
@@ -181,8 +189,12 @@ mod tests {
     async fn rejects_tokens_without_sync_scope() {
         let validator = StubValidator {
             context: Some(AuthContext {
+                issuer: "https://accounts.less.so".to_owned(),
                 user_id: "user-1".to_owned(),
                 client_id: "client-1".to_owned(),
+                personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                did: "did:key:zDnaStub".to_owned(),
+                mailbox_id: "mailbox-1".to_owned(),
                 scope: "files".to_owned(),
             }),
         };
