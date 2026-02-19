@@ -12,13 +12,13 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `5639509` (`Refactor federation RPC handlers into focused modules`).
+- Latest commit: `9f200bd` (`Tighten federation HTTP parity semantics`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `316` tests passing.
-1. `less-sync-api`: `126`
+- Rust local test totals (all features): `323` tests passing.
+1. `less-sync-api`: `131`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
-4. `less-sync-core`: `27`
+4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
 7. `less-sync-federation-keygen`: `3`
@@ -28,6 +28,7 @@
   - Includes JWKS cache headers and trusted-peer gating on status route when allowlists are configured.
 3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
 4. `federation-keygen` now generates Ed25519 keys, emits trust entries, and can persist key material to Postgres.
+5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing and per-peer token tracking for `subscribe`/`push`/`fed.invitation` forwarding.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -38,7 +39,7 @@
 4. Phase 3 (storage + Postgres): complete for current local parity scope.
 5. Phase 4 (WebSocket transport + broker): complete.
 6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
-7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, and federation metadata/status HTTP routes are landed).
+7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, federation metadata/status HTTP routes, and outbound peer-manager forwarding primitives are landed).
 8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
 
 ## Baseline Inventory (Current Go Project)

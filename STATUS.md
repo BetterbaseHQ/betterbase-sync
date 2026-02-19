@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `5639509` (`Refactor federation RPC handlers into focused modules`)
-- Working tree status at update time: in progress (federation quota + HTTP metadata/status slice)
+- HEAD: `9f200bd` (`Tighten federation HTTP parity semantics`)
+- Working tree status at update time: in progress (federation outbound peer-manager forwarding slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `126`
+1. `less-sync-api`: `131`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
-4. `less-sync-core`: `27`
+4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
 7. `less-sync-federation-keygen`: `3`
-8. Total passing tests: `316`
+8. Total passing tests: `323`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -95,14 +95,20 @@ Go baseline (reference from original local suite):
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
 - S3 coverage is currently config/builder-level (no full MinIO integration suite yet).
+11. Federation outbound peer manager:
+- Dedicated `federation_client` module in `less-sync-api` with focused module boundaries (`mod`, `peer`, `wire`, tests).
+- Signed federation websocket dialing using `less_sync_auth::sign_http_request`.
+- Per-peer connection reuse and per-space FST token tracking.
+- Forwarding primitives now implemented for `subscribe`, `push`, and `fed.invitation`.
+- Local tests now cover Go-equivalent federation client scenarios for request forwarding and FST token persistence/fallback behavior.
 
 ## Gaps and Open Work
-1. Federation peer manager and forwarding/integration paths are not yet ported.
+1. Federation outbound manager exists, but server integration paths are still pending (client `push` and invitation routing still local-only).
 2. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
 3. Benchmark parity with Go has not been ported.
 4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Port federation peer-manager forwarding flows and additional federation local tests.
+1. Integrate outbound manager into runtime forwarding paths (home-server `push` forwarding and remote invitation delivery).
 2. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
 3. Expand federation integration coverage for peer status/trusted metadata endpoints.

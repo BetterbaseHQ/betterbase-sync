@@ -1170,10 +1170,12 @@ dependencies = [
  "serde",
  "serde_cbor",
  "serde_json",
+ "thiserror",
  "time",
  "tokio",
  "tokio-tungstenite",
  "tower",
+ "url",
  "uuid",
 ]
 

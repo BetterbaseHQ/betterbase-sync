@@ -18,6 +18,7 @@ use less_sync_storage::{Storage, StorageError};
 use object_store::ObjectStore;
 
 mod federation;
+mod federation_client;
 mod federation_http;
 mod federation_quota;
 mod files;
@@ -29,6 +30,7 @@ pub use federation::{
     FederationAuthError, FederationAuthenticator, FederationJwk, FederationJwks,
     FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
+pub use federation_client::{FederationPeerError, FederationPeerManager};
 pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
 pub use files::ObjectStoreFileBlobStorage;
 
