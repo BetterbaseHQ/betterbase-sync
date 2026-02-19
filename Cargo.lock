@@ -1157,6 +1157,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "ed25519-dalek",
  "futures-util",
  "http",
  "jsonwebtoken",

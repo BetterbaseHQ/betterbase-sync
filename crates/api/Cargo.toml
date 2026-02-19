@@ -9,6 +9,7 @@ rust-version.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+ed25519-dalek.workspace = true
 futures-util = "0.3"
 less-sync-auth = { path = "../auth" }
 less-sync-core = { path = "../core" }

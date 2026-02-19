@@ -2,11 +2,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{OriginalUri, State};
 use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
+use less_sync_auth::AuthContext;
 use less_sync_realtime::ws::{
     authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
     FirstMessage, WS_SUBPROTOCOL,
@@ -34,11 +35,41 @@ pub(crate) async fn websocket_upgrade(
 
 pub(crate) async fn federation_websocket_upgrade(
     State(state): State<ApiState>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    // Federation transport has a dedicated route even while auth semantics are shared.
-    websocket_upgrade_with_mode(state, headers, ws).await
+    if !requested_subprotocol(&headers) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let Some(config) = state.websocket() else {
+        return StatusCode::NOT_IMPLEMENTED.into_response();
+    };
+    let Some(federation_authenticator) = state.federation_authenticator() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let auth_request = build_federation_auth_request(&uri, &headers);
+    let auth_context = match federation_authenticator.authenticate_request(&auth_request) {
+        Ok(context) => context,
+        Err(error) => return (error.status, error.message).into_response(),
+    };
+
+    let sync_storage = state.sync_storage();
+    let realtime_broker = state.realtime_broker();
+    let presence_registry = state.presence_registry();
+    ws.protocols([WS_SUBPROTOCOL])
+        .on_upgrade(move |socket| {
+            serve_websocket(
+                socket,
+                config,
+                sync_storage,
+                realtime_broker,
+                presence_registry,
+                Some(auth_context),
+            )
+        })
+        .into_response()
 }
 
 async fn websocket_upgrade_with_mode(
@@ -65,6 +96,7 @@ async fn websocket_upgrade_with_mode(
                 sync_storage,
                 realtime_broker,
                 presence_registry,
+                None,
             )
         })
         .into_response()
@@ -82,12 +114,31 @@ fn requested_subprotocol(headers: &HeaderMap) -> bool {
         })
 }
 
+fn build_federation_auth_request(uri: &Uri, headers: &HeaderMap) -> Request<()> {
+    let request_uri = if uri.scheme().is_some() && uri.authority().is_some() {
+        uri.to_string()
+    } else if let Some(host) = headers.get("host").and_then(|value| value.to_str().ok()) {
+        format!("ws://{host}{uri}")
+    } else {
+        uri.to_string()
+    };
+
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(request_uri)
+        .body(())
+        .expect("federation auth request should be constructible");
+    *request.headers_mut() = headers.clone();
+    request
+}
+
 async fn serve_websocket(
     socket: WebSocket,
     config: crate::WebSocketState,
     sync_storage: Option<Arc<dyn SyncStorage>>,
     realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
     presence_registry: Option<Arc<PresenceRegistry>>,
+    initial_auth_context: Option<AuthContext>,
 ) {
     let (mut socket_sender, mut socket_receiver) = socket.split();
     let (outbound, mut outbound_rx) = realtime::outbound_channel();
@@ -119,8 +170,12 @@ async fn serve_websocket(
         writer_closed.store(true, Ordering::Relaxed);
     });
 
-    let first_message =
-        match tokio::time::timeout(config.auth_timeout, socket_receiver.next()).await {
+    let mut auth_context = if let Some(context) = initial_auth_context {
+        context
+    } else {
+        let first_message = match tokio::time::timeout(config.auth_timeout, socket_receiver.next())
+            .await
+        {
             Ok(Some(Ok(message))) => to_first_message(message),
             Ok(Some(Err(_))) => {
                 realtime::send_close(
@@ -150,7 +205,6 @@ async fn serve_websocket(
             }
         };
 
-    let mut auth_context =
         match authenticate_first_message(config.validator.as_ref(), first_message).await {
             Ok(context) => context,
             Err(error) => {
@@ -159,7 +213,8 @@ async fn serve_websocket(
                 let _ = writer.await;
                 return;
             }
-        };
+        }
+    };
 
     let connection_id = Uuid::new_v4().to_string();
     let realtime_session = match realtime::register_session(

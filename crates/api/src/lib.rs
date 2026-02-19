@@ -17,11 +17,15 @@ use less_sync_realtime::broker::MultiBroker;
 use less_sync_storage::{Storage, StorageError};
 use object_store::ObjectStore;
 
+mod federation;
 mod files;
 mod ws;
 
 const DEFAULT_WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub use federation::{
+    FederationAuthError, FederationAuthenticator, HttpSignatureFederationAuthenticator,
+};
 pub use files::ObjectStoreFileBlobStorage;
 
 #[async_trait]
@@ -43,6 +47,7 @@ where
 pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
+    federation_authenticator: Option<Arc<dyn FederationAuthenticator>>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
     file_sync_storage: Option<Arc<dyn files::FileSyncStorage>>,
     file_blob_storage: Option<Arc<dyn files::FileBlobStorage>>,
@@ -62,6 +67,7 @@ impl ApiState {
         Self {
             health,
             websocket: None,
+            federation_authenticator: None,
             sync_storage: None,
             file_sync_storage: None,
             file_blob_storage: None,
@@ -90,6 +96,19 @@ impl ApiState {
 
     pub(crate) fn websocket(&self) -> Option<WebSocketState> {
         self.websocket.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_authenticator(
+        mut self,
+        authenticator: Arc<dyn FederationAuthenticator>,
+    ) -> Self {
+        self.federation_authenticator = Some(authenticator);
+        self
+    }
+
+    pub(crate) fn federation_authenticator(&self) -> Option<Arc<dyn FederationAuthenticator>> {
+        self.federation_authenticator.clone()
     }
 
     #[must_use]

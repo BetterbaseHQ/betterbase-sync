@@ -5,13 +5,14 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use jsonwebtoken::{Algorithm, Header};
 use less_sync_auth::{
-    compress_public_key, compute_ucan_cid, encode_did_key, AudienceClaim, AuthContext, AuthError,
-    Permission, TokenValidator, UcanClaims,
+    compress_public_key, compute_ucan_cid, encode_did_key, sign_http_request, AudienceClaim,
+    AuthContext, AuthError, Permission, TokenValidator, UcanClaims,
 };
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use p256::ecdsa::signature::Signer;
@@ -28,7 +29,8 @@ use uuid::Uuid;
 
 use super::storage::SubscribedSpaceState;
 use super::SyncStorage;
-use crate::{router, ApiState, HealthCheck};
+use crate::federation::federation_personal_space_id;
+use crate::{router, ApiState, HealthCheck, HttpSignatureFederationAuthenticator};
 
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -569,21 +571,44 @@ async fn websocket_federation_route_rejects_missing_subprotocol() {
 }
 
 #[tokio::test]
-async fn websocket_federation_route_supports_rpc_flow() {
-    let server = spawn_server(base_state_with_ws_and_storage(
-        Duration::from_secs(1),
-        "sync",
-        Arc::new(StubSyncStorage::healthy()),
-    ))
-    .await;
+async fn websocket_federation_route_without_authenticator_returns_not_found() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
     let request = ws_request_path(
         server.addr,
         "/api/v1/federation/ws",
         Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
     );
+
+    let error = connect_async(request)
+        .await
+        .expect_err("federation websocket without auth should be rejected");
+    assert_http_status(error, StatusCode::NOT_FOUND);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_supports_rpc_flow() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::healthy()),
+        )
+        .with_federation_authenticator(Arc::new(
+            HttpSignatureFederationAuthenticator::new(
+                vec!["peer.example.com".to_owned()],
+                HashMap::from([(key_id.to_owned(), signing_key.verifying_key())]),
+            ),
+        )),
+    )
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    send_auth(&mut socket).await;
+    let space_id = federation_personal_space_id("peer.example.com");
     send_binary_frame(
         &mut socket,
         serde_json::json!({
@@ -591,7 +616,7 @@ async fn websocket_federation_route_supports_rpc_flow() {
             "id": "fed-sub-1",
             "method": "subscribe",
             "params": {
-                "spaces": [{ "id": test_personal_space_id(), "since": 0 }]
+                "spaces": [{ "id": space_id.to_string(), "since": 0 }]
             }
         }),
     )
@@ -602,6 +627,33 @@ async fn websocket_federation_route_supports_rpc_flow() {
     assert_eq!(response.id, "fed-sub-1");
     assert_eq!(response.result.spaces.len(), 1);
     assert!(response.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_requires_signature() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(
+        base_state_with_ws(Duration::from_secs(1), "sync").with_federation_authenticator(Arc::new(
+            HttpSignatureFederationAuthenticator::new(
+                vec!["peer.example.com".to_owned()],
+                HashMap::from([(key_id.to_owned(), signing_key.verifying_key())]),
+            ),
+        )),
+    )
+    .await;
+    let request = ws_request_path(
+        server.addr,
+        "/api/v1/federation/ws",
+        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+
+    let error = connect_async(request)
+        .await
+        .expect_err("unsigned federation websocket should be rejected");
+    assert_http_status(error, StatusCode::UNAUTHORIZED);
 
     server.handle.abort();
 }
@@ -3780,6 +3832,20 @@ fn ws_request_path(addr: SocketAddr, path: &str, subprotocol: Option<&str>) -> h
             HeaderValue::from_str(subprotocol).expect("valid protocol header"),
         );
     }
+    request
+}
+
+fn signed_federation_ws_request(
+    addr: SocketAddr,
+    signing_key: &Ed25519SigningKey,
+    key_id: &str,
+) -> http::Request<()> {
+    let mut request = ws_request_path(
+        addr,
+        "/api/v1/federation/ws",
+        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    sign_http_request(&mut request, signing_key, key_id);
     request
 }
 
