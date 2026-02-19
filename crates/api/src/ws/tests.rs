@@ -877,6 +877,450 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
 }
 
 #[tokio::test]
+async fn websocket_subscribe_with_presence_returns_existing_peers() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-presence-sender-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id.clone(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut sender_socket).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id.clone(),
+                "data": [9, 9, 9]
+            }
+        }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    send_binary_frame(
+        &mut watcher_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-presence-watcher-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id, "since": 0, "presence": true }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut watcher_socket).await;
+    assert_eq!(response.id, "sub-presence-watcher-1");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert_eq!(response.result.spaces[0].peers.len(), 1);
+    assert!(!response.result.spaces[0].peers[0].peer.is_empty());
+    assert_eq!(response.result.spaces[0].peers[0].data, vec![9, 9, 9]);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_presence_set_broadcasts_to_other_subscribers() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-2", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-2", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id.clone(),
+                "data": [1, 2, 3, 4]
+            }
+        }),
+    )
+    .await;
+
+    let notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(notification.method, "presence");
+    assert_eq!(notification.params.space, space_id);
+    assert_eq!(notification.params.data, vec![1, 2, 3, 4]);
+    assert!(!notification.params.peer.is_empty());
+
+    let sender_frame = tokio::time::timeout(Duration::from_millis(250), sender_socket.next()).await;
+    assert!(
+        sender_frame.is_err(),
+        "sender should not receive presence notification"
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_presence_clear_broadcasts_leave_notification() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-3", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-3", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id.clone(),
+                "data": [8, 8]
+            }
+        }),
+    )
+    .await;
+
+    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(set_notification.method, "presence");
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.clear",
+            "params": { "space": space_id.clone() }
+        }),
+    )
+    .await;
+
+    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(leave_notification.method, "presence.leave");
+    assert_eq!(leave_notification.params.space, space_id);
+    assert_eq!(leave_notification.params.peer, set_notification.params.peer);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-35", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-35", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id.clone(),
+                "data": [2, 2]
+            }
+        }),
+    )
+    .await;
+
+    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(set_notification.method, "presence");
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "unsubscribe",
+            "params": { "spaces": [space_id.clone()] }
+        }),
+    )
+    .await;
+
+    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(leave_notification.method, "presence.leave");
+    assert_eq!(leave_notification.params.space, space_id);
+    assert_eq!(leave_notification.params.peer, set_notification.params.peer);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_event_send_broadcasts_to_other_subscribers() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-event-sender-1", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-event-watcher-1", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "event.send",
+            "params": {
+                "space": space_id.clone(),
+                "data": [4, 5, 6]
+            }
+        }),
+    )
+    .await;
+
+    let notification: RpcNotificationResponse<less_sync_core::protocol::WsEventData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(notification.method, "event");
+    assert_eq!(notification.params.space, space_id);
+    assert_eq!(notification.params.data, vec![4, 5, 6]);
+    assert!(!notification.params.peer.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-4", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-4", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id.clone(),
+                "data": [1]
+            }
+        }),
+    )
+    .await;
+
+    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(set_notification.method, "presence");
+
+    sender_socket
+        .close(None)
+        .await
+        .expect("close sender socket");
+
+    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(leave_notification.method, "presence.leave");
+    assert_eq!(leave_notification.params.space, space_id);
+    assert_eq!(leave_notification.params.peer, set_notification.params.peer);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_presence_set_oversized_payload_is_ignored() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-5", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-5", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "presence.set",
+            "params": {
+                "space": space_id,
+                "data": vec![7; super::presence::MAX_PRESENCE_DATA_BYTES + 1]
+            }
+        }),
+    )
+    .await;
+
+    let watcher_frame =
+        tokio::time::timeout(Duration::from_millis(300), watcher_socket.next()).await;
+    assert!(
+        watcher_frame.is_err(),
+        "watcher should not receive oversized presence notification"
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_event_send_oversized_payload_is_ignored() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = test_personal_space_id();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+    subscribe_socket_to_space(&mut sender_socket, "sub-event-sender-2", &space_id).await;
+    subscribe_socket_to_space(&mut watcher_socket, "sub-event-watcher-2", &space_id).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "event.send",
+            "params": {
+                "space": space_id,
+                "data": vec![7; super::presence::MAX_EVENT_DATA_BYTES + 1]
+            }
+        }),
+    )
+    .await;
+
+    let watcher_frame =
+        tokio::time::timeout(Duration::from_millis(300), watcher_socket.next()).await;
+    assert!(
+        watcher_frame.is_err(),
+        "watcher should not receive oversized event notification"
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_connection_limit_closes_after_auth() {
     let broker = Arc::new(MultiBroker::new(BrokerConfig {
         max_connections_per_mailbox: 1,
@@ -1163,6 +1607,27 @@ async fn send_binary_frame(socket: &mut TestSocket, frame: serde_json::Value) {
         .send(WsMessage::Binary(encoded.into()))
         .await
         .expect("send frame");
+}
+
+async fn subscribe_socket_to_space(socket: &mut TestSocket, request_id: &str, space_id: &str) {
+    send_binary_frame(
+        socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": request_id,
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id, "since": 0 }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(socket).await;
+    assert_eq!(response.id, request_id);
+    assert_eq!(response.result.spaces.len(), 1);
+    assert!(response.result.errors.is_empty());
 }
 
 async fn expect_close_code(socket: &mut TestSocket) -> u16 {

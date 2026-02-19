@@ -35,6 +35,7 @@ pub struct ApiState {
     websocket: Option<WebSocketState>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
     realtime_broker: Option<Arc<MultiBroker>>,
+    presence_registry: Option<Arc<ws::PresenceRegistry>>,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ impl ApiState {
             websocket: None,
             sync_storage: None,
             realtime_broker: None,
+            presence_registry: None,
         }
     }
 
@@ -97,11 +99,16 @@ impl ApiState {
     #[must_use]
     pub fn with_realtime_broker(mut self, broker: Arc<MultiBroker>) -> Self {
         self.realtime_broker = Some(broker);
+        self.presence_registry = Some(Arc::new(ws::PresenceRegistry::default()));
         self
     }
 
     pub(crate) fn realtime_broker(&self) -> Option<Arc<MultiBroker>> {
         self.realtime_broker.clone()
+    }
+
+    pub(crate) fn presence_registry(&self) -> Option<Arc<ws::PresenceRegistry>> {
+        self.presence_registry.clone()
     }
 }
 

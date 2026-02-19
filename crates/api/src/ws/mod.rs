@@ -16,10 +16,12 @@ use uuid::Uuid;
 use crate::ApiState;
 
 mod authz;
+mod presence;
 mod realtime;
 mod rpc;
 mod storage;
 
+pub(crate) use presence::PresenceRegistry;
 pub(crate) use storage::SyncStorage;
 
 pub(crate) async fn websocket_upgrade(
@@ -36,9 +38,18 @@ pub(crate) async fn websocket_upgrade(
     };
     let sync_storage = state.sync_storage();
     let realtime_broker = state.realtime_broker();
+    let presence_registry = state.presence_registry();
 
     ws.protocols([WS_SUBPROTOCOL])
-        .on_upgrade(move |socket| serve_websocket(socket, config, sync_storage, realtime_broker))
+        .on_upgrade(move |socket| {
+            serve_websocket(
+                socket,
+                config,
+                sync_storage,
+                realtime_broker,
+                presence_registry,
+            )
+        })
         .into_response()
 }
 
@@ -59,6 +70,7 @@ async fn serve_websocket(
     config: crate::WebSocketState,
     sync_storage: Option<Arc<dyn SyncStorage>>,
     realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
+    presence_registry: Option<Arc<PresenceRegistry>>,
 ) {
     let (mut socket_sender, mut socket_receiver) = socket.split();
     let (outbound, mut outbound_rx) = realtime::outbound_channel();
@@ -162,9 +174,12 @@ async fn serve_websocket(
                 Ok(ClientFrame::Request { id, method }) => {
                     rpc::handle_request(
                         &outbound,
-                        sync_storage.as_deref(),
-                        realtime_session.as_ref(),
-                        &auth_context,
+                        rpc::RequestContext {
+                            sync_storage: sync_storage.as_deref(),
+                            realtime: realtime_session.as_ref(),
+                            presence_registry: presence_registry.as_deref(),
+                            auth: &auth_context,
+                        },
                         &id,
                         &method,
                         &payload,
@@ -172,7 +187,13 @@ async fn serve_websocket(
                     .await;
                 }
                 Ok(ClientFrame::Notification { method }) => {
-                    rpc::handle_notification(realtime_session.as_ref(), &method, &payload).await;
+                    rpc::handle_notification(
+                        realtime_session.as_ref(),
+                        presence_registry.as_deref(),
+                        &method,
+                        &payload,
+                    )
+                    .await;
                 }
                 Ok(
                     ClientFrame::Keepalive
@@ -199,6 +220,14 @@ async fn serve_websocket(
     }
 
     if let Some(session) = realtime_session.as_ref() {
+        if let Some(presence_registry) = presence_registry.as_deref() {
+            let cleared_spaces = presence_registry.clear_peer(session.peer_id()).await;
+            for space_id in &cleared_spaces {
+                session
+                    .broadcast_presence_leave(space_id, session.peer_id())
+                    .await;
+            }
+        }
         session.unregister().await;
     }
     closed.store(true, Ordering::Relaxed);

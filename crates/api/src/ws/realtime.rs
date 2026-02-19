@@ -3,12 +3,15 @@ use std::sync::Arc;
 
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    WsSyncData, WsSyncRecord, CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
+    WsEventData, WsPresenceData, WsPresenceLeaveData, WsSyncData, WsSyncRecord,
+    CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
 };
 use less_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, SubscriberId};
 use less_sync_realtime::ws::CloseDirective;
 use serde::Serialize;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 
 const OUTBOUND_CHANNEL_SIZE: usize = 64;
 
@@ -26,15 +29,35 @@ pub(crate) struct RealtimeSession {
     broker: Arc<MultiBroker>,
     subscriber_id: SubscriberId,
     exclude_id: String,
+    subscribed_spaces: Arc<RwLock<HashSet<String>>>,
 }
 
 impl RealtimeSession {
     pub(crate) async fn add_spaces(&self, spaces: &[String]) {
+        if !spaces.is_empty() {
+            let mut subscribed = self.subscribed_spaces.write().await;
+            subscribed.extend(spaces.iter().cloned());
+        }
         let _ = self.broker.add_spaces(self.subscriber_id, spaces).await;
     }
 
     pub(crate) async fn remove_spaces(&self, spaces: &[String]) {
+        if !spaces.is_empty() {
+            let mut subscribed = self.subscribed_spaces.write().await;
+            for space_id in spaces {
+                subscribed.remove(space_id);
+            }
+        }
         let _ = self.broker.remove_spaces(self.subscriber_id, spaces).await;
+    }
+
+    pub(crate) async fn is_subscribed(&self, space_id: &str) -> bool {
+        let subscribed = self.subscribed_spaces.read().await;
+        subscribed.contains(space_id)
+    }
+
+    pub(crate) fn peer_id(&self) -> &str {
+        &self.exclude_id
     }
 
     pub(crate) async fn broadcast_sync(
@@ -47,10 +70,10 @@ impl RealtimeSession {
             return;
         }
 
-        let frame = RpcNotificationFrame {
-            frame_type: RPC_NOTIFICATION,
-            method: "sync",
-            params: WsSyncData {
+        self.broadcast_notification(
+            space_id,
+            "sync",
+            WsSyncData {
                 space: space_id.to_owned(),
                 prev: cursor.saturating_sub(1),
                 cursor,
@@ -58,6 +81,60 @@ impl RealtimeSession {
                 rewrap_epoch: None,
                 records: records.to_vec(),
             },
+        )
+        .await;
+    }
+
+    pub(crate) async fn broadcast_presence(&self, space_id: &str, peer: &str, data: Vec<u8>) {
+        self.broadcast_notification(
+            space_id,
+            "presence",
+            WsPresenceData {
+                space: space_id.to_owned(),
+                peer: peer.to_owned(),
+                data,
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn broadcast_presence_leave(&self, space_id: &str, peer: &str) {
+        self.broadcast_notification(
+            space_id,
+            "presence.leave",
+            WsPresenceLeaveData {
+                space: space_id.to_owned(),
+                peer: peer.to_owned(),
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn broadcast_event(&self, space_id: &str, peer: &str, data: Vec<u8>) {
+        self.broadcast_notification(
+            space_id,
+            "event",
+            WsEventData {
+                space: space_id.to_owned(),
+                peer: peer.to_owned(),
+                data,
+            },
+        )
+        .await;
+    }
+
+    pub(crate) async fn unregister(&self) {
+        let _ = self.broker.unregister_subscriber(self.subscriber_id).await;
+    }
+
+    async fn broadcast_notification<T>(&self, space_id: &str, method: &str, params: T)
+    where
+        T: Serialize,
+    {
+        let frame = RpcNotificationFrame {
+            frame_type: RPC_NOTIFICATION,
+            method,
+            params,
         };
         let encoded = match serde_cbor::to_vec(&frame) {
             Ok(encoded) => encoded,
@@ -67,10 +144,6 @@ impl RealtimeSession {
             .broker
             .broadcast_space(space_id, &self.exclude_id, &encoded)
             .await;
-    }
-
-    pub(crate) async fn unregister(&self) {
-        let _ = self.broker.unregister_subscriber(self.subscriber_id).await;
     }
 }
 
@@ -118,6 +191,7 @@ pub(crate) async fn register_session(
         broker,
         subscriber_id,
         exclude_id: connection_id.to_owned(),
+        subscribed_spaces: Arc::new(RwLock::new(HashSet::new())),
     }))
 }
 

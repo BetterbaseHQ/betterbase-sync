@@ -1,16 +1,17 @@
 use super::super::authz::{self, SpaceAuthzError};
+use super::super::presence::{MAX_EVENT_DATA_BYTES, MAX_PRESENCE_DATA_BYTES};
 use super::super::realtime::OutboundSender;
-use super::super::{realtime::RealtimeSession, SyncStorage};
+use super::super::{realtime::RealtimeSession, PresenceRegistry, SyncStorage};
 use super::decode_frame_params;
 use super::frames::{send_chunk_response, send_error_response, send_result_response};
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
     Change, PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult,
-    UnsubscribeParams, WsMembershipData, WsMembershipEntry, WsPullBeginData, WsPullCommitData,
-    WsPullFileData, WsPullRecordData, WsSpaceError, WsSubscribedSpace, WsSyncRecord,
-    ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
-    ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND,
-    ERR_CODE_PAYLOAD_TOO_LARGE,
+    UnsubscribeParams, WsEventSendParams, WsMembershipData, WsMembershipEntry,
+    WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData, WsPullCommitData, WsPullFileData,
+    WsPullRecordData, WsSpaceError, WsSubscribedSpace, WsSyncRecord, ERR_CODE_BAD_REQUEST,
+    ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
+    ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
 };
 use less_sync_storage::{PullEntryKind, StorageError};
 use serde::Serialize;
@@ -18,6 +19,7 @@ use uuid::Uuid;
 
 pub(super) async fn handle_unsubscribe_notification(
     realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
     payload: &[u8],
 ) {
     let Some(realtime) = realtime else {
@@ -34,12 +36,108 @@ pub(super) async fn handle_unsubscribe_notification(
     }
 
     realtime.remove_spaces(&params.spaces).await;
+    let Some(presence_registry) = presence_registry else {
+        return;
+    };
+
+    let peer = realtime.peer_id().to_owned();
+    for space_id in &params.spaces {
+        if presence_registry.clear(space_id, &peer).await {
+            realtime.broadcast_presence_leave(space_id, &peer).await;
+        }
+    }
+}
+
+pub(super) async fn handle_presence_set_notification(
+    realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
+    payload: &[u8],
+) {
+    let (Some(realtime), Some(presence_registry)) = (realtime, presence_registry) else {
+        return;
+    };
+
+    let params = match decode_frame_params::<WsPresenceSetParams>(payload) {
+        Ok(params) => params,
+        Err(_) => return,
+    };
+
+    if params.space.is_empty() || params.data.len() > MAX_PRESENCE_DATA_BYTES {
+        return;
+    }
+    if !realtime.is_subscribed(&params.space).await {
+        return;
+    }
+
+    let peer = realtime.peer_id().to_owned();
+    presence_registry
+        .set(&params.space, &peer, params.data.clone())
+        .await;
+    realtime
+        .broadcast_presence(&params.space, &peer, params.data)
+        .await;
+}
+
+pub(super) async fn handle_presence_clear_notification(
+    realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
+    payload: &[u8],
+) {
+    let (Some(realtime), Some(presence_registry)) = (realtime, presence_registry) else {
+        return;
+    };
+
+    let params = match decode_frame_params::<WsPresenceClearParams>(payload) {
+        Ok(params) => params,
+        Err(_) => return,
+    };
+
+    if params.space.is_empty() {
+        return;
+    }
+    if !realtime.is_subscribed(&params.space).await {
+        return;
+    }
+
+    let peer = realtime.peer_id().to_owned();
+    if presence_registry.clear(&params.space, &peer).await {
+        realtime
+            .broadcast_presence_leave(&params.space, &peer)
+            .await;
+    }
+}
+
+pub(super) async fn handle_event_send_notification(
+    realtime: Option<&RealtimeSession>,
+    payload: &[u8],
+) {
+    let Some(realtime) = realtime else {
+        return;
+    };
+
+    let params = match decode_frame_params::<WsEventSendParams>(payload) {
+        Ok(params) => params,
+        Err(_) => return,
+    };
+
+    if params.space.is_empty() || params.data.len() > MAX_EVENT_DATA_BYTES {
+        return;
+    }
+    if !realtime.is_subscribed(&params.space).await {
+        return;
+    }
+
+    let peer = realtime.peer_id().to_owned();
+    realtime
+        .broadcast_event(&params.space, &peer, params.data)
+        .await;
 }
 
 pub(super) async fn handle_subscribe_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -76,13 +174,25 @@ pub(super) async fn handle_subscribe_request(
         match authz::authorize_read_space(sync_storage, auth, space_id, &requested.ucan).await {
             Ok(space) => {
                 added_spaces.push(requested.id.clone());
+                let peers = if requested.presence {
+                    if let (Some(presence_registry), Some(realtime)) = (presence_registry, realtime)
+                    {
+                        presence_registry
+                            .peers(&requested.id, realtime.peer_id())
+                            .await
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
                 spaces.push(WsSubscribedSpace {
                     id: requested.id.clone(),
                     cursor: space.cursor,
                     key_generation: space.key_generation,
                     rewrap_epoch: space.rewrap_epoch,
                     token: String::new(),
-                    peers: Vec::new(),
+                    peers,
                 })
             }
             Err(SpaceAuthzError::Forbidden) => errors.push(WsSpaceError {

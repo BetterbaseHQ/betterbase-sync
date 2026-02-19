@@ -1,4 +1,5 @@
 use super::realtime::{OutboundSender, RealtimeSession};
+use super::PresenceRegistry;
 use super::SyncStorage;
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{ERR_CODE_INTERNAL, RPC_RESPONSE};
@@ -7,15 +8,27 @@ use serde::de::DeserializeOwned;
 mod frames;
 mod handlers;
 
+pub(crate) struct RequestContext<'a> {
+    pub sync_storage: Option<&'a dyn SyncStorage>,
+    pub realtime: Option<&'a RealtimeSession>,
+    pub presence_registry: Option<&'a PresenceRegistry>,
+    pub auth: &'a AuthContext,
+}
+
 pub(crate) async fn handle_request(
     outbound: &OutboundSender,
-    sync_storage: Option<&dyn SyncStorage>,
-    realtime: Option<&RealtimeSession>,
-    auth: &AuthContext,
+    context: RequestContext<'_>,
     id: &str,
     method: &str,
     payload: &[u8],
 ) {
+    let RequestContext {
+        sync_storage,
+        realtime,
+        presence_registry,
+        auth,
+    } = context;
+
     match method {
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {
@@ -28,8 +41,16 @@ pub(crate) async fn handle_request(
                 .await;
                 return;
             };
-            handlers::handle_subscribe_request(outbound, sync_storage, realtime, auth, id, payload)
-                .await;
+            handlers::handle_subscribe_request(
+                outbound,
+                sync_storage,
+                realtime,
+                presence_registry,
+                auth,
+                id,
+                payload,
+            )
+            .await;
         }
         "push" => {
             let Some(sync_storage) = sync_storage else {
@@ -66,14 +87,26 @@ pub(crate) async fn handle_request(
 
 pub(crate) async fn handle_notification(
     realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
     method: &str,
     payload: &[u8],
 ) {
-    if method != "unsubscribe" {
-        return;
+    match method {
+        "unsubscribe" => {
+            handlers::handle_unsubscribe_notification(realtime, presence_registry, payload).await
+        }
+        "presence.set" => {
+            handlers::handle_presence_set_notification(realtime, presence_registry, payload).await;
+        }
+        "presence.clear" => {
+            handlers::handle_presence_clear_notification(realtime, presence_registry, payload)
+                .await;
+        }
+        "event.send" => {
+            handlers::handle_event_send_notification(realtime, payload).await;
+        }
+        _ => {}
     }
-
-    handlers::handle_unsubscribe_notification(realtime, payload).await;
 }
 
 pub(super) fn decode_frame_params<T>(payload: &[u8]) -> Result<T, serde_cbor::Error>
