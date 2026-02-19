@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use less_sync_core::protocol::Change;
 use less_sync_core::protocol::Space;
-use less_sync_storage::{PullResult, PushResult, Storage, StorageError};
+use less_sync_storage::{
+    AppendLogResult, MembersLogEntry, PullResult, PushResult, Storage, StorageError,
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,19 @@ pub(crate) trait SyncStorage: Send + Sync {
     async fn push(&self, space_id: Uuid, changes: &[Change]) -> Result<PushResult, StorageError>;
 
     async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError>;
+
+    async fn append_member(
+        &self,
+        space_id: Uuid,
+        expected_version: i32,
+        entry: &MembersLogEntry,
+    ) -> Result<AppendLogResult, StorageError>;
+
+    async fn get_members(
+        &self,
+        space_id: Uuid,
+        since_seq: i32,
+    ) -> Result<Vec<MembersLogEntry>, StorageError>;
 }
 
 #[async_trait]
@@ -69,5 +84,22 @@ where
 
     async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError> {
         Storage::pull(self, space_id, since).await
+    }
+
+    async fn append_member(
+        &self,
+        space_id: Uuid,
+        expected_version: i32,
+        entry: &MembersLogEntry,
+    ) -> Result<AppendLogResult, StorageError> {
+        Storage::append_member(self, space_id, expected_version, entry).await
+    }
+
+    async fn get_members(
+        &self,
+        space_id: Uuid,
+        since_seq: i32,
+    ) -> Result<Vec<MembersLogEntry>, StorageError> {
+        Storage::get_members(self, space_id, since_seq).await
     }
 }

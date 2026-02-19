@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 
 mod frames;
 mod handlers;
+mod membership_append;
+mod membership_list;
 mod space_create;
 mod token_refresh;
 
@@ -47,6 +49,32 @@ pub(crate) async fn handle_request(
                 return;
             };
             space_create::handle_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "membership.append" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            membership_append::handle_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "membership.list" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            membership_list::handle_request(outbound, sync_storage, auth, id, payload).await;
         }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {

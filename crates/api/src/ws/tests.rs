@@ -64,6 +64,10 @@ struct StubSyncStorage {
     fail_for: HashSet<Uuid>,
     create_error: Option<less_sync_storage::StorageError>,
     create_key_generation: i32,
+    append_error: Option<less_sync_storage::StorageError>,
+    append_result: less_sync_storage::AppendLogResult,
+    members_result: Vec<less_sync_storage::MembersLogEntry>,
+    metadata_version: i32,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -74,6 +78,21 @@ impl StubSyncStorage {
             fail_for: HashSet::new(),
             create_error: None,
             create_key_generation: 1,
+            append_error: None,
+            append_result: less_sync_storage::AppendLogResult {
+                chain_seq: 11,
+                cursor: 0,
+                metadata_version: 9,
+            },
+            members_result: vec![less_sync_storage::MembersLogEntry {
+                space_id: test_personal_space_uuid(),
+                chain_seq: 11,
+                cursor: 101,
+                prev_hash: vec![1, 2, 3],
+                entry_hash: vec![4, 5, 6],
+                payload: vec![7, 8, 9],
+            }],
+            metadata_version: 9,
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -105,6 +124,13 @@ impl StubSyncStorage {
             ..Self::healthy()
         }
     }
+
+    fn with_append_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            append_error: Some(error),
+            ..Self::healthy()
+        }
+    }
 }
 
 #[async_trait]
@@ -127,7 +153,7 @@ impl SyncStorage for StubSyncStorage {
             root_public_key: None,
             key_generation: 3,
             min_key_generation: 0,
-            metadata_version: 0,
+            metadata_version: self.metadata_version,
             cursor: 42,
             rewrap_epoch: Some(2),
             home_server: None,
@@ -196,6 +222,32 @@ impl SyncStorage for StubSyncStorage {
             return Err(less_sync_storage::StorageError::Unavailable);
         }
         Ok(self.pull_result.clone())
+    }
+
+    async fn append_member(
+        &self,
+        space_id: Uuid,
+        _expected_version: i32,
+        _entry: &less_sync_storage::MembersLogEntry,
+    ) -> Result<less_sync_storage::AppendLogResult, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+        if let Some(error) = &self.append_error {
+            return Err(error.clone());
+        }
+        Ok(self.append_result.clone())
+    }
+
+    async fn get_members(
+        &self,
+        space_id: Uuid,
+        _since_seq: i32,
+    ) -> Result<Vec<less_sync_storage::MembersLogEntry>, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+        Ok(self.members_result.clone())
     }
 }
 
@@ -730,6 +782,159 @@ async fn websocket_space_create_without_sync_storage_returns_internal_error() {
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_INTERNAL
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-append-1",
+            "method": "membership.append",
+            "params": {
+                "space": test_personal_space_id(),
+                "expected_version": 1,
+                "prev_hash": [1, 2, 3],
+                "entry_hash": [4, 5, 6],
+                "payload": [7, 8, 9]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::MembershipAppendResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "membership-append-1");
+    assert_eq!(response.result.chain_seq, 11);
+    assert_eq!(response.result.metadata_version, 9);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_append_conflict_maps_to_conflict_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_append_error(
+            less_sync_storage::StorageError::VersionConflict,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-append-2",
+            "method": "membership.append",
+            "params": {
+                "space": test_personal_space_id(),
+                "expected_version": 1,
+                "entry_hash": [4, 5, 6],
+                "payload": [7, 8, 9]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "membership-append-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_list_returns_entries_and_metadata_version() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-list-1",
+            "method": "membership.list",
+            "params": {
+                "space": test_personal_space_id(),
+                "since_seq": 0
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::MembershipListResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "membership-list-1");
+    assert_eq!(response.result.metadata_version, 9);
+    assert_eq!(response.result.entries.len(), 1);
+    assert_eq!(response.result.entries[0].chain_seq, 11);
+    assert_eq!(response.result.entries[0].prev_hash, Some(vec![1, 2, 3]));
+    assert_eq!(response.result.entries[0].entry_hash, vec![4, 5, 6]);
+    assert_eq!(response.result.entries[0].payload, vec![7, 8, 9]);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_list_non_personal_space_without_ucan_returns_forbidden() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-list-2",
+            "method": "membership.list",
+            "params": {
+                "space": Uuid::new_v4().to_string(),
+                "since_seq": 0
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "membership-list-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
