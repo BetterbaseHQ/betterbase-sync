@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use less_sync_core::protocol::Change;
 use less_sync_core::protocol::Space;
 use less_sync_storage::{
-    AppendLogResult, MembersLogEntry, PullResult, PushResult, Storage, StorageError,
+    AppendLogResult, Invitation, MembersLogEntry, PullResult, PushResult, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -45,6 +45,21 @@ pub(crate) trait SyncStorage: Send + Sync {
         space_id: Uuid,
         since_seq: i32,
     ) -> Result<Vec<MembersLogEntry>, StorageError>;
+
+    async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError>;
+
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError>;
+
+    async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        limit: usize,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Invitation>, StorageError>;
+
+    async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError>;
+
+    async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError>;
 }
 
 #[async_trait]
@@ -101,5 +116,30 @@ where
         since_seq: i32,
     ) -> Result<Vec<MembersLogEntry>, StorageError> {
         Storage::get_members(self, space_id, since_seq).await
+    }
+
+    async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError> {
+        Storage::revoke_ucan(self, space_id, ucan_cid).await
+    }
+
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError> {
+        Storage::create_invitation(self, invitation).await
+    }
+
+    async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        limit: usize,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Invitation>, StorageError> {
+        Storage::list_invitations(self, mailbox_id, limit, after).await
+    }
+
+    async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError> {
+        Storage::get_invitation(self, id, mailbox_id).await
+    }
+
+    async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError> {
+        Storage::delete_invitation(self, id, mailbox_id).await
     }
 }

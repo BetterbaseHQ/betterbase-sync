@@ -7,8 +7,10 @@ use serde::de::DeserializeOwned;
 
 mod frames;
 mod handlers;
+mod invitation;
 mod membership_append;
 mod membership_list;
+mod membership_revoke;
 mod space_create;
 mod token_refresh;
 
@@ -75,6 +77,71 @@ pub(crate) async fn handle_request(
                 return;
             };
             membership_list::handle_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "membership.revoke" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            membership_revoke::handle_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "invitation.create" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            invitation::handle_create_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "invitation.list" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            invitation::handle_list_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "invitation.get" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            invitation::handle_get_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "invitation.delete" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            invitation::handle_delete_request(outbound, sync_storage, auth, id, payload).await;
         }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {

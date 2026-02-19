@@ -334,7 +334,7 @@ pub trait Storage: Send + Sync {
     async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError>;
     async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError>;
 
-    async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError>;
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError>;
     async fn list_invitations(
         &self,
         mailbox_id: &str,

@@ -651,19 +651,28 @@ impl PostgresStorage {
         Ok(())
     }
 
-    pub async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError> {
-        sqlx::query(
+    pub async fn create_invitation(
+        &self,
+        invitation: &Invitation,
+    ) -> Result<Invitation, StorageError> {
+        let row = sqlx::query_as::<_, InvitationRow>(
             r#"
             INSERT INTO invitations (mailbox_id, payload, expires_at)
             VALUES ($1, $2, NOW() + INTERVAL '7 days')
+            RETURNING
+                id,
+                mailbox_id,
+                payload,
+                (EXTRACT(EPOCH FROM created_at) * 1000000)::BIGINT AS created_at_us,
+                (EXTRACT(EPOCH FROM expires_at) * 1000000)::BIGINT AS expires_at_us
             "#,
         )
         .bind(&invitation.mailbox_id)
         .bind(&invitation.payload)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
-        Ok(())
+        Invitation::try_from(row)
     }
 
     pub async fn list_invitations(
@@ -1488,7 +1497,7 @@ impl Storage for PostgresStorage {
         PostgresStorage::revoke_ucan(self, space_id, ucan_cid).await
     }
 
-    async fn create_invitation(&self, invitation: &Invitation) -> Result<(), StorageError> {
+    async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError> {
         PostgresStorage::create_invitation(self, invitation).await
     }
 

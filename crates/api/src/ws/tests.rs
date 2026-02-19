@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
@@ -68,6 +68,10 @@ struct StubSyncStorage {
     append_result: less_sync_storage::AppendLogResult,
     members_result: Vec<less_sync_storage::MembersLogEntry>,
     metadata_version: i32,
+    revoke_error: Option<less_sync_storage::StorageError>,
+    invitation_create_error: Option<less_sync_storage::StorageError>,
+    invitation_delete_error: Option<less_sync_storage::StorageError>,
+    invitations: Vec<less_sync_storage::Invitation>,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -93,6 +97,15 @@ impl StubSyncStorage {
                 payload: vec![7, 8, 9],
             }],
             metadata_version: 9,
+            revoke_error: None,
+            invitation_create_error: None,
+            invitation_delete_error: None,
+            invitations: vec![test_invitation(
+                Uuid::parse_str("f6ad58bc-5316-4f03-bcf7-f6ee4e6d1ed4")
+                    .expect("valid invitation id"),
+                "mailbox-1",
+                "ciphertext-1",
+            )],
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -128,6 +141,27 @@ impl StubSyncStorage {
     fn with_append_error(error: less_sync_storage::StorageError) -> Self {
         Self {
             append_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_revoke_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            revoke_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_invitation_create_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            invitation_create_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_invitation_delete_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            invitation_delete_error: Some(error),
             ..Self::healthy()
         }
     }
@@ -248,6 +282,79 @@ impl SyncStorage for StubSyncStorage {
             return Err(less_sync_storage::StorageError::Unavailable);
         }
         Ok(self.members_result.clone())
+    }
+
+    async fn revoke_ucan(
+        &self,
+        space_id: Uuid,
+        _ucan_cid: &str,
+    ) -> Result<(), less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+        if let Some(error) = &self.revoke_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    async fn create_invitation(
+        &self,
+        invitation: &less_sync_storage::Invitation,
+    ) -> Result<less_sync_storage::Invitation, less_sync_storage::StorageError> {
+        if let Some(error) = &self.invitation_create_error {
+            return Err(error.clone());
+        }
+        Ok(test_invitation(
+            Uuid::parse_str("5c17784d-c039-4daf-82f0-852d3ccbdec2").expect("valid invitation id"),
+            &invitation.mailbox_id,
+            &String::from_utf8_lossy(&invitation.payload),
+        ))
+    }
+
+    async fn list_invitations(
+        &self,
+        mailbox_id: &str,
+        _limit: usize,
+        _after: Option<Uuid>,
+    ) -> Result<Vec<less_sync_storage::Invitation>, less_sync_storage::StorageError> {
+        Ok(self
+            .invitations
+            .iter()
+            .filter(|invitation| invitation.mailbox_id == mailbox_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_invitation(
+        &self,
+        id: Uuid,
+        mailbox_id: &str,
+    ) -> Result<less_sync_storage::Invitation, less_sync_storage::StorageError> {
+        self.invitations
+            .iter()
+            .find(|invitation| invitation.id == id && invitation.mailbox_id == mailbox_id)
+            .cloned()
+            .ok_or(less_sync_storage::StorageError::InvitationNotFound)
+    }
+
+    async fn delete_invitation(
+        &self,
+        id: Uuid,
+        mailbox_id: &str,
+    ) -> Result<(), less_sync_storage::StorageError> {
+        if let Some(error) = &self.invitation_delete_error {
+            return Err(error.clone());
+        }
+        let exists = self
+            .invitations
+            .iter()
+            .any(|invitation| invitation.id == id && invitation.mailbox_id == mailbox_id);
+        if exists {
+            Ok(())
+        } else {
+            Err(less_sync_storage::StorageError::InvitationNotFound)
+        }
     }
 }
 
@@ -935,6 +1042,355 @@ async fn websocket_membership_list_non_personal_space_without_ucan_returns_forbi
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_returns_empty_result() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-revoke-1",
+            "method": "membership.revoke",
+            "params": {
+                "space": test_personal_space_id(),
+                "ucan_cid": "bafytestcid"
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<serde_json::Value> = read_result_response(&mut socket).await;
+    assert_eq!(response.id, "membership-revoke-1");
+    assert_eq!(response.result, serde_json::json!({}));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_non_personal_without_ucan_returns_forbidden() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-revoke-2",
+            "method": "membership.revoke",
+            "params": {
+                "space": Uuid::new_v4().to_string(),
+                "ucan_cid": "bafytestcid"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "membership-revoke-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_storage_failure_returns_internal_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_revoke_error(
+            less_sync_storage::StorageError::Unavailable,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "membership-revoke-3",
+            "method": "membership.revoke",
+            "params": {
+                "space": test_personal_space_id(),
+                "ucan_cid": "bafytestcid"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "membership-revoke-3");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_INTERNAL
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_returns_created_invitation() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-1",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "mailbox-1",
+                "payload": "ciphertext-new"
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-1");
+    assert_eq!(response.result.payload, "ciphertext-new");
+    assert!(!response.result.id.is_empty());
+    assert!(response.result.created_at.contains('T'));
+    assert!(response.result.expires_at.contains('T'));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_storage_failure_returns_internal_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_invitation_create_error(
+            less_sync_storage::StorageError::Unavailable,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-1b",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "mailbox-1",
+                "payload": "ciphertext-new"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-1b");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_INTERNAL
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_forbidden_for_other_mailbox() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-2",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "mailbox-2",
+                "payload": "ciphertext-new"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_list_returns_mailbox_entries() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-list-1",
+            "method": "invitation.list",
+            "params": { "limit": 10 }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::InvitationListResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-list-1");
+    assert_eq!(response.result.invitations.len(), 1);
+    assert_eq!(response.result.invitations[0].payload, "ciphertext-1");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_get_returns_entry() {
+    let invitation_id = "f6ad58bc-5316-4f03-bcf7-f6ee4e6d1ed4";
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-get-1",
+            "method": "invitation.get",
+            "params": { "id": invitation_id }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-get-1");
+    assert_eq!(response.result.id, invitation_id);
+    assert_eq!(response.result.payload, "ciphertext-1");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_delete_returns_empty_result() {
+    let invitation_id = "f6ad58bc-5316-4f03-bcf7-f6ee4e6d1ed4";
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-delete-1",
+            "method": "invitation.delete",
+            "params": { "id": invitation_id }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<serde_json::Value> = read_result_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-delete-1");
+    assert_eq!(response.result, serde_json::json!({}));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_delete_not_found_returns_not_found() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_invitation_delete_error(
+            less_sync_storage::StorageError::InvitationNotFound,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-delete-2",
+            "method": "invitation.delete",
+            "params": { "id": Uuid::new_v4().to_string() }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-delete-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_NOT_FOUND
     );
 
     server.handle.abort();
@@ -2172,6 +2628,16 @@ fn test_auth_context(scope: &str) -> AuthContext {
         did: "did:key:zDnaStub".to_owned(),
         mailbox_id: "mailbox-1".to_owned(),
         scope: scope.to_owned(),
+    }
+}
+
+fn test_invitation(id: Uuid, mailbox_id: &str, payload: &str) -> less_sync_storage::Invitation {
+    less_sync_storage::Invitation {
+        id,
+        mailbox_id: mailbox_id.to_owned(),
+        payload: payload.as_bytes().to_vec(),
+        created_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        expires_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_604_800),
     }
 }
 

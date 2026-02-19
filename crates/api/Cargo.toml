@@ -15,6 +15,7 @@ less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
 serde.workspace = true
 serde_cbor.workspace = true
+time.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
