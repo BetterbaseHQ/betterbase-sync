@@ -5,6 +5,7 @@ use less_sync_auth::{AuthContext, TokenValidator};
 use less_sync_core::protocol::{ERR_CODE_INTERNAL, RPC_RESPONSE};
 use serde::de::DeserializeOwned;
 
+mod epoch;
 mod frames;
 mod handlers;
 mod invitation;
@@ -142,6 +143,32 @@ pub(crate) async fn handle_request(
                 return;
             };
             invitation::handle_delete_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "epoch.begin" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            epoch::handle_begin_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "epoch.complete" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            epoch::handle_complete_request(outbound, sync_storage, auth, id, payload).await;
         }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {

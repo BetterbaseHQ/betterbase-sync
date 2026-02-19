@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use less_sync_core::protocol::Change;
 use less_sync_core::protocol::Space;
 use less_sync_storage::{
-    AppendLogResult, Invitation, MembersLogEntry, PullResult, PushResult, Storage, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, Invitation, MembersLogEntry,
+    PullResult, PushResult, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -60,6 +61,15 @@ pub(crate) trait SyncStorage: Send + Sync {
     async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError>;
 
     async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError>;
+
+    async fn advance_epoch(
+        &self,
+        space_id: Uuid,
+        requested_epoch: i32,
+        opts: Option<&AdvanceEpochOptions>,
+    ) -> Result<AdvanceEpochResult, StorageError>;
+
+    async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
 }
 
 #[async_trait]
@@ -141,5 +151,18 @@ where
 
     async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError> {
         Storage::delete_invitation(self, id, mailbox_id).await
+    }
+
+    async fn advance_epoch(
+        &self,
+        space_id: Uuid,
+        requested_epoch: i32,
+        opts: Option<&AdvanceEpochOptions>,
+    ) -> Result<AdvanceEpochResult, StorageError> {
+        Storage::advance_epoch(self, space_id, requested_epoch, opts).await
+    }
+
+    async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
+        Storage::complete_rewrap(self, space_id, epoch).await
     }
 }

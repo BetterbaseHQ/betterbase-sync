@@ -72,6 +72,9 @@ struct StubSyncStorage {
     invitation_create_error: Option<less_sync_storage::StorageError>,
     invitation_delete_error: Option<less_sync_storage::StorageError>,
     invitations: Vec<less_sync_storage::Invitation>,
+    epoch_begin_error: Option<less_sync_storage::StorageError>,
+    epoch_begin_result: less_sync_storage::AdvanceEpochResult,
+    epoch_complete_error: Option<less_sync_storage::StorageError>,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -106,6 +109,9 @@ impl StubSyncStorage {
                 "mailbox-1",
                 "ciphertext-1",
             )],
+            epoch_begin_error: None,
+            epoch_begin_result: less_sync_storage::AdvanceEpochResult { epoch: 2 },
+            epoch_complete_error: None,
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -162,6 +168,20 @@ impl StubSyncStorage {
     fn with_invitation_delete_error(error: less_sync_storage::StorageError) -> Self {
         Self {
             invitation_delete_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_epoch_begin_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            epoch_begin_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_epoch_complete_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            epoch_complete_error: Some(error),
             ..Self::healthy()
         }
     }
@@ -355,6 +375,29 @@ impl SyncStorage for StubSyncStorage {
         } else {
             Err(less_sync_storage::StorageError::InvitationNotFound)
         }
+    }
+
+    async fn advance_epoch(
+        &self,
+        _space_id: Uuid,
+        _requested_epoch: i32,
+        _opts: Option<&less_sync_storage::AdvanceEpochOptions>,
+    ) -> Result<less_sync_storage::AdvanceEpochResult, less_sync_storage::StorageError> {
+        if let Some(error) = &self.epoch_begin_error {
+            return Err(error.clone());
+        }
+        Ok(self.epoch_begin_result.clone())
+    }
+
+    async fn complete_rewrap(
+        &self,
+        _space_id: Uuid,
+        _epoch: i32,
+    ) -> Result<(), less_sync_storage::StorageError> {
+        if let Some(error) = &self.epoch_complete_error {
+            return Err(error.clone());
+        }
+        Ok(())
     }
 }
 
@@ -1391,6 +1434,155 @@ async fn websocket_invitation_delete_not_found_returns_not_found() {
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_NOT_FOUND
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_begin_returns_epoch_result() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-begin-1",
+            "method": "epoch.begin",
+            "params": {
+                "space": test_personal_space_id(),
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::EpochBeginResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-begin-1");
+    assert_eq!(response.result.epoch, 2);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_begin_conflict_returns_conflict_result_payload() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_epoch_begin_error(
+            less_sync_storage::StorageError::EpochConflict(less_sync_storage::EpochConflict {
+                current_epoch: 2,
+                rewrap_epoch: Some(2),
+            }),
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-begin-2",
+            "method": "epoch.begin",
+            "params": {
+                "space": test_personal_space_id(),
+                "epoch": 3
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::EpochConflictResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-begin-2");
+    assert_eq!(
+        response.result.error,
+        less_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+    assert_eq!(response.result.current_epoch, 2);
+    assert_eq!(response.result.rewrap_epoch, Some(2));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_complete_returns_empty_result() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-complete-1",
+            "method": "epoch.complete",
+            "params": {
+                "space": test_personal_space_id(),
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<serde_json::Value> = read_result_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-complete-1");
+    assert_eq!(response.result, serde_json::json!({}));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_complete_mismatch_returns_conflict_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_epoch_complete_error(
+            less_sync_storage::StorageError::EpochMismatch,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-complete-2",
+            "method": "epoch.complete",
+            "params": {
+                "space": test_personal_space_id(),
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-complete-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
