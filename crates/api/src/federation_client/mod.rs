@@ -54,12 +54,25 @@ pub struct FederationPullChunk {
 
 #[async_trait]
 pub trait FederationForwarder: Send + Sync {
+    async fn subscribe(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        spaces: &[WsSubscribeSpace],
+    ) -> Result<(), FederationPeerError>;
+
     async fn forward_push(
         &self,
         peer_domain: &str,
         peer_ws_url: &str,
         params: &PushParams,
     ) -> Result<PushRpcResult, FederationPeerError>;
+
+    async fn restore_subscriptions(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+    ) -> Result<(), FederationPeerError>;
 
     async fn forward_invitation(
         &self,
@@ -282,6 +295,15 @@ impl FederationPeerManager {
 
 #[async_trait]
 impl FederationForwarder for FederationPeerManager {
+    async fn subscribe(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        spaces: &[WsSubscribeSpace],
+    ) -> Result<(), FederationPeerError> {
+        FederationPeerManager::subscribe(self, peer_domain, peer_ws_url, spaces).await
+    }
+
     async fn forward_push(
         &self,
         peer_domain: &str,
@@ -289,6 +311,14 @@ impl FederationForwarder for FederationPeerManager {
         params: &PushParams,
     ) -> Result<PushRpcResult, FederationPeerError> {
         FederationPeerManager::forward_push(self, peer_domain, peer_ws_url, params).await
+    }
+
+    async fn restore_subscriptions(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+    ) -> Result<(), FederationPeerError> {
+        FederationPeerManager::restore_subscriptions(self, peer_domain, peer_ws_url).await
     }
 
     async fn forward_invitation(

@@ -134,15 +134,26 @@ pub(super) async fn handle_event_send_notification(
         .await;
 }
 
+pub(super) struct SubscribeContext<'a> {
+    pub(super) realtime: Option<&'a RealtimeSession>,
+    pub(super) presence_registry: Option<&'a PresenceRegistry>,
+    pub(super) federation_forwarder: Option<&'a dyn crate::FederationForwarder>,
+}
+
 pub(super) async fn handle_subscribe_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
-    realtime: Option<&RealtimeSession>,
-    presence_registry: Option<&PresenceRegistry>,
+    context: SubscribeContext<'_>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
 ) {
+    let SubscribeContext {
+        realtime,
+        presence_registry,
+        federation_forwarder,
+    } = context;
+
     let params = match decode_frame_params::<SubscribeParams>(payload) {
         Ok(params) => params,
         Err(_) => {
@@ -173,7 +184,29 @@ pub(super) async fn handle_subscribe_request(
         };
 
         match authz::authorize_read_space(sync_storage, auth, space_id, &requested.ucan).await {
-            Ok(space) => {
+            Ok(space_state) => {
+                let home_server = sync_storage
+                    .get_space(space_id)
+                    .await
+                    .ok()
+                    .and_then(|space| space.home_server);
+                if let (Some(federation_forwarder), Some(home_server)) =
+                    (federation_forwarder, home_server)
+                {
+                    let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+                    let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
+                    if federation_forwarder
+                        .subscribe(&peer_domain, &peer_ws_url, std::slice::from_ref(requested))
+                        .await
+                        .is_err()
+                    {
+                        errors.push(WsSpaceError {
+                            space: requested.id.clone(),
+                            error: ERR_CODE_INTERNAL.to_owned(),
+                        });
+                        continue;
+                    }
+                }
                 added_spaces.push(requested.id.clone());
                 let peers = if requested.presence {
                     if let (Some(presence_registry), Some(realtime)) = (presence_registry, realtime)
@@ -189,9 +222,9 @@ pub(super) async fn handle_subscribe_request(
                 };
                 spaces.push(WsSubscribedSpace {
                     id: requested.id.clone(),
-                    cursor: space.cursor,
-                    key_generation: space.key_generation,
-                    rewrap_epoch: space.rewrap_epoch,
+                    cursor: space_state.cursor,
+                    key_generation: space_state.key_generation,
+                    rewrap_epoch: space_state.rewrap_epoch,
                     token: String::new(),
                     peers,
                 })
@@ -293,14 +326,25 @@ pub(super) async fn handle_push_request(
         if let Some(home_server) = home_server {
             let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
             let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
-            let response = federation_forwarder
+            let response = match federation_forwarder
                 .forward_push(&peer_domain, &peer_ws_url, &params)
                 .await
-                .unwrap_or_else(|_| PushRpcResult {
-                    ok: false,
-                    cursor: 0,
-                    error: ERR_CODE_INTERNAL.to_owned(),
-                });
+            {
+                Ok(response) => response,
+                Err(_) => {
+                    let _ = federation_forwarder
+                        .restore_subscriptions(&peer_domain, &peer_ws_url)
+                        .await;
+                    federation_forwarder
+                        .forward_push(&peer_domain, &peer_ws_url, &params)
+                        .await
+                        .unwrap_or_else(|_| PushRpcResult {
+                            ok: false,
+                            cursor: 0,
+                            error: ERR_CODE_INTERNAL.to_owned(),
+                        })
+                }
+            };
             send_result_response(outbound, id, &response).await;
             return;
         }

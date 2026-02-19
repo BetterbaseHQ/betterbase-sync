@@ -12,10 +12,10 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `217244a` (`Add federation peer orchestration and chunk pull handling`).
+- Latest commit: `51ee6e8` (`Add rotation-safe federation signing key lifecycle`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `332` tests passing.
-1. `less-sync-api`: `138`
+- Rust local test totals (all features): `334` tests passing.
+1. `less-sync-api`: `140`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
@@ -32,6 +32,7 @@
 6. Runtime forwarding is now wired for client `push` on remote-home spaces and `invitation.create` with `server` targeting trusted federation peers.
 7. Federation client tests now cover pull chunk collection, reconnect retry behavior, and restore-subscriptions token replay in addition to existing forwarding and token persistence coverage.
 8. Federation signing keys now support explicit lifecycle state (active/primary), key promotion, and deactivation, with runtime loading the active primary key and keygen supporting `--no-promote` for staged rollover.
+9. Client websocket flows now federate remote-home `subscribe` calls, and remote-home `push` now attempts subscription restoration plus a retry after transient forwarding failure.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -255,8 +256,8 @@ Exit criteria:
 
 ## Immediate Execution Plan
 1. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
-2. Expand federation runtime orchestration integration tests around reconnect and subscription restoration in websocket handler flows.
-3. Expand federation integration coverage for peer status/trusted metadata endpoints.
+2. Expand federation integration coverage for peer status/trusted metadata endpoints.
+3. Add tighter runtime tests for remote `pull` federation orchestration and chunk forwarding behavior.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.

@@ -302,8 +302,11 @@ async fn handle_client_request(
             handlers::handle_subscribe_request(
                 outbound,
                 sync_storage,
-                realtime,
-                presence_registry,
+                handlers::SubscribeContext {
+                    realtime,
+                    presence_registry,
+                    federation_forwarder,
+                },
                 auth,
                 id,
                 payload,

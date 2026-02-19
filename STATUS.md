@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `217244a` (`Add federation peer orchestration and chunk pull handling`)
-- Working tree status at update time: in progress (federation key lifecycle hardening slice)
+- HEAD: `51ee6e8` (`Add rotation-safe federation signing key lifecycle`)
+- Working tree status at update time: in progress (websocket federation restore integration slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `138`
+1. `less-sync-api`: `140`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `45`
 7. `less-sync-federation-keygen`: `4`
-8. Total passing tests: `332`
+8. Total passing tests: `334`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -115,13 +115,17 @@ Go baseline (reference from original local suite):
 - `invitation.create` now supports remote delivery via `params.server` for trusted peers, including explicit bad-request and internal-error mappings.
 - API state now carries a pluggable federation forwarder, and app startup wires one from stored federation signing keys when available.
 - New websocket tests cover forwarded push, trusted/untrusted invitation forwarding, and forwarding failure behavior.
+14. Websocket remote-home federation orchestration:
+- Client websocket `subscribe` now federates remote-home subscriptions through the forwarder to establish remote peer-manager token state.
+- Client websocket remote-home `push` now attempts `restore_subscriptions` and retries once after transient forwarding failure.
+- Websocket tests now cover remote-home subscribe forwarding and restore-plus-retry push behavior.
 
 ## Gaps and Open Work
-1. Websocket-level runtime coverage for automatic remote subscription restoration after transient federation disconnects is still pending.
+1. Runtime coverage for remote-home `pull` federation orchestration and chunk forwarding remains limited.
 2. Benchmark parity with Go has not been ported.
 3. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Add websocket-level integration tests for auto-restore of remote subscriptions after transient federation disconnects.
+1. Add app-level integration coverage for storage-backed federation key publication and runtime federation config behavior.
 2. Expand federation integration coverage for peer status/trusted metadata endpoints.
-3. Add app-level integration coverage for storage-backed federation key publication and runtime federation config behavior.
+3. Add runtime coverage for remote-home `pull` federation orchestration and chunk forwarding.
