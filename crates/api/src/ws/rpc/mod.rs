@@ -5,6 +5,7 @@ use less_sync_auth::{AuthContext, TokenValidator};
 use less_sync_core::protocol::{ERR_CODE_INTERNAL, RPC_RESPONSE};
 use serde::de::DeserializeOwned;
 
+mod deks;
 mod epoch;
 mod frames;
 mod handlers;
@@ -169,6 +170,58 @@ pub(crate) async fn handle_request(
                 return;
             };
             epoch::handle_complete_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "deks.get" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            deks::handle_get_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "deks.rewrap" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            deks::handle_rewrap_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "file.deks.get" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            deks::handle_file_get_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "file.deks.rewrap" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            deks::handle_file_rewrap_request(outbound, sync_storage, auth, id, payload).await;
         }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {

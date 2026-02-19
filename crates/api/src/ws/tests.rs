@@ -75,6 +75,10 @@ struct StubSyncStorage {
     epoch_begin_error: Option<less_sync_storage::StorageError>,
     epoch_begin_result: less_sync_storage::AdvanceEpochResult,
     epoch_complete_error: Option<less_sync_storage::StorageError>,
+    deks_result: Vec<less_sync_storage::DekRecord>,
+    file_deks_result: Vec<less_sync_storage::FileDekRecord>,
+    deks_rewrap_error: Option<less_sync_storage::StorageError>,
+    file_deks_rewrap_error: Option<less_sync_storage::StorageError>,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -112,6 +116,18 @@ impl StubSyncStorage {
             epoch_begin_error: None,
             epoch_begin_result: less_sync_storage::AdvanceEpochResult { epoch: 2 },
             epoch_complete_error: None,
+            deks_result: vec![less_sync_storage::DekRecord {
+                id: Uuid::new_v4().to_string(),
+                wrapped_dek: vec![0xAA; 44],
+                cursor: 6,
+            }],
+            file_deks_result: vec![less_sync_storage::FileDekRecord {
+                id: Uuid::new_v4(),
+                wrapped_dek: vec![0xBB; 44],
+                cursor: 8,
+            }],
+            deks_rewrap_error: None,
+            file_deks_rewrap_error: None,
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -182,6 +198,13 @@ impl StubSyncStorage {
     fn with_epoch_complete_error(error: less_sync_storage::StorageError) -> Self {
         Self {
             epoch_complete_error: Some(error),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_deks_rewrap_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            deks_rewrap_error: Some(error),
             ..Self::healthy()
         }
     }
@@ -395,6 +418,44 @@ impl SyncStorage for StubSyncStorage {
         _epoch: i32,
     ) -> Result<(), less_sync_storage::StorageError> {
         if let Some(error) = &self.epoch_complete_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    async fn get_deks(
+        &self,
+        _space_id: Uuid,
+        _since: i64,
+    ) -> Result<Vec<less_sync_storage::DekRecord>, less_sync_storage::StorageError> {
+        Ok(self.deks_result.clone())
+    }
+
+    async fn rewrap_deks(
+        &self,
+        _space_id: Uuid,
+        _deks: &[less_sync_storage::DekRecord],
+    ) -> Result<(), less_sync_storage::StorageError> {
+        if let Some(error) = &self.deks_rewrap_error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    async fn get_file_deks(
+        &self,
+        _space_id: Uuid,
+        _since: i64,
+    ) -> Result<Vec<less_sync_storage::FileDekRecord>, less_sync_storage::StorageError> {
+        Ok(self.file_deks_result.clone())
+    }
+
+    async fn rewrap_file_deks(
+        &self,
+        _space_id: Uuid,
+        _deks: &[less_sync_storage::FileDekRecord],
+    ) -> Result<(), less_sync_storage::StorageError> {
+        if let Some(error) = &self.file_deks_rewrap_error {
             return Err(error.clone());
         }
         Ok(())
@@ -1583,6 +1644,151 @@ async fn websocket_epoch_complete_mismatch_returns_conflict_error() {
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_get_returns_records() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-get-1",
+            "method": "deks.get",
+            "params": {
+                "space": test_personal_space_id(),
+                "since": 0
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::DeksGetResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "deks-get-1");
+    assert_eq!(response.result.deks.len(), 1);
+    assert_eq!(response.result.deks[0].seq, 6);
+    assert_eq!(response.result.deks[0].dek.len(), 44);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_rewrap_returns_ok_false_on_storage_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_deks_rewrap_error(
+            less_sync_storage::StorageError::DekEpochMismatch,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-rewrap-1",
+            "method": "deks.rewrap",
+            "params": {
+                "space": test_personal_space_id(),
+                "deks": [{ "id": Uuid::new_v4().to_string(), "dek": vec![9; 44] }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::DeksRewrapResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "deks-rewrap-1");
+    assert!(!response.result.ok);
+    assert_eq!(response.result.count, 0);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_file_deks_get_returns_records() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "file-deks-get-1",
+            "method": "file.deks.get",
+            "params": {
+                "space": test_personal_space_id(),
+                "since": 0
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::FileDeksGetResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "file-deks-get-1");
+    assert_eq!(response.result.deks.len(), 1);
+    assert_eq!(response.result.deks[0].cursor, 8);
+    assert_eq!(response.result.deks[0].dek.len(), 44);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "file-deks-rewrap-1",
+            "method": "file.deks.rewrap",
+            "params": {
+                "space": test_personal_space_id(),
+                "deks": [{ "id": "not-a-uuid", "dek": vec![9; 44] }]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "file-deks-rewrap-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();

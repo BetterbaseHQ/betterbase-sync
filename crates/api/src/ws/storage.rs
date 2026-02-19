@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use less_sync_core::protocol::Change;
 use less_sync_core::protocol::Space;
 use less_sync_storage::{
-    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, Invitation, MembersLogEntry,
-    PullResult, PushResult, Storage, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, FileDekRecord, Invitation,
+    MembersLogEntry, PullResult, PushResult, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -70,6 +70,22 @@ pub(crate) trait SyncStorage: Send + Sync {
     ) -> Result<AdvanceEpochResult, StorageError>;
 
     async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
+
+    async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError>;
+
+    async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError>;
+
+    async fn get_file_deks(
+        &self,
+        space_id: Uuid,
+        since: i64,
+    ) -> Result<Vec<FileDekRecord>, StorageError>;
+
+    async fn rewrap_file_deks(
+        &self,
+        space_id: Uuid,
+        deks: &[FileDekRecord],
+    ) -> Result<(), StorageError>;
 }
 
 #[async_trait]
@@ -164,5 +180,29 @@ where
 
     async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
         Storage::complete_rewrap(self, space_id, epoch).await
+    }
+
+    async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError> {
+        Storage::get_deks(self, space_id, since).await
+    }
+
+    async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError> {
+        Storage::rewrap_deks(self, space_id, deks).await
+    }
+
+    async fn get_file_deks(
+        &self,
+        space_id: Uuid,
+        since: i64,
+    ) -> Result<Vec<FileDekRecord>, StorageError> {
+        Storage::get_file_deks(self, space_id, since).await
+    }
+
+    async fn rewrap_file_deks(
+        &self,
+        space_id: Uuid,
+        deks: &[FileDekRecord],
+    ) -> Result<(), StorageError> {
+        Storage::rewrap_file_deks(self, space_id, deks).await
     }
 }
