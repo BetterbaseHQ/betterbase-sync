@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use less_sync_api::ApiState;
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
+use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::PostgresStorage;
 use url::Url;
 
@@ -51,6 +52,7 @@ impl AppConfig {
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let storage = Arc::new(PostgresStorage::connect(&config.database_url).await?);
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let validator = Arc::new(MultiValidator::new(MultiValidatorConfig {
         trusted_issuers: config.trusted_issuers.clone(),
         audiences: config.audiences.clone(),
@@ -58,6 +60,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     }));
     let api_state = ApiState::new(storage.clone())
         .with_websocket(validator)
+        .with_realtime_broker(broker)
         .with_sync_storage(storage);
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;

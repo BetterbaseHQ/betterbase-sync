@@ -7,6 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use less_sync_auth::{AuthContext, AuthError, TokenValidator};
+use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use serde::Deserialize;
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
@@ -525,6 +526,227 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
 }
 
 #[tokio::test]
+async fn websocket_push_broadcasts_sync_to_other_subscribers() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = Uuid::new_v4().to_string();
+    let record_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-sender",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id.clone(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut sender_socket).await;
+
+    send_binary_frame(
+        &mut watcher_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-watcher",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id.clone(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut watcher_socket).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-sync-1",
+            "method": "push",
+            "params": {
+                "space": space_id.clone(),
+                "changes": [{
+                    "id": record_id.clone(),
+                    "blob": [7,8,9],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut sender_socket).await;
+    assert_eq!(response.id, "push-sync-1");
+    assert!(response.result.ok);
+
+    let notification: RpcNotificationResponse<less_sync_core::protocol::WsSyncData> =
+        read_notification_response(&mut watcher_socket).await;
+    assert_eq!(notification.method, "sync");
+    assert_eq!(notification.params.space, space_id);
+    assert_eq!(notification.params.cursor, 77);
+    assert_eq!(notification.params.records.len(), 1);
+    assert_eq!(notification.params.records[0].id, record_id);
+    assert_eq!(notification.params.records[0].blob, Some(vec![7, 8, 9]));
+
+    let sender_frame = tokio::time::timeout(Duration::from_millis(250), sender_socket.next()).await;
+    assert!(
+        sender_frame.is_err(),
+        "sender should not receive sync notification"
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
+    let server = spawn_server(base_state_with_ws_storage_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut sender_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect websocket sender");
+    let (mut watcher_socket, _) = connect_async(request)
+        .await
+        .expect("connect websocket watcher");
+    let space_id = Uuid::new_v4().to_string();
+    let record_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut sender_socket).await;
+    send_auth(&mut watcher_socket).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-sender-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id.clone(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut sender_socket).await;
+
+    send_binary_frame(
+        &mut watcher_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-watcher-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": space_id.clone(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut watcher_socket).await;
+
+    send_binary_frame(
+        &mut watcher_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "unsubscribe",
+            "params": { "spaces": [space_id.clone()] }
+        }),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    send_binary_frame(
+        &mut sender_socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-sync-2",
+            "method": "push",
+            "params": {
+                "space": space_id.clone(),
+                "changes": [{
+                    "id": record_id.clone(),
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+    let _: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut sender_socket).await;
+
+    let watcher_frame =
+        tokio::time::timeout(Duration::from_millis(300), watcher_socket.next()).await;
+    assert!(
+        watcher_frame.is_err(),
+        "unsubscribed watcher should not receive sync notification"
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_connection_limit_closes_after_auth() {
+    let broker = Arc::new(MultiBroker::new(BrokerConfig {
+        max_connections_per_mailbox: 1,
+    }));
+    let server = spawn_server(base_state_with_ws_and_broker(
+        Duration::from_secs(1),
+        "sync",
+        broker,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut first_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect first websocket");
+    send_auth(&mut first_socket).await;
+
+    let (mut second_socket, _) = connect_async(request)
+        .await
+        .expect("connect second websocket");
+    send_auth(&mut second_socket).await;
+
+    let close_code = expect_close_code(&mut second_socket).await;
+    assert_eq!(
+        close_code,
+        less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_request_with_empty_id_gets_response() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
@@ -714,6 +936,25 @@ fn base_state_with_ws_and_storage(
     base_state_with_ws(auth_timeout, scope).with_sync_storage_adapter(storage)
 }
 
+fn base_state_with_ws_and_broker(
+    auth_timeout: Duration,
+    scope: &'static str,
+    broker: Arc<MultiBroker>,
+) -> ApiState {
+    base_state_with_ws(auth_timeout, scope).with_realtime_broker(broker)
+}
+
+fn base_state_with_ws_storage_and_broker(
+    auth_timeout: Duration,
+    scope: &'static str,
+    storage: Arc<dyn SyncStorage>,
+    broker: Arc<MultiBroker>,
+) -> ApiState {
+    base_state_with_ws(auth_timeout, scope)
+        .with_realtime_broker(broker)
+        .with_sync_storage_adapter(storage)
+}
+
 fn ws_request(addr: SocketAddr, subprotocol: Option<&str>) -> http::Request<()> {
     let mut request = format!("ws://{addr}/api/v1/ws")
         .into_client_request()
@@ -801,6 +1042,16 @@ struct RpcChunkResponse<T> {
 }
 
 #[derive(Debug, Deserialize)]
+struct RpcNotificationResponse<T> {
+    #[serde(rename = "type")]
+    _frame_type: i32,
+    #[serde(rename = "method")]
+    method: String,
+    #[serde(rename = "params")]
+    params: T,
+}
+
+#[derive(Debug, Deserialize)]
 struct PullSummaryResult {
     #[serde(rename = "_chunks")]
     chunks: i32,
@@ -856,5 +1107,21 @@ where
     match frame {
         WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode chunk"),
         other => panic!("expected binary chunk frame, got {other:?}"),
+    }
+}
+
+async fn read_notification_response<T>(socket: &mut TestSocket) -> RpcNotificationResponse<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("read timeout")
+        .expect("notification frame")
+        .expect("websocket read");
+
+    match frame {
+        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode notification"),
+        other => panic!("expected binary notification frame, got {other:?}"),
     }
 }

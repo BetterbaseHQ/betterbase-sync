@@ -1051,6 +1051,7 @@ dependencies = [
  "axum",
  "less-sync-api",
  "less-sync-auth",
+ "less-sync-realtime",
  "less-sync-storage",
  "tokio",
  "tracing",

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use axum::routing::get;
 use axum::{extract::State, http::StatusCode, Router};
 use less_sync_auth::TokenValidator;
+use less_sync_realtime::broker::MultiBroker;
 use less_sync_storage::{Storage, StorageError};
 
 mod ws;
@@ -33,6 +34,7 @@ pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
+    realtime_broker: Option<Arc<MultiBroker>>,
 }
 
 #[derive(Clone)]
@@ -48,6 +50,7 @@ impl ApiState {
             health,
             websocket: None,
             sync_storage: None,
+            realtime_broker: None,
         }
     }
 
@@ -89,6 +92,16 @@ impl ApiState {
 
     pub(crate) fn sync_storage(&self) -> Option<Arc<dyn ws::SyncStorage>> {
         self.sync_storage.clone()
+    }
+
+    #[must_use]
+    pub fn with_realtime_broker(mut self, broker: Arc<MultiBroker>) -> Self {
+        self.realtime_broker = Some(broker);
+        self
+    }
+
+    pub(crate) fn realtime_broker(&self) -> Option<Arc<MultiBroker>> {
+        self.realtime_broker.clone()
     }
 }
 

@@ -10,6 +10,7 @@ anyhow.workspace = true
 axum.workspace = true
 less-sync-auth = { path = "../auth" }
 less-sync-api = { path = "../api" }
+less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
 tokio.workspace = true
 tracing.workspace = true
