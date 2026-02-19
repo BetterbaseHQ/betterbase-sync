@@ -18,6 +18,12 @@ use super::FederationPeerError;
 
 type PeerSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReceivedChunk {
+    pub(super) name: String,
+    pub(super) data: serde_cbor::Value,
+}
+
 pub(super) struct PeerConnection {
     ws_url: String,
     socket: Mutex<Option<PeerSocket>>,
@@ -40,7 +46,7 @@ impl PeerConnection {
         request_id: &str,
         method: &str,
         params: &P,
-    ) -> Result<serde_cbor::Value, FederationPeerError>
+    ) -> Result<(serde_cbor::Value, Vec<ReceivedChunk>), FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -78,7 +84,6 @@ impl PeerConnection {
         }
     }
 
-    #[cfg(test)]
     pub(super) async fn space_tokens(&self) -> HashMap<String, String> {
         self.spaces.read().await.clone()
     }
@@ -181,7 +186,8 @@ fn host_header_value(url: &Url) -> Option<String> {
 async fn read_response_for_request(
     socket: &mut PeerSocket,
     request_id: &str,
-) -> Result<serde_cbor::Value, FederationPeerError> {
+) -> Result<(serde_cbor::Value, Vec<ReceivedChunk>), FederationPeerError> {
+    let mut chunks = Vec::new();
     while let Some(frame) = socket.next().await {
         let frame = frame.map_err(|_| FederationPeerError::Closed)?;
         match frame {
@@ -201,9 +207,21 @@ async fn read_response_for_request(
                         if let Some(error) = response.error {
                             return Err(FederationPeerError::Rpc(error));
                         }
-                        return Ok(response.result.unwrap_or(serde_cbor::Value::Null));
+                        return Ok((response.result.unwrap_or(serde_cbor::Value::Null), chunks));
                     }
-                    InboundFrame::Chunk | InboundFrame::Other => {
+                    InboundFrame::Chunk(chunk) => {
+                        if chunk.frame_type != less_sync_core::protocol::RPC_CHUNK {
+                            continue;
+                        }
+                        if chunk.id != request_id {
+                            continue;
+                        }
+                        chunks.push(ReceivedChunk {
+                            name: chunk.name,
+                            data: chunk.data,
+                        });
+                    }
+                    InboundFrame::Other => {
                         continue;
                     }
                 }

@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `7c53de4` (`Add federation outbound peer manager client`)
-- Working tree status at update time: in progress (runtime federation forwarding integration slice)
+- HEAD: `74ee0ba` (`Wire runtime federation forwarding paths`)
+- Working tree status at update time: in progress (federation peer-manager orchestration slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `135`
+1. `less-sync-api`: `138`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
 7. `less-sync-federation-keygen`: `3`
-8. Total passing tests: `327`
+8. Total passing tests: `330`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -100,7 +100,10 @@ Go baseline (reference from original local suite):
 - Signed federation websocket dialing using `less_sync_auth::sign_http_request`.
 - Per-peer connection reuse and per-space FST token tracking.
 - Forwarding primitives now implemented for `subscribe`, `push`, and `fed.invitation`.
-- Local tests now cover Go-equivalent federation client scenarios for request forwarding and FST token persistence/fallback behavior.
+- Pull orchestration now collects streamed `RPC_CHUNK` frames into typed pull chunks.
+- Retry behavior now reconnects once on closed/connect transport failures while preserving request identity.
+- Subscription restore flow now replays cached per-space FST tokens back through `subscribe`.
+- Local tests now cover request forwarding, pull chunk collection, reconnect retry behavior, and FST token persistence/restore behavior.
 12. Runtime federation forwarding integration:
 - Client websocket `push` now forwards to remote home servers when `space.home_server` is set and a federation forwarder is configured.
 - `invitation.create` now supports remote delivery via `params.server` for trusted peers, including explicit bad-request and internal-error mappings.
@@ -108,12 +111,11 @@ Go baseline (reference from original local suite):
 - New websocket tests cover forwarded push, trusted/untrusted invitation forwarding, and forwarding failure behavior.
 
 ## Gaps and Open Work
-1. Outbound runtime forwarding is in place for `push` and invitations, but active peer-manager orchestration (`subscribe`/`pull` scheduling, reconnect behavior) is still pending.
-2. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
-3. Benchmark parity with Go has not been ported.
-4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+1. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
+2. Benchmark parity with Go has not been ported.
+3. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Add federation peer orchestration flows (`subscribe` and `pull` manager usage with reconnect/refresh behavior).
-2. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
-3. Expand federation integration coverage for peer status/trusted metadata endpoints.
+1. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
+2. Expand federation integration coverage for peer status/trusted metadata endpoints.
+3. Add websocket-level integration tests for auto-restore of remote subscriptions after transient federation disconnects.

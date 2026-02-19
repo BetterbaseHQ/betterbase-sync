@@ -17,7 +17,7 @@ where
 #[derive(Debug)]
 pub(super) enum InboundFrame {
     Response(InboundResponseFrame),
-    Chunk,
+    Chunk(InboundChunkFrame),
     Other,
 }
 
@@ -30,6 +30,15 @@ pub(super) struct InboundResponseFrame {
     pub(super) result: Option<serde_cbor::Value>,
     #[serde(default)]
     pub(super) error: Option<RpcError>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct InboundChunkFrame {
+    #[serde(rename = "type")]
+    pub(super) frame_type: i32,
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) data: serde_cbor::Value,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -65,7 +74,11 @@ pub(super) fn decode_inbound_frame(payload: &[u8]) -> Result<InboundFrame, Feder
                 .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
             Ok(InboundFrame::Response(response))
         }
-        RPC_CHUNK => Ok(InboundFrame::Chunk),
+        RPC_CHUNK => {
+            let chunk: InboundChunkFrame = serde_cbor::from_slice(payload)
+                .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
+            Ok(InboundFrame::Chunk(chunk))
+        }
         _ => Ok(InboundFrame::Other),
     }
 }

@@ -12,10 +12,10 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `7c53de4` (`Add federation outbound peer manager client`).
+- Latest commit: `74ee0ba` (`Wire runtime federation forwarding paths`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `327` tests passing.
-1. `less-sync-api`: `135`
+- Rust local test totals (all features): `330` tests passing.
+1. `less-sync-api`: `138`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
@@ -28,8 +28,9 @@
   - Includes JWKS cache headers and trusted-peer gating on status route when allowlists are configured.
 3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
 4. `federation-keygen` now generates Ed25519 keys, emits trust entries, and can persist key material to Postgres.
-5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing and per-peer token tracking for `subscribe`/`push`/`fed.invitation` forwarding.
+5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing, chunk-aware `pull`, per-peer token tracking, reconnect retry-once handling, and subscription restore support.
 6. Runtime forwarding is now wired for client `push` on remote-home spaces and `invitation.create` with `server` targeting trusted federation peers.
+7. Federation client tests now cover pull chunk collection, reconnect retry behavior, and restore-subscriptions token replay in addition to existing forwarding and token persistence coverage.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -40,7 +41,7 @@
 4. Phase 3 (storage + Postgres): complete for current local parity scope.
 5. Phase 4 (WebSocket transport + broker): complete.
 6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
-7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, federation metadata/status HTTP routes, and outbound peer-manager forwarding primitives are landed).
+7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, federation metadata/status HTTP routes, outbound peer-manager orchestration, and runtime forwarding primitives are landed).
 8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
 
 ## Baseline Inventory (Current Go Project)
@@ -252,9 +253,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Port federation peer-manager/forwarding paths and remaining federation integration scenarios from local Go tests.
-2. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
-3. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
+1. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
+2. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
+3. Expand federation runtime orchestration integration tests around reconnect and subscription restoration in websocket handler flows.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.
