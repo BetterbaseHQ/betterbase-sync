@@ -2285,6 +2285,68 @@ async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata
 }
 
 #[tokio::test]
+async fn websocket_subscribe_shared_space_with_delegated_ucan_returns_space_metadata() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let proof_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Read);
+    let read_ucan = delegate_issuer.issue_space_ucan_with_proofs(
+        &bearer_issuer.did,
+        shared_space_id,
+        Permission::Read,
+        vec![proof_ucan],
+    );
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-shared-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-shared-2");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert!(response.result.errors.is_empty());
+    assert_eq!(response.result.spaces[0].id, shared_space_id.to_string());
+    assert_eq!(response.result.spaces[0].cursor, 42);
+    assert_eq!(response.result.spaces[0].key_generation, 3);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() {
     let shared_space_id =
         Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
@@ -2332,6 +2394,72 @@ async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() 
     let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-shared-revoked-1");
+    assert!(response.result.spaces.is_empty());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(response.result.errors[0].space, shared_space_id.to_string());
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbidden() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let proof_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Read);
+    let read_ucan = delegate_issuer.issue_space_ucan_with_proofs(
+        &bearer_issuer.did,
+        shared_space_id,
+        Permission::Read,
+        vec![proof_ucan.clone()],
+    );
+    let mut revoked_ucan_cids = HashSet::new();
+    revoked_ucan_cids.insert(compute_ucan_cid(&proof_ucan));
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        revoked_ucan_cids,
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-shared-revoked-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-shared-revoked-2");
     assert!(response.result.spaces.is_empty());
     assert_eq!(response.result.errors.len(), 1);
     assert_eq!(response.result.errors[0].space, shared_space_id.to_string());
@@ -3497,6 +3625,16 @@ impl TestIssuer {
         space_id: Uuid,
         permission: Permission,
     ) -> String {
+        self.issue_space_ucan_with_proofs(audience_did, space_id, permission, Vec::new())
+    }
+
+    fn issue_space_ucan_with_proofs(
+        &self,
+        audience_did: &str,
+        space_id: Uuid,
+        permission: Permission,
+        proofs: Vec<String>,
+    ) -> String {
         let claims = UcanClaims {
             iss: self.did.clone(),
             aud: Some(AudienceClaim::One(audience_did.to_owned())),
@@ -3510,7 +3648,7 @@ impl TestIssuer {
             cmd: permission.as_cmd().to_owned(),
             with_resource: format!("space:{space_id}"),
             nonce: "test-nonce".to_owned(),
-            prf: Vec::new(),
+            prf: proofs,
         };
         sign_es256_token(&claims, &self.key)
     }

@@ -1290,6 +1290,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_space_put_with_delegated_ucan_succeeds() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let delegate_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let proof_ucan =
+            root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Write);
+        let write_ucan = delegate_issuer.issue_space_ucan_with_proofs(
+            &bearer_issuer.did,
+            shared_space_id,
+            Permission::Write,
+            vec![proof_ucan],
+        );
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", write_ucan)
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
     async fn shared_space_put_without_ucan_returns_unauthorized() {
         let shared_space_id =
             Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
@@ -1405,6 +1449,55 @@ mod tests {
             root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
         let mut revoked_ucan_cids = HashSet::new();
         revoked_ucan_cids.insert(compute_ucan_cid(&write_ucan));
+        let app = file_app_with_shared_space_and_revocations(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+            revoked_ucan_cids,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", write_ucan)
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn shared_space_put_with_revoked_proof_ucan_returns_forbidden() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let delegate_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let proof_ucan =
+            root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Write);
+        let write_ucan = delegate_issuer.issue_space_ucan_with_proofs(
+            &bearer_issuer.did,
+            shared_space_id,
+            Permission::Write,
+            vec![proof_ucan.clone()],
+        );
+
+        let mut revoked_ucan_cids = HashSet::new();
+        revoked_ucan_cids.insert(compute_ucan_cid(&proof_ucan));
+
         let app = file_app_with_shared_space_and_revocations(
             true,
             shared_space_id,
@@ -1574,6 +1667,16 @@ mod tests {
             space_id: Uuid,
             permission: Permission,
         ) -> String {
+            self.issue_space_ucan_with_proofs(audience_did, space_id, permission, Vec::new())
+        }
+
+        fn issue_space_ucan_with_proofs(
+            &self,
+            audience_did: &str,
+            space_id: Uuid,
+            permission: Permission,
+            proofs: Vec<String>,
+        ) -> String {
             let claims = UcanClaims {
                 iss: self.did.clone(),
                 aud: Some(AudienceClaim::One(audience_did.to_owned())),
@@ -1587,7 +1690,7 @@ mod tests {
                 cmd: permission.as_cmd().to_owned(),
                 with_resource: format!("space:{space_id}"),
                 nonce: "test-nonce".to_owned(),
-                prf: Vec::new(),
+                prf: proofs,
             };
             sign_es256_token(&claims, &self.key)
         }

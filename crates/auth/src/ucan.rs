@@ -839,6 +839,49 @@ mod tests {
     }
 
     #[test]
+    fn validate_chain_revoked_proof_token() {
+        let root = TestIssuer::new();
+        let delegate = TestIssuer::new();
+        let bearer = TestIssuer::new();
+
+        let proof_token = root.issue(UcanOpts {
+            iss: None,
+            aud: delegate.did.clone(),
+            cmd: "/space/write".to_owned(),
+            with_resource: TEST_RESOURCE.to_owned(),
+            nonce: "n1".to_owned(),
+            prf: Vec::new(),
+            exp: SystemTime::now() + Duration::from_secs(60 * 60),
+            nbf: None,
+        });
+        let proof_cid = compute_ucan_cid(&proof_token);
+
+        let leaf_token = delegate.issue(UcanOpts {
+            iss: None,
+            aud: bearer.did.clone(),
+            cmd: "/space/write".to_owned(),
+            with_resource: TEST_RESOURCE.to_owned(),
+            nonce: "n2".to_owned(),
+            prf: vec![proof_token],
+            exp: SystemTime::now() + Duration::from_secs(60 * 60),
+            nbf: None,
+        });
+
+        let revoked = move |_: &str, cid: &str| -> Result<bool, UcanError> { Ok(cid == proof_cid) };
+        let error = validate_chain(ValidateChainParams {
+            token: &leaf_token,
+            expected_audience: &bearer.did,
+            required_permission: Permission::Write,
+            space_id: TEST_SPACE_ID,
+            root_public_key: &root.compressed_public_key(),
+            is_revoked: Some(&revoked),
+            now: None,
+        })
+        .expect_err("expected revoked proof");
+        assert_eq!(error, UcanError::UcanRevoked);
+    }
+
+    #[test]
     fn validate_chain_root_mismatch() {
         let root = TestIssuer::new();
         let wrong_root = TestIssuer::new();
