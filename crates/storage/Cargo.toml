@@ -15,4 +15,9 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 tokio.workspace = true
+
+[[bench]]
+name = "postgres"
+harness = false

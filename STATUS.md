@@ -141,9 +141,13 @@ Go baseline (reference from original local suite):
 - Client websocket remote-home `push` now attempts `restore_subscriptions` and retries once after transient forwarding failure.
 - Client websocket `pull` now federates remote-home pulls through the forwarder and streams remote chunks directly to clients.
 - Websocket tests now cover remote-home subscribe forwarding, subscribe forward-failure isolation, restore-plus-retry push behavior, and remote-home pull forward/failure behavior.
+17. Benchmark baseline (Go-mirrored starter set):
+- Added Criterion benchmark suites for UCAN chain validation depth (`1/3/8`), broker fanout broadcast (sync/membership, fanout `10/100/1000`), and RPC frame parse request/notification hot paths.
+- Added Postgres benchmark suite scaffolding for `push_hot`, `pull_hot`, and `pull_hot_file_heavy` with isolated per-run schemas (requires `DATABASE_URL` to execute).
+- Added `BENCHMARKS.md` with Go↔Rust benchmark mapping and run commands.
 
 ## Gaps and Open Work
-1. Benchmark parity with Go has not been ported.
+1. Benchmark parity with Go is now partial; file API, WS integration, and federation integration benchmark suites are still pending.
 2. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 3. Federation operational runbooks (rotation/deactivation/recovery) are still lightweight and should be expanded before production cutover.
 

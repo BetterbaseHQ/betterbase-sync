@@ -26,3 +26,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "ucan"
+harness = false

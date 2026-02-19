@@ -24,6 +24,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
 base64 = "0.22"
 bs58 = "0.5"
+criterion = { version = "0.5", features = ["async_tokio"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 hmac = "0.12"
 http = "1.2"
