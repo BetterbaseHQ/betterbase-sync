@@ -145,6 +145,25 @@ impl FederationQuotaTracker {
             invitations_this_hour: usage.invitations.count,
         }
     }
+
+    pub async fn all_peer_status(&self) -> Vec<FederationPeerStatus> {
+        let mut peers = self.peers.lock().await;
+        let mut statuses = Vec::with_capacity(peers.len());
+        for (domain, usage) in peers.iter_mut() {
+            usage.records.roll_if_needed();
+            usage.bytes.roll_if_needed();
+            usage.invitations.roll_if_needed();
+            statuses.push(FederationPeerStatus {
+                domain: domain.clone(),
+                connections: usage.connections,
+                spaces: usage.spaces,
+                records_this_hour: usage.records.count,
+                bytes_this_hour: usage.bytes.count,
+                invitations_this_hour: usage.invitations.count,
+            });
+        }
+        statuses
+    }
 }
 
 #[derive(Debug, Clone)]

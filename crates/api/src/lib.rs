@@ -16,6 +16,7 @@ use less_sync_core::protocol::ErrorResponse;
 use less_sync_realtime::broker::MultiBroker;
 use less_sync_storage::{Storage, StorageError};
 use object_store::ObjectStore;
+use serde::Serialize;
 
 mod federation;
 mod federation_client;
@@ -25,6 +26,7 @@ mod files;
 mod ws;
 
 const DEFAULT_WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_UCAN_HEADER_SIZE: usize = 64 * 1024;
 
 pub use federation::{
     FederationAuthError, FederationAuthenticator, FederationJwk, FederationJwks,
@@ -259,7 +261,6 @@ impl ApiState {
 pub fn router(state: ApiState) -> Router {
     let middleware_state = state.clone();
     let files_enabled = state.file_sync_storage().is_some() && state.file_blob_storage().is_some();
-
     let mut app = Router::new()
         .route("/health", get(health))
         .route("/.well-known/jwks.json", get(federation_http::jwks))
@@ -276,6 +277,7 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/federation/status/{domain}",
             get(federation_http::peer_status),
         );
+
     if files_enabled {
         app = app.route(
             "/api/v1/spaces/{space_id}/files/{id}",
@@ -285,16 +287,66 @@ pub fn router(state: ApiState) -> Router {
         );
     }
 
-    app.with_state(state).layer(middleware::from_fn_with_state(
-        middleware_state,
-        auth_middleware,
-    ))
+    app.with_state(state)
+        .layer(middleware::from_fn_with_state(
+            middleware_state,
+            auth_middleware,
+        ))
+        .layer(middleware::from_fn(cors_and_protocol_middleware))
 }
 
-async fn health(State(state): State<ApiState>) -> StatusCode {
+#[derive(Debug, Serialize)]
+struct HealthFederation {
+    enabled: bool,
+    peer_count: usize,
+    connections: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    federation: Option<HealthFederation>,
+}
+
+async fn health(State(state): State<ApiState>) -> impl IntoResponse {
     match state.health.ping().await {
-        Ok(()) => StatusCode::OK,
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Ok(()) => {
+            let federation = if state.federation_authenticator().is_some() {
+                let peers = state.federation_quota_tracker().all_peer_status().await;
+                let connections = peers
+                    .iter()
+                    .map(|peer| peer.connections)
+                    .fold(0_usize, usize::saturating_add);
+                Some(HealthFederation {
+                    enabled: true,
+                    peer_count: state.federation_trusted_domains().len(),
+                    connections,
+                })
+            } else {
+                None
+            };
+            (
+                StatusCode::OK,
+                Json(HealthResponse {
+                    status: "healthy",
+                    error: None,
+                    federation,
+                }),
+            )
+                .into_response()
+        }
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "unhealthy",
+                error: Some("database unavailable"),
+                federation: None,
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -332,6 +384,13 @@ async fn auth_middleware(
 
     match validator.validate_token(token).await {
         Ok(context) => {
+            if request
+                .headers()
+                .get("X-UCAN")
+                .is_some_and(|value| value.as_bytes().len() > MAX_UCAN_HEADER_SIZE)
+            {
+                return auth_error_response(StatusCode::UNAUTHORIZED, "X-UCAN header too large");
+            }
             request.extensions_mut().insert(context);
             next.run(request).await
         }
@@ -367,6 +426,47 @@ fn auth_error_response(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+async fn cors_and_protocol_middleware(request: Request, next: Next) -> Response {
+    if request.method() == axum::http::Method::OPTIONS {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        apply_common_headers(response.headers_mut());
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    apply_common_headers(response.headers_mut());
+    response
+}
+
+fn apply_common_headers(headers: &mut axum::http::HeaderMap) {
+    headers.insert(
+        "X-Protocol-Version",
+        axum::http::HeaderValue::from_static("1"),
+    );
+    headers.insert(
+        "Access-Control-Allow-Origin",
+        axum::http::HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        "Access-Control-Allow-Methods",
+        axum::http::HeaderValue::from_static("GET, PUT, HEAD, POST, OPTIONS"),
+    );
+    headers.insert(
+        "Access-Control-Allow-Headers",
+        axum::http::HeaderValue::from_static(
+            "Content-Type, Content-Length, Authorization, X-UCAN, X-Wrapped-DEK, X-Record-ID",
+        ),
+    );
+    headers.insert(
+        "Access-Control-Expose-Headers",
+        axum::http::HeaderValue::from_static("X-Wrapped-DEK"),
+    );
+    headers.insert(
+        "Access-Control-Max-Age",
+        axum::http::HeaderValue::from_static("86400"),
+    );
+}
+
 impl ApiState {
     fn auth_validator(&self) -> Option<Arc<dyn TokenValidator + Send + Sync>> {
         self.websocket
@@ -383,6 +483,10 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use axum::http::StatusCode;
+    use http::header::HeaderName;
+    use http::header::HeaderValue;
+    use http::header::ACCESS_CONTROL_ALLOW_METHODS;
+    use http::header::ACCESS_CONTROL_ALLOW_ORIGIN;
     use http::header::CACHE_CONTROL;
     use serde::Deserialize;
     use tower::util::ServiceExt;
@@ -390,13 +494,17 @@ mod tests {
     use http::header::AUTHORIZATION;
     use less_sync_auth::{AuthContext, AuthError, TokenValidator};
 
-    use super::{router, ApiState, FederationJwks, FederationQuotaLimits, HealthCheck};
+    use super::{
+        router, ApiState, FederationAuthError, FederationAuthenticator, FederationJwks,
+        FederationQuotaLimits, HealthCheck, MAX_UCAN_HEADER_SIZE,
+    };
 
     struct StubHealth {
         healthy: bool,
     }
 
     struct StubValidator;
+    struct StubFederationAuthenticator;
 
     #[async_trait]
     impl TokenValidator for StubValidator {
@@ -428,6 +536,18 @@ mod tests {
         }
     }
 
+    impl FederationAuthenticator for StubFederationAuthenticator {
+        fn authenticate_request(
+            &self,
+            _request: &axum::http::Request<()>,
+        ) -> Result<AuthContext, FederationAuthError> {
+            Err(FederationAuthError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "signature verification failed",
+            })
+        }
+    }
+
     #[tokio::test]
     async fn health_returns_ok_when_backend_is_healthy() {
         let app = router(ApiState::new(Arc::new(StubHealth { healthy: true })));
@@ -441,6 +561,13 @@ mod tests {
             .await
             .expect("dispatch request");
         assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: HealthRouteResponse = serde_json::from_slice(&body).expect("decode body");
+        assert_eq!(payload.status, "healthy");
+        assert!(payload.error.is_none());
     }
 
     #[tokio::test]
@@ -456,6 +583,48 @@ mod tests {
             .await
             .expect("dispatch request");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: HealthRouteResponse = serde_json::from_slice(&body).expect("decode body");
+        assert_eq!(payload.status, "unhealthy");
+        assert_eq!(payload.error.as_deref(), Some("database unavailable"));
+    }
+
+    #[tokio::test]
+    async fn health_includes_federation_summary_when_enabled() {
+        let state = ApiState::new(Arc::new(StubHealth { healthy: true }))
+            .with_websocket(Arc::new(StubValidator))
+            .with_federation_authenticator(Arc::new(StubFederationAuthenticator))
+            .with_federation_trusted_domains(vec![
+                "peer.example.com".to_owned(),
+                "other.example.com".to_owned(),
+            ]);
+        let tracker = state.federation_quota_tracker();
+        assert!(tracker.try_add_connection("peer.example.com").await);
+        assert!(tracker.try_add_connection("peer.example.com").await);
+        assert!(tracker.try_add_connection("other.example.com").await);
+
+        let app = router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: HealthRouteResponse = serde_json::from_slice(&body).expect("decode body");
+        let federation = payload.federation.expect("federation summary");
+        assert_eq!(federation.peer_count, 2);
+        assert_eq!(federation.connections, 3);
     }
 
     #[tokio::test]
@@ -567,6 +736,7 @@ mod tests {
         let app = router(
             ApiState::new(Arc::new(StubHealth { healthy: true }))
                 .with_websocket(Arc::new(StubValidator))
+                .with_federation_authenticator(Arc::new(StubFederationAuthenticator))
                 .with_federation_trusted_domains(vec![
                     "Peer.Example.com".to_owned(),
                     "other.example.com".to_owned(),
@@ -598,9 +768,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn federation_trusted_route_returns_not_found_when_federation_disabled() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/trusted")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn federation_status_route_returns_quota_usage() {
         let state = ApiState::new(Arc::new(StubHealth { healthy: true }))
             .with_websocket(Arc::new(StubValidator))
+            .with_federation_authenticator(Arc::new(StubFederationAuthenticator))
             .with_federation_trusted_domains(vec!["peer.example.com".to_owned()])
             .with_federation_quota_limits(FederationQuotaLimits {
                 max_connections: 10,
@@ -670,8 +860,128 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn federation_status_route_returns_not_found_when_federation_disabled() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/status/peer.example.com")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preflight_options_returns_no_content_and_cors_headers() {
+        let app = router(ApiState::new(Arc::new(StubHealth { healthy: true })));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/v1/ws")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(ACCESS_CONTROL_ALLOW_METHODS)
+                .and_then(|value| value.to_str().ok()),
+            Some("GET, PUT, HEAD, POST, OPTIONS")
+        );
+    }
+
+    #[tokio::test]
+    async fn all_responses_include_protocol_version_header() {
+        let app = router(ApiState::new(Arc::new(StubHealth { healthy: true })));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(
+            response
+                .headers()
+                .get("X-Protocol-Version")
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_middleware_rejects_oversized_ucan_header() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator)),
+        );
+        let oversized_ucan = "a".repeat(MAX_UCAN_HEADER_SIZE + 1);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/trusted")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .header(
+                        HeaderName::from_static("x-ucan"),
+                        HeaderValue::from_str(&oversized_ucan).expect("build x-ucan"),
+                    )
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: ErrorBody = serde_json::from_slice(&body).expect("decode body");
+        assert_eq!(payload.error, "X-UCAN header too large");
+    }
+
     #[derive(Debug, Deserialize)]
     struct TrustedPeersResponse {
         domains: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct HealthRouteResponse {
+        status: String,
+        error: Option<String>,
+        federation: Option<HealthFederationResponse>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct HealthFederationResponse {
+        peer_count: usize,
+        connections: usize,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct ErrorBody {
+        error: String,
     }
 }

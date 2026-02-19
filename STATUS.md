@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `9d609d3` (`Add storage-backed federation runtime and keygen integration coverage`)
-- Working tree status at update time: in progress (phase 6 federation runtime wrap-up slice)
+- HEAD: `2ab8886` (`Split federation forwarding surface and harden remote-home sync semantics`)
+- Working tree status at update time: in progress (cross-domain Go↔Rust parity audit pass)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,18 +22,34 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `143`
+1. `less-sync-api`: `157`
 2. `less-sync-app`: `24`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `45`
 7. `less-sync-federation-keygen`: `6`
-8. Total passing tests: `342`
+8. Total passing tests: `356`
 
 Go baseline (reference from original local suite):
 1. `467` tests
 2. `20` benchmarks
+
+## Go↔Rust Parity Audit (Rest of Code)
+1. Audit artifact created: `PARITY_MATRIX.md`.
+2. Matrix summary:
+- `match`: `26`
+- `intentional-diff`: `4`
+- `bug`: `0`
+3. Closed in this pass:
+- API router wiring restored to keep `/api/v1/ws` always registered, fixing websocket test regressions while preserving federation-disabled HTTP `404` behavior.
+- HTTP/API parity hardening added and verified for CORS+protocol headers, health JSON payload shape, and `X-UCAN` max-header bounds.
+- Default Rust listen address aligned with Go semantics (`0.0.0.0:5379`).
+4. Intentional diffs captured explicitly:
+- Inbound federation signature key verification uses static configured `FEDERATION_TRUSTED_KEYS` in Rust instead of dynamic peer JWKS fetch.
+- Rust `less-sync-migrate` currently implements `up` only (Go supports `up/down/status/version/create`).
+- Rust runtime does not yet expose Go `perf/debug` knobs (`-perf-mode`, `MAX_RECORD_BLOB_SIZE`, `MAX_FILE_SIZE`, pprof endpoint).
+- Rust storage adds `012_federation_key_lifecycle.sql` for explicit active/primary key lifecycle semantics.
 
 ## Implemented Capability Inventory
 1. Core protocol and deterministic primitives:

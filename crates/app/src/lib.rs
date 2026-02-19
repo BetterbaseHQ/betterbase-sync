@@ -77,7 +77,7 @@ impl FileStorageEnv {
 impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let mut config = Self::from_values(
-            Some(std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:5379".to_string())),
+            Some(std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:5379".to_string())),
             std::env::var("DATABASE_URL").ok(),
             std::env::var("TRUSTED_ISSUERS").ok(),
             std::env::var("AUDIENCES").ok(),
@@ -94,7 +94,7 @@ impl AppConfig {
         trusted_issuers: Option<String>,
         audiences: Option<String>,
     ) -> anyhow::Result<Self> {
-        let listen_addr = SocketAddr::from_str(listen_addr.as_deref().unwrap_or("127.0.0.1:5379"))?;
+        let listen_addr = SocketAddr::from_str(listen_addr.as_deref().unwrap_or("0.0.0.0:5379"))?;
         let database_url =
             database_url.ok_or_else(|| anyhow::anyhow!("DATABASE_URL must be set"))?;
         let trusted_issuers = parse_trusted_issuers(trusted_issuers)?;
@@ -296,7 +296,7 @@ mod tests {
         )
         .expect("parse config");
 
-        assert_eq!(config.listen_addr.to_string(), "127.0.0.1:5379");
+        assert_eq!(config.listen_addr.to_string(), "0.0.0.0:5379");
         assert_eq!(config.database_url, "postgres://localhost/less-sync");
         assert_eq!(
             config
