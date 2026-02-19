@@ -607,6 +607,7 @@ mod tests {
                 max_spaces: 10,
                 max_records_per_hour: 10,
                 max_bytes_per_hour: 1024,
+                max_invitations_per_hour: 10,
             });
         let tracker = state.federation_quota_tracker();
         assert!(tracker.try_add_connection("peer.example.com").await);
@@ -614,6 +615,11 @@ mod tests {
         assert!(
             tracker
                 .check_and_record_push("peer.example.com", 3, 128)
+                .await
+        );
+        assert!(
+            tracker
+                .check_and_record_invitation("peer.example.com")
                 .await
         );
 
@@ -641,6 +647,7 @@ mod tests {
         assert_eq!(payload.spaces, 2);
         assert_eq!(payload.records_this_hour, 3);
         assert_eq!(payload.bytes_this_hour, 128);
+        assert_eq!(payload.invitations_this_hour, 1);
     }
 
     #[tokio::test]

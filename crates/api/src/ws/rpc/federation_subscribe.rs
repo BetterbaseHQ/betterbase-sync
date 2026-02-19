@@ -62,6 +62,16 @@ pub(super) async fn handle_subscribe_request(
         .await;
         return;
     }
+    if params.spaces.len() > crate::federation_quota::MAX_SUBSCRIBE_SPACES {
+        send_error_response(
+            outbound,
+            id,
+            ERR_CODE_BAD_REQUEST,
+            "too many spaces in subscribe request".to_owned(),
+        )
+        .await;
+        return;
+    }
 
     let mut added_spaces = Vec::with_capacity(params.spaces.len());
     let mut spaces = Vec::with_capacity(params.spaces.len());
@@ -195,13 +205,14 @@ pub(super) async fn handle_subscribe_request(
                 .try_add_spaces(peer_domain, new_space_count)
                 .await
             {
-                for space in spaces.drain(..) {
-                    errors.push(WsSpaceError {
-                        space: space.id,
-                        error: ERR_CODE_RATE_LIMITED.to_owned(),
-                    });
-                }
-                added_spaces.clear();
+                send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_RATE_LIMITED,
+                    "space subscription quota exceeded".to_owned(),
+                )
+                .await;
+                return;
             }
         }
     }

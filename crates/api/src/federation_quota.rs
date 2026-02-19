@@ -4,11 +4,14 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+pub const MAX_SUBSCRIBE_SPACES: usize = 1_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederationQuotaLimits {
     pub max_spaces: usize,
     pub max_records_per_hour: u64,
     pub max_bytes_per_hour: u64,
+    pub max_invitations_per_hour: u64,
     pub max_connections: usize,
 }
 
@@ -18,6 +21,7 @@ impl Default for FederationQuotaLimits {
             max_spaces: 1_000,
             max_records_per_hour: 10_000,
             max_bytes_per_hour: 500 * 1024 * 1024,
+            max_invitations_per_hour: 100,
             max_connections: 3,
         }
     }
@@ -30,6 +34,7 @@ pub struct FederationPeerStatus {
     pub spaces: usize,
     pub records_this_hour: u64,
     pub bytes_this_hour: u64,
+    pub invitations_this_hour: u64,
 }
 
 #[derive(Debug)]
@@ -112,17 +117,32 @@ impl FederationQuotaTracker {
         true
     }
 
+    pub async fn check_and_record_invitation(&self, domain: &str) -> bool {
+        let mut peers = self.peers.lock().await;
+        let usage = peers.entry(domain.to_owned()).or_default();
+        usage.invitations.roll_if_needed();
+
+        if usage.invitations.count.saturating_add(1) > self.limits.max_invitations_per_hour {
+            return false;
+        }
+
+        usage.invitations.count = usage.invitations.count.saturating_add(1);
+        true
+    }
+
     pub async fn peer_status(&self, domain: &str) -> FederationPeerStatus {
         let mut peers = self.peers.lock().await;
         let usage = peers.entry(domain.to_owned()).or_default();
         usage.records.roll_if_needed();
         usage.bytes.roll_if_needed();
+        usage.invitations.roll_if_needed();
         FederationPeerStatus {
             domain: domain.to_owned(),
             connections: usage.connections,
             spaces: usage.spaces,
             records_this_hour: usage.records.count,
             bytes_this_hour: usage.bytes.count,
+            invitations_this_hour: usage.invitations.count,
         }
     }
 }
@@ -133,6 +153,7 @@ struct PeerUsage {
     spaces: usize,
     records: RollingHourCounter,
     bytes: RollingHourCounter,
+    invitations: RollingHourCounter,
 }
 
 impl Default for PeerUsage {
@@ -142,6 +163,7 @@ impl Default for PeerUsage {
             spaces: 0,
             records: RollingHourCounter::new(),
             bytes: RollingHourCounter::new(),
+            invitations: RollingHourCounter::new(),
         }
     }
 }
@@ -219,6 +241,30 @@ mod tests {
         assert!(
             !tracker
                 .check_and_record_push("peer.example.com", 1, 1)
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn invitation_limit_is_enforced() {
+        let tracker = FederationQuotaTracker::new(FederationQuotaLimits {
+            max_invitations_per_hour: 2,
+            ..FederationQuotaLimits::default()
+        });
+
+        assert!(
+            tracker
+                .check_and_record_invitation("peer.example.com")
+                .await
+        );
+        assert!(
+            tracker
+                .check_and_record_invitation("peer.example.com")
+                .await
+        );
+        assert!(
+            !tracker
+                .check_and_record_invitation("peer.example.com")
                 .await
         );
     }

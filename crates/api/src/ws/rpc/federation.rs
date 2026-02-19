@@ -66,6 +66,21 @@ pub(super) async fn handle_request(
             };
             super::federation_sync::handle_pull_request(outbound, sync_storage, id, payload).await;
         }
+        "fed.invitation" => {
+            let Some(sync_storage) = sync_storage else {
+                send_missing_storage_error(outbound, id).await;
+                return;
+            };
+            super::invitation::handle_federation_request(
+                outbound,
+                sync_storage,
+                id,
+                payload,
+                peer_domain,
+                quota_tracker,
+            )
+            .await;
+        }
         _ => {
             send_method_not_found_response(outbound, id, method).await;
         }

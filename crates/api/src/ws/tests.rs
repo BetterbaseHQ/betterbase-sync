@@ -38,6 +38,10 @@ use crate::{
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+const TEST_MAILBOX_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_OTHER_MAILBOX_ID: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 struct StubHealth;
 
 #[async_trait]
@@ -332,7 +336,7 @@ impl StubSyncStorage {
             invitations: vec![test_invitation(
                 Uuid::parse_str("f6ad58bc-5316-4f03-bcf7-f6ee4e6d1ed4")
                     .expect("valid invitation id"),
-                "mailbox-1",
+                TEST_MAILBOX_ID,
                 "ciphertext-1",
             )],
             epoch_begin_error: None,
@@ -896,6 +900,150 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
 }
 
 #[tokio::test]
+async fn websocket_federation_subscribe_rejects_too_many_spaces() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::healthy()),
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let spaces = (0..(crate::federation_quota::MAX_SUBSCRIBE_SPACES + 1))
+        .map(|_| {
+            serde_json::json!({
+                "id": test_personal_space_id(),
+                "since": 0
+            })
+        })
+        .collect::<Vec<_>>();
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-too-many-1",
+            "method": "subscribe",
+            "params": { "spaces": spaces }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "fed-sub-too-many-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_invitation_create_returns_ok() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::healthy()),
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-inv-1",
+            "method": "fed.invitation",
+            "params": {
+                "mailbox_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "payload": "encrypted-invitation-data"
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::FederationInvitationResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "fed-inv-1");
+    assert!(response.result.ok);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_invitation_quota_is_enforced() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::healthy()),
+        )
+        .with_federation_quota_limits(FederationQuotaLimits {
+            max_invitations_per_hour: 1,
+            ..FederationQuotaLimits::default()
+        }),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let invitation_params = serde_json::json!({
+        "mailbox_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "payload": "encrypted-invitation-data"
+    });
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-inv-quota-1",
+            "method": "fed.invitation",
+            "params": invitation_params.clone()
+        }),
+    )
+    .await;
+    let first: RpcResultResponse<less_sync_core::protocol::FederationInvitationResult> =
+        read_result_response(&mut socket).await;
+    assert!(first.result.ok);
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-inv-quota-2",
+            "method": "fed.invitation",
+            "params": invitation_params
+        }),
+    )
+    .await;
+    let second = read_error_response(&mut socket).await;
+    assert_eq!(second.id, "fed-inv-quota-2");
+    assert_eq!(
+        second.error.code,
+        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_federation_route_rejects_client_only_methods() {
     let signing_key = Ed25519SigningKey::generate(&mut OsRng);
     let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
@@ -1228,12 +1376,10 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
         }),
     )
     .await;
-    let second: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
-        read_result_response(&mut socket).await;
-    assert!(second.result.spaces.is_empty());
-    assert_eq!(second.result.errors.len(), 1);
+    let second = read_error_response(&mut socket).await;
+    assert_eq!(second.id, "fed-sub-quota-second");
     assert_eq!(
-        second.result.errors[0].error,
+        second.error.code,
         less_sync_core::protocol::ERR_CODE_RATE_LIMITED
     );
 
@@ -1342,11 +1488,10 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         }),
     )
     .await;
-    let second: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
-        read_result_response(&mut socket).await;
-    assert!(!second.result.ok);
+    let second = read_error_response(&mut socket).await;
+    assert_eq!(second.id, "fed-push-quota-2");
     assert_eq!(
-        second.result.error,
+        second.error.code,
         less_sync_core::protocol::ERR_CODE_RATE_LIMITED
     );
 
@@ -2169,7 +2314,7 @@ async fn websocket_invitation_create_returns_created_invitation() {
             "id": "invitation-create-1",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-1",
+                "mailbox_id": TEST_MAILBOX_ID,
                 "payload": "ciphertext-new"
             }
         }),
@@ -2183,6 +2328,115 @@ async fn websocket_invitation_create_returns_created_invitation() {
     assert!(!response.result.id.is_empty());
     assert!(response.result.created_at.contains('T'));
     assert!(response.result.expires_at.contains('T'));
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_invalid_mailbox_returns_bad_request() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-invalid-mailbox-1",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "not-a-hex-mailbox",
+                "payload": "ciphertext-new"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-invalid-mailbox-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_empty_payload_returns_bad_request() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-empty-payload-1",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "payload": ""
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-empty-payload-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_create_oversized_payload_returns_payload_too_large() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let oversized_payload = "a".repeat((128 * 1024) + 1);
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "invitation-create-oversized-payload-1",
+            "method": "invitation.create",
+            "params": {
+                "mailbox_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "payload": oversized_payload
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "invitation-create-oversized-payload-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_PAYLOAD_TOO_LARGE
+    );
 
     server.handle.abort();
 }
@@ -2210,7 +2464,7 @@ async fn websocket_invitation_create_with_server_forwards_to_trusted_peer() {
             "id": "invitation-create-forwarded-1",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-1",
+                "mailbox_id": TEST_MAILBOX_ID,
                 "payload": "ciphertext-forwarded",
                 "server": "peer.example.com"
             }
@@ -2233,7 +2487,7 @@ async fn websocket_invitation_create_with_server_forwards_to_trusted_peer() {
         calls[0].peer_ws_url,
         "wss://peer.example.com/api/v1/federation/ws"
     );
-    assert_eq!(calls[0].params.mailbox_id, "mailbox-1");
+    assert_eq!(calls[0].params.mailbox_id, TEST_MAILBOX_ID);
     assert_eq!(calls[0].params.payload, "ciphertext-forwarded");
 
     server.handle.abort();
@@ -2262,7 +2516,7 @@ async fn websocket_invitation_create_with_untrusted_server_returns_bad_request()
             "id": "invitation-create-forwarded-2",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-1",
+                "mailbox_id": TEST_MAILBOX_ID,
                 "payload": "ciphertext-forwarded",
                 "server": "peer-b.example.com"
             }
@@ -2304,7 +2558,7 @@ async fn websocket_invitation_create_with_forward_error_returns_internal_error()
             "id": "invitation-create-forwarded-3",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-1",
+                "mailbox_id": TEST_MAILBOX_ID,
                 "payload": "ciphertext-forwarded",
                 "server": "peer.example.com"
             }
@@ -2344,7 +2598,7 @@ async fn websocket_invitation_create_storage_failure_returns_internal_error() {
             "id": "invitation-create-1b",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-1",
+                "mailbox_id": TEST_MAILBOX_ID,
                 "payload": "ciphertext-new"
             }
         }),
@@ -2380,7 +2634,7 @@ async fn websocket_invitation_create_forbidden_for_other_mailbox() {
             "id": "invitation-create-2",
             "method": "invitation.create",
             "params": {
-                "mailbox_id": "mailbox-2",
+                "mailbox_id": TEST_OTHER_MAILBOX_ID,
                 "payload": "ciphertext-new"
             }
         }),
@@ -3110,6 +3364,49 @@ async fn websocket_subscribe_returns_space_metadata() {
     assert_eq!(response.result.spaces[0].key_generation, 3);
     assert_eq!(response.result.spaces[0].rewrap_epoch, Some(2));
     assert!(response.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_rejects_too_many_spaces() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let spaces = (0..(crate::federation_quota::MAX_SUBSCRIBE_SPACES + 1))
+        .map(|_| {
+            serde_json::json!({
+                "id": test_personal_space_id(),
+                "since": 0
+            })
+        })
+        .collect::<Vec<_>>();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-too-many-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": spaces
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sub-too-many-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
 
     server.handle.abort();
 }
@@ -4960,7 +5257,7 @@ fn test_auth_context_with_did(scope: &str, did: &str) -> AuthContext {
         client_id: "client-1".to_owned(),
         personal_space_id: test_personal_space_id(),
         did: did.to_owned(),
-        mailbox_id: "mailbox-1".to_owned(),
+        mailbox_id: TEST_MAILBOX_ID.to_owned(),
         scope: scope.to_owned(),
     }
 }

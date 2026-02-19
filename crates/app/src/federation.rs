@@ -31,6 +31,7 @@ pub(crate) struct FederationEnv {
     pub max_spaces: Option<String>,
     pub max_records_per_hour: Option<String>,
     pub max_bytes_per_hour: Option<String>,
+    pub max_invitations_per_hour: Option<String>,
     pub max_connections: Option<String>,
 }
 
@@ -44,6 +45,7 @@ impl FederationEnv {
             max_spaces: std::env::var("FEDERATION_MAX_SPACES").ok(),
             max_records_per_hour: std::env::var("FEDERATION_MAX_RECORDS_PER_HOUR").ok(),
             max_bytes_per_hour: std::env::var("FEDERATION_MAX_BYTES_PER_HOUR").ok(),
+            max_invitations_per_hour: std::env::var("FEDERATION_MAX_INVITATIONS_PER_HOUR").ok(),
             max_connections: std::env::var("FEDERATION_MAX_CONNECTIONS").ok(),
         }
     }
@@ -198,6 +200,11 @@ fn parse_quota_limits(env: &FederationEnv) -> anyhow::Result<FederationQuotaLimi
             "FEDERATION_MAX_BYTES_PER_HOUR",
         )?
         .unwrap_or(defaults.max_bytes_per_hour),
+        max_invitations_per_hour: parse_nonzero_u64(
+            env.max_invitations_per_hour.as_deref(),
+            "FEDERATION_MAX_INVITATIONS_PER_HOUR",
+        )?
+        .unwrap_or(defaults.max_invitations_per_hour),
         max_connections: parse_nonzero_usize(
             env.max_connections.as_deref(),
             "FEDERATION_MAX_CONNECTIONS",
@@ -335,7 +342,8 @@ mod tests {
             max_spaces: Some("11".to_owned()),
             max_records_per_hour: Some("12".to_owned()),
             max_bytes_per_hour: Some("13".to_owned()),
-            max_connections: Some("14".to_owned()),
+            max_invitations_per_hour: Some("14".to_owned()),
+            max_connections: Some("15".to_owned()),
         })
         .expect("parse federation");
 
@@ -352,7 +360,8 @@ mod tests {
         assert_eq!(config.quota_limits.max_spaces, 11);
         assert_eq!(config.quota_limits.max_records_per_hour, 12);
         assert_eq!(config.quota_limits.max_bytes_per_hour, 13);
-        assert_eq!(config.quota_limits.max_connections, 14);
+        assert_eq!(config.quota_limits.max_invitations_per_hour, 14);
+        assert_eq!(config.quota_limits.max_connections, 15);
     }
 
     #[test]

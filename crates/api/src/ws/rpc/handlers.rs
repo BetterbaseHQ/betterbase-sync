@@ -160,13 +160,23 @@ pub(super) async fn handle_subscribe_request(
             send_error_response(
                 outbound,
                 id,
-                ERR_CODE_BAD_REQUEST,
+                ERR_CODE_INVALID_PARAMS,
                 "invalid subscribe params".to_owned(),
             )
             .await;
             return;
         }
     };
+    if params.spaces.len() > crate::federation_quota::MAX_SUBSCRIBE_SPACES {
+        send_error_response(
+            outbound,
+            id,
+            ERR_CODE_BAD_REQUEST,
+            "too many spaces in subscribe request".to_owned(),
+        )
+        .await;
+        return;
+    }
 
     let mut added_spaces = Vec::with_capacity(params.spaces.len());
     let mut spaces = Vec::with_capacity(params.spaces.len());

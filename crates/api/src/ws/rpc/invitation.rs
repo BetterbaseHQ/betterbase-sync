@@ -4,12 +4,12 @@ use super::super::realtime::OutboundSender;
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
+use less_sync_auth::{canonicalize_domain, AuthContext};
 use less_sync_core::protocol::{
-    FederationInvitationParams, InvitationCreateParams, InvitationCreateResult,
-    InvitationDeleteParams, InvitationGetParams, InvitationListParams, InvitationListResult,
-    ERR_CODE_BAD_REQUEST, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
-    ERR_CODE_NOT_FOUND,
+    FederationInvitationParams, FederationInvitationResult, InvitationCreateParams,
+    InvitationCreateResult, InvitationDeleteParams, InvitationGetParams, InvitationListParams,
+    InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
+    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
 use less_sync_storage::{Invitation, StorageError};
 use time::format_description::well_known::Rfc3339;
@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 const DEFAULT_INVITATION_LIST_LIMIT: usize = 50;
 const MAX_INVITATION_LIST_LIMIT: usize = 200;
+const MAX_INVITATION_PAYLOAD: usize = 128 * 1024;
 
 #[derive(Debug, serde::Serialize)]
 struct EmptyResult {}
@@ -44,14 +45,8 @@ pub(super) async fn handle_create_request(
             return;
         }
     };
-    if params.mailbox_id.is_empty() {
-        send_error_response(
-            outbound,
-            id,
-            ERR_CODE_BAD_REQUEST,
-            "invalid mailbox id".to_owned(),
-        )
-        .await;
+    if let Some((code, message)) = validate_invitation_params(&params.mailbox_id, &params.payload) {
+        send_error_response(outbound, id, code, message).await;
         return;
     }
     if params.mailbox_id != mailbox_id_for_auth(auth) {
@@ -60,7 +55,7 @@ pub(super) async fn handle_create_request(
     }
 
     if !params.server.is_empty() {
-        let peer_domain = less_sync_auth::canonicalize_domain(&params.server);
+        let peer_domain = canonicalize_domain(&params.server);
         let Some(federation_forwarder) = federation_forwarder else {
             send_error_response(
                 outbound,
@@ -139,6 +134,61 @@ pub(super) async fn handle_create_request(
         Ok(result) => send_result_response(outbound, id, &result).await,
         Err(_) => send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal".to_owned()).await,
     }
+}
+
+pub(super) async fn handle_federation_request(
+    outbound: &OutboundSender,
+    sync_storage: &dyn SyncStorage,
+    id: &str,
+    payload: &[u8],
+    peer_domain: &str,
+    quota_tracker: Option<&crate::FederationQuotaTracker>,
+) {
+    let params = match decode_frame_params::<FederationInvitationParams>(payload) {
+        Ok(params) => params,
+        Err(_) => {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_INVALID_PARAMS,
+                "invalid params".to_owned(),
+            )
+            .await;
+            return;
+        }
+    };
+
+    if let Some((code, message)) = validate_invitation_params(&params.mailbox_id, &params.payload) {
+        send_error_response(outbound, id, code, message).await;
+        return;
+    }
+
+    if let Some(quota_tracker) = quota_tracker {
+        if !quota_tracker.check_and_record_invitation(peer_domain).await {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_RATE_LIMITED,
+                "invitation quota exceeded".to_owned(),
+            )
+            .await;
+            return;
+        }
+    }
+
+    let invitation = Invitation {
+        id: Uuid::nil(),
+        mailbox_id: params.mailbox_id,
+        payload: params.payload.into_bytes(),
+        created_at: SystemTime::now(),
+        expires_at: SystemTime::now(),
+    };
+    if sync_storage.create_invitation(&invitation).await.is_err() {
+        send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal error".to_owned()).await;
+        return;
+    }
+
+    send_result_response(outbound, id, &FederationInvitationResult { ok: true }).await;
 }
 
 pub(super) async fn handle_list_request(
@@ -329,6 +379,31 @@ fn mailbox_id_for_auth(auth: &AuthContext) -> &str {
     } else {
         &auth.mailbox_id
     }
+}
+
+fn validate_invitation_params(mailbox_id: &str, payload: &str) -> Option<(&'static str, String)> {
+    if mailbox_id.is_empty() {
+        return Some((ERR_CODE_BAD_REQUEST, "missing mailbox_id".to_owned()));
+    }
+    if mailbox_id.len() != 64 || !is_hex_lower(mailbox_id) {
+        return Some((
+            ERR_CODE_BAD_REQUEST,
+            "mailbox_id must be 64-char hex string".to_owned(),
+        ));
+    }
+    if payload.is_empty() {
+        return Some((ERR_CODE_BAD_REQUEST, "missing payload".to_owned()));
+    }
+    if payload.len() > MAX_INVITATION_PAYLOAD {
+        return Some((ERR_CODE_PAYLOAD_TOO_LARGE, "payload too large".to_owned()));
+    }
+    None
+}
+
+fn is_hex_lower(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn invitation_to_result(

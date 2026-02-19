@@ -120,14 +120,11 @@ pub(super) async fn handle_push_request(
             .check_and_record_push(peer_domain, params.changes.len(), push_bytes)
             .await
         {
-            send_result_response(
+            send_error_response(
                 outbound,
                 id,
-                &PushRpcResult {
-                    ok: false,
-                    cursor: 0,
-                    error: ERR_CODE_RATE_LIMITED.to_owned(),
-                },
+                ERR_CODE_RATE_LIMITED,
+                "record push quota exceeded".to_owned(),
             )
             .await;
             return;
