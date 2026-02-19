@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 
+/// Serde helper for `Option<Vec<u8>>` encoded as CBOR byte strings.
+/// `serde_bytes` handles `Vec<u8>` directly, but `Option<Vec<u8>>` needs
+/// explicit None/null handling and `default` for missing fields.
+pub(crate) mod option_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(bytes) => serde_bytes::serialize(bytes, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<serde_bytes::ByteBuf>::deserialize(deserializer)
+            .map(|opt| opt.map(|buf| buf.into_vec()))
+    }
+}
+
 fn is_empty(s: &str) -> bool {
     s.is_empty()
 }
@@ -147,11 +172,11 @@ pub struct WsSyncData {
 pub struct WsSyncRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -171,11 +196,11 @@ pub struct WsMembershipData {
 pub struct WsMembershipEntry {
     #[serde(rename = "chain_seq")]
     pub chain_seq: i32,
-    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub prev_hash: Option<Vec<u8>>,
-    #[serde(rename = "entry_hash")]
+    #[serde(rename = "entry_hash", with = "serde_bytes")]
     pub entry_hash: Vec<u8>,
-    #[serde(rename = "payload")]
+    #[serde(rename = "payload", with = "serde_bytes")]
     pub payload: Vec<u8>,
 }
 
@@ -197,7 +222,7 @@ pub struct WsFileEntry {
     pub record_id: String,
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -215,11 +240,11 @@ pub struct WsRevokedData {
 pub struct WsPushChange {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "expected_cursor")]
     pub expected_cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
 }
 
@@ -253,11 +278,11 @@ pub struct WsPullRecordData {
     pub space: String,
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -285,7 +310,7 @@ pub struct WsPullFileData {
     pub record_id: String,
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
@@ -345,7 +370,7 @@ pub struct InvitationDeleteParams {
 pub struct SpaceCreateParams {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "root_public_key")]
+    #[serde(rename = "root_public_key", with = "serde_bytes")]
     pub root_public_key: Vec<u8>,
 }
 
@@ -365,11 +390,11 @@ pub struct MembershipAppendParams {
     pub ucan: String,
     #[serde(rename = "expected_version")]
     pub expected_version: i32,
-    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub prev_hash: Option<Vec<u8>>,
-    #[serde(rename = "entry_hash")]
+    #[serde(rename = "entry_hash", with = "serde_bytes")]
     pub entry_hash: Vec<u8>,
-    #[serde(rename = "payload")]
+    #[serde(rename = "payload", with = "serde_bytes")]
     pub payload: Vec<u8>,
 }
 
@@ -465,7 +490,7 @@ pub struct DeksGetParams {
 pub struct DekRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek")]
+    #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
     #[serde(rename = "seq")]
     pub seq: i64,
@@ -481,7 +506,7 @@ pub struct DeksGetResult {
 pub struct DekRewrapEntry {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek")]
+    #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
 }
 
@@ -507,7 +532,7 @@ pub struct DeksRewrapResult {
 pub struct FileDekRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek")]
+    #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
@@ -533,7 +558,7 @@ pub struct FileDeksGetResult {
 pub struct FileDekRewrapEntry {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek")]
+    #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
 }
 
@@ -559,7 +584,7 @@ pub struct FileDeksRewrapResult {
 pub struct WsPresenceSetParams {
     #[serde(rename = "space")]
     pub space: String,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -573,7 +598,7 @@ pub struct WsPresenceClearParams {
 pub struct WsEventSendParams {
     #[serde(rename = "space")]
     pub space: String,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -583,7 +608,7 @@ pub struct WsPresenceData {
     pub space: String,
     #[serde(rename = "peer")]
     pub peer: String,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -599,7 +624,7 @@ pub struct WsPresenceLeaveData {
 pub struct WsPresencePeer {
     #[serde(rename = "peer")]
     pub peer: String,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -609,7 +634,7 @@ pub struct WsEventData {
     pub space: String,
     #[serde(rename = "peer")]
     pub peer: String,
-    #[serde(rename = "data")]
+    #[serde(rename = "data", with = "serde_bytes")]
     pub data: Vec<u8>,
 }
 
@@ -639,8 +664,8 @@ mod tests {
             ],
         };
 
-        let encoded = serde_cbor::to_vec(&params).expect("encode");
-        let decoded: SubscribeParams = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let decoded: SubscribeParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.spaces.len(), 2);
         assert_eq!(decoded.spaces[0].ucan, "ucan-token");
         assert_eq!(decoded.spaces[1].since, 1547);
@@ -673,8 +698,8 @@ mod tests {
             }],
         };
 
-        let encoded = serde_cbor::to_vec(&result).expect("encode");
-        let decoded: SubscribeResult = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&result).expect("encode");
+        let decoded: SubscribeResult = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.spaces[0].cursor, 42);
         assert_eq!(decoded.spaces[0].rewrap_epoch, Some(2));
         assert_eq!(decoded.spaces[1].rewrap_epoch, None);
@@ -702,8 +727,8 @@ mod tests {
                 },
             ],
         };
-        let encoded = serde_cbor::to_vec(&params).expect("encode");
-        let decoded: PushParams = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let decoded: PushParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.space, "space-uuid");
         assert_eq!(decoded.ucan, "ucan-token");
         assert_eq!(decoded.changes.len(), 2);
@@ -717,8 +742,8 @@ mod tests {
             cursor: 1549,
             error: String::new(),
         };
-        let encoded = serde_cbor::to_vec(&success).expect("encode");
-        let decoded: PushRpcResult = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&success).expect("encode");
+        let decoded: PushRpcResult = minicbor_serde::from_slice(&encoded).expect("decode");
         assert!(decoded.ok);
         assert_eq!(decoded.cursor, 1549);
 
@@ -727,8 +752,8 @@ mod tests {
             cursor: 1550,
             error: "conflict".to_string(),
         };
-        let encoded = serde_cbor::to_vec(&conflict).expect("encode");
-        let decoded: PushRpcResult = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&conflict).expect("encode");
+        let decoded: PushRpcResult = minicbor_serde::from_slice(&encoded).expect("decode");
         assert!(!decoded.ok);
         assert_eq!(decoded.error, "conflict");
     }
@@ -749,8 +774,8 @@ mod tests {
                 },
             ],
         };
-        let encoded = serde_cbor::to_vec(&params).expect("encode");
-        let decoded: PullParams = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let decoded: PullParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.spaces.len(), 2);
         assert_eq!(decoded.spaces[0].ucan, "ucan");
     }
@@ -760,16 +785,16 @@ mod tests {
         let params = TokenRefreshParams {
             token: "jwt-token-here".to_string(),
         };
-        let encoded = serde_cbor::to_vec(&params).expect("encode");
-        let decoded: TokenRefreshParams = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let decoded: TokenRefreshParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.token, "jwt-token-here");
 
         let result = TokenRefreshResult {
             ok: true,
             error: String::new(),
         };
-        let encoded = serde_cbor::to_vec(&result).expect("encode");
-        let decoded: TokenRefreshResult = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&result).expect("encode");
+        let decoded: TokenRefreshResult = minicbor_serde::from_slice(&encoded).expect("decode");
         assert!(decoded.ok);
     }
 
@@ -799,8 +824,8 @@ mod tests {
             ],
         };
 
-        let encoded = serde_cbor::to_vec(&data).expect("encode");
-        let decoded: WsSyncData = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&data).expect("encode");
+        let decoded: WsSyncData = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.space, "space-uuid");
         assert_eq!(decoded.cursor, 1548);
         assert_eq!(decoded.records.len(), 2);
@@ -821,8 +846,8 @@ mod tests {
             }],
         };
 
-        let encoded = serde_cbor::to_vec(&data).expect("encode");
-        let decoded: WsMembershipData = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&data).expect("encode");
+        let decoded: WsMembershipData = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.cursor, 47);
         assert_eq!(decoded.entries[0].chain_seq, 5);
     }
@@ -839,10 +864,103 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&data).expect("encode");
-        let decoded: WsPullFileData = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&data).expect("encode");
+        let decoded: WsPullFileData = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.size, 2_048_576);
         assert_eq!(decoded.cursor, 7);
         assert_eq!(decoded.record_id, "record-3");
+    }
+
+    // --- Cross-format interop tests ---
+    // These simulate CBOR produced by JS cborg: string-keyed maps, missing optional
+    // fields (not null), and minimal integer encoding.
+
+    /// Build CBOR from a BTreeMap to mirror JS cborg output (sorted string keys).
+    fn cbor_from_map(map: std::collections::BTreeMap<&str, serde_json::Value>) -> Vec<u8> {
+        minicbor_serde::to_vec(&map).expect("encode map")
+    }
+
+    #[test]
+    fn interop_push_change_missing_blob_and_dek() {
+        // JS sends a push change with only id and expected_cursor; blob and dek are absent.
+        let mut change_map = std::collections::BTreeMap::new();
+        change_map.insert("id", serde_json::json!("rec-1"));
+        change_map.insert("expected_cursor", serde_json::json!(5));
+        let change_bytes = minicbor_serde::to_vec(&change_map).expect("encode change");
+
+        let decoded: WsPushChange =
+            minicbor_serde::from_slice(&change_bytes).expect("decode push with missing optionals");
+        assert_eq!(decoded.id, "rec-1");
+        assert_eq!(decoded.blob, None);
+        assert_eq!(decoded.wrapped_dek, None);
+        assert_eq!(decoded.expected_cursor, 5);
+    }
+
+    #[test]
+    fn interop_push_with_explicit_null_blob() {
+        // JS sends blob: null explicitly. Roundtrip through the typed struct
+        // to get proper CBOR null (0xf6) for the option_bytes field.
+        let original = WsPushChange {
+            id: "rec-2".to_string(),
+            blob: None,
+            expected_cursor: 0,
+            wrapped_dek: None,
+        };
+        let change_bytes = minicbor_serde::to_vec(&original).expect("encode change");
+        let decoded: WsPushChange =
+            minicbor_serde::from_slice(&change_bytes).expect("decode null-blob push");
+        assert_eq!(decoded.id, "rec-2");
+        assert_eq!(decoded.blob, None);
+        assert_eq!(decoded.wrapped_dek, None);
+    }
+
+    #[test]
+    fn interop_push_params_missing_optional_ucan() {
+        // JS omits ucan when pushing to a personal space (no key in map).
+        let mut params_map = std::collections::BTreeMap::new();
+        params_map.insert("space", serde_json::json!("space-1"));
+        params_map.insert("changes", serde_json::json!([]));
+        let params_bytes = minicbor_serde::to_vec(&params_map).expect("encode params");
+
+        let decoded: PushParams =
+            minicbor_serde::from_slice(&params_bytes).expect("decode push params");
+        assert_eq!(decoded.space, "space-1");
+        assert!(decoded.ucan.is_empty());
+        assert!(decoded.changes.is_empty());
+    }
+
+    #[test]
+    fn interop_minimal_integer_encoding() {
+        // CBOR minimal encoding: small integers (0-23) are single-byte.
+        // Verify our types decode these correctly.
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("space", serde_json::json!("s"));
+        map.insert("since_seq", serde_json::json!(0));
+        let bytes = cbor_from_map(map);
+
+        let decoded: MembershipListParams =
+            minicbor_serde::from_slice(&bytes).expect("decode minimal int");
+        assert_eq!(decoded.since_seq, 0);
+    }
+
+    #[test]
+    fn interop_membership_append_with_absent_optional_fields() {
+        // Membership append with absent ucan and prev_hash (JS omits these keys).
+        let params = MembershipAppendParams {
+            space: "space-uuid".to_string(),
+            ucan: String::new(),
+            expected_version: 1,
+            prev_hash: None,
+            entry_hash: vec![4, 5, 6],
+            payload: vec![7, 8, 9],
+        };
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let decoded: MembershipAppendParams =
+            minicbor_serde::from_slice(&encoded).expect("decode");
+        assert_eq!(decoded.space, "space-uuid");
+        assert_eq!(decoded.prev_hash, None);
+        assert_eq!(decoded.entry_hash, vec![4, 5, 6]);
+        assert_eq!(decoded.payload, vec![7, 8, 9]);
+        assert!(decoded.ucan.is_empty());
     }
 }

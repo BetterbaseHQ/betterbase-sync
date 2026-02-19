@@ -71,7 +71,7 @@ fn parse_auth_token(payload: &[u8]) -> Result<String, HandshakeError> {
         return Err(HandshakeError::auth_failed("empty auth frame"));
     }
 
-    let frame: AuthFrame = serde_cbor::from_slice(payload)
+    let frame: AuthFrame = minicbor_serde::from_slice(payload)
         .map_err(|_| HandshakeError::auth_failed("invalid auth frame"))?;
     if frame.frame_type != RPC_NOTIFICATION || frame.method != "auth" {
         return Err(HandshakeError::auth_failed(
@@ -130,7 +130,7 @@ mod tests {
                 scope: "sync".to_owned(),
             }),
         };
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_NOTIFICATION,
             "method": "auth",
             "params": { "token": "valid-token" }
@@ -168,7 +168,7 @@ mod tests {
                 scope: "sync".to_owned(),
             }),
         };
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": 0,
             "method": "subscribe",
             "id": "req-1",
@@ -198,7 +198,7 @@ mod tests {
                 scope: "files".to_owned(),
             }),
         };
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_NOTIFICATION,
             "method": "auth",
             "params": { "token": "valid-token" }

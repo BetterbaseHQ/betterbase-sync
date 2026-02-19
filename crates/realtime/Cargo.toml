@@ -10,7 +10,7 @@ less-sync-auth = { path = "../auth" }
 less-sync-core = { path = "../core" }
 less-sync-storage = { path = "../storage" }
 serde.workspace = true
-serde_cbor.workspace = true
+minicbor-serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

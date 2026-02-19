@@ -46,8 +46,8 @@ mod tests {
             code: "conflict".to_string(),
             message: "sequence mismatch".to_string(),
         };
-        let encoded = serde_cbor::to_vec(&err).expect("encode");
-        let decoded: RpcError = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&err).expect("encode");
+        let decoded: RpcError = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.code, "conflict");
         assert_eq!(decoded.message, "sequence mismatch");
     }

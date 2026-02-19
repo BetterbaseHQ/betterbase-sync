@@ -46,10 +46,10 @@ pub struct FederationPeerManager {
     request_id_counter: AtomicU64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FederationPullChunk {
     pub name: String,
-    pub data: serde_cbor::Value,
+    pub data: less_sync_core::protocol::CborValue,
 }
 
 #[async_trait]
@@ -244,7 +244,7 @@ impl FederationPeerManager {
         peer: &peer::PeerConnection,
         method: &str,
         params: &P,
-    ) -> Result<serde_cbor::Value, FederationPeerError>
+    ) -> Result<less_sync_core::protocol::CborValue, FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -263,7 +263,7 @@ impl FederationPeerManager {
         peer: &peer::PeerConnection,
         method: &str,
         params: &P,
-    ) -> Result<(serde_cbor::Value, Vec<peer::ReceivedChunk>), FederationPeerError>
+    ) -> Result<(less_sync_core::protocol::CborValue, Vec<peer::ReceivedChunk>), FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -281,7 +281,7 @@ impl FederationPeerManager {
         request_id: &str,
         method: &str,
         params: &P,
-    ) -> Result<(serde_cbor::Value, Vec<peer::ReceivedChunk>), FederationPeerError>
+    ) -> Result<(less_sync_core::protocol::CborValue, Vec<peer::ReceivedChunk>), FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -398,11 +398,11 @@ fn should_retry(error: &FederationPeerError) -> bool {
     )
 }
 
-fn decode_cbor_value<T>(value: serde_cbor::Value) -> Result<T, FederationPeerError>
+fn decode_cbor_value<T>(value: less_sync_core::protocol::CborValue) -> Result<T, FederationPeerError>
 where
     T: DeserializeOwned,
 {
-    let encoded = serde_cbor::to_vec(&value)
+    let encoded = minicbor_serde::to_vec(&value)
         .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
-    serde_cbor::from_slice(&encoded).map_err(|error| FederationPeerError::Decode(error.to_string()))
+    minicbor_serde::from_slice(&encoded).map_err(|error| FederationPeerError::Decode(error.to_string()))
 }

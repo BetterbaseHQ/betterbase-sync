@@ -138,7 +138,7 @@ fn sync_payload() -> Vec<u8> {
             ]
         }
     });
-    serde_cbor::to_vec(&payload).expect("encode sync payload")
+    minicbor_serde::to_vec(&payload).expect("encode sync payload")
 }
 
 fn membership_payload() -> Vec<u8> {
@@ -157,7 +157,7 @@ fn membership_payload() -> Vec<u8> {
             ]
         }
     });
-    serde_cbor::to_vec(&payload).expect("encode membership payload")
+    minicbor_serde::to_vec(&payload).expect("encode membership payload")
 }
 
 criterion_group!(benches, bench_broadcast_sync, bench_broadcast_membership);

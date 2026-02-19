@@ -18,10 +18,10 @@ use super::FederationPeerError;
 
 type PeerSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ReceivedChunk {
     pub(super) name: String,
-    pub(super) data: serde_cbor::Value,
+    pub(super) data: less_sync_core::protocol::CborValue,
 }
 
 pub(super) struct PeerConnection {
@@ -46,7 +46,7 @@ impl PeerConnection {
         request_id: &str,
         method: &str,
         params: &P,
-    ) -> Result<(serde_cbor::Value, Vec<ReceivedChunk>), FederationPeerError>
+    ) -> Result<(less_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -186,7 +186,7 @@ fn host_header_value(url: &Url) -> Option<String> {
 async fn read_response_for_request(
     socket: &mut PeerSocket,
     request_id: &str,
-) -> Result<(serde_cbor::Value, Vec<ReceivedChunk>), FederationPeerError> {
+) -> Result<(less_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError> {
     let mut chunks = Vec::new();
     while let Some(frame) = socket.next().await {
         let frame = frame.map_err(|_| FederationPeerError::Closed)?;
@@ -207,7 +207,7 @@ async fn read_response_for_request(
                         if let Some(error) = response.error {
                             return Err(FederationPeerError::Rpc(error));
                         }
-                        return Ok((response.result.unwrap_or(serde_cbor::Value::Null), chunks));
+                        return Ok((response.result.unwrap_or(less_sync_core::protocol::CborValue::Null), chunks));
                     }
                     InboundFrame::Chunk(chunk) => {
                         if chunk.frame_type != less_sync_core::protocol::RPC_CHUNK {

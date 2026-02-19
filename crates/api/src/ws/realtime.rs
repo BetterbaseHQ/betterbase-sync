@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    WsEventData, WsPresenceData, WsPresenceLeaveData, WsSyncData, WsSyncRecord,
+    WsEventData, WsPresenceData, WsPresenceLeaveData, WsRevokedData, WsSyncData, WsSyncRecord,
     CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
 };
 use less_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, SubscriberId};
@@ -155,6 +155,45 @@ impl RealtimeSession {
         .await;
     }
 
+    /// Broadcast an invitation notification to all subscribers for the given mailbox.
+    /// A random delay (1-5s) is applied to mitigate timing correlation.
+    pub(crate) fn broadcast_invitation(&self, mailbox_id: &str) {
+        let broker = Arc::clone(&self.broker);
+        let mailbox_id = mailbox_id.to_owned();
+        tokio::spawn(async move {
+            // Random delay 1-5 seconds to mitigate timing correlation
+            let delay_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| 1 + (d.subsec_nanos() as u64 % 5))
+                .unwrap_or(3);
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+
+            let frame = RpcNotificationFrame {
+                frame_type: RPC_NOTIFICATION,
+                method: "invitation",
+                params: std::collections::HashMap::<String, String>::new(),
+            };
+            let encoded = match minicbor_serde::to_vec(&frame) {
+                Ok(encoded) => encoded,
+                Err(_) => return,
+            };
+            let _ = broker.broadcast_mailbox(&mailbox_id, &encoded).await;
+        });
+    }
+
+    /// Broadcast a revocation notification to all watchers of a space.
+    pub(crate) async fn broadcast_revocation(&self, space_id: &str, reason: &str) {
+        self.broadcast_notification(
+            space_id,
+            "revoked",
+            WsRevokedData {
+                space: space_id.to_owned(),
+                reason: reason.to_owned(),
+            },
+        )
+        .await;
+    }
+
     pub(crate) async fn unregister(&self) {
         let _ = self.broker.unregister_subscriber(self.subscriber_id).await;
     }
@@ -168,7 +207,7 @@ impl RealtimeSession {
             method,
             params,
         };
-        let encoded = match serde_cbor::to_vec(&frame) {
+        let encoded = match minicbor_serde::to_vec(&frame) {
             Ok(encoded) => encoded,
             Err(_) => return,
         };

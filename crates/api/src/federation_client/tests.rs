@@ -25,7 +25,7 @@ struct InboundRequestFrame {
     frame_type: i32,
     id: String,
     method: String,
-    params: serde_cbor::Value,
+    params: less_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -33,7 +33,7 @@ struct OutboundResponseFrame {
     #[serde(rename = "type")]
     frame_type: i32,
     id: String,
-    result: serde_cbor::Value,
+    result: less_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -42,14 +42,14 @@ struct OutboundChunkFrame {
     frame_type: i32,
     id: String,
     name: String,
-    data: serde_cbor::Value,
+    data: less_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone)]
 enum MockPeerReply {
     Respond {
-        result: serde_cbor::Value,
-        chunks: Vec<(String, serde_cbor::Value)>,
+        result: less_sync_core::protocol::CborValue,
+        chunks: Vec<(String, less_sync_core::protocol::CborValue)>,
     },
     CloseConnection,
 }
@@ -125,7 +125,7 @@ impl Drop for MockFederationPeer {
 #[tokio::test]
 async fn federation_peer_manager_subscribe_stores_returned_fsts() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::value::to_value(SubscribeResult {
+        result: less_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
             spaces: vec![
                 less_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
@@ -192,7 +192,7 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
 #[tokio::test]
 async fn federation_peer_manager_subscribe_fallback_tracks_spaces_on_decode_failure() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::Value::Integer(7),
+        result: less_sync_core::protocol::CborValue::Integer(7),
         chunks: Vec::new(),
     })
     .await;
@@ -231,7 +231,7 @@ async fn federation_peer_manager_subscribe_fallback_tracks_spaces_on_decode_fail
 #[tokio::test]
 async fn federation_peer_manager_forward_push_forwards_and_decodes() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::value::to_value(PushRpcResult {
+        result: less_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
             ok: true,
             cursor: 42,
             error: String::new(),
@@ -273,7 +273,7 @@ async fn federation_peer_manager_forward_push_forwards_and_decodes() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
     let peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::value::to_value(less_sync_core::protocol::FederationInvitationResult {
+        result: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::FederationInvitationResult {
             ok: false,
         })
         .expect("encode invitation result"),
@@ -301,7 +301,7 @@ async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_forwards_params() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::value::to_value(less_sync_core::protocol::FederationInvitationResult {
+        result: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::FederationInvitationResult {
             ok: true,
         })
         .expect("encode invitation result"),
@@ -332,12 +332,12 @@ async fn federation_peer_manager_forward_invitation_forwards_params() {
 #[tokio::test]
 async fn federation_peer_manager_pull_collects_chunk_frames() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::Value::Null,
+        result: less_sync_core::protocol::CborValue::Null,
         chunks: vec![
-            ("pull.begin".to_owned(), serde_cbor::Value::Integer(1)),
+            ("pull.begin".to_owned(), less_sync_core::protocol::CborValue::Integer(1)),
             (
                 "pull.record".to_owned(),
-                serde_cbor::Value::Bytes(vec![1, 2, 3]),
+                less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]),
             ),
         ],
     })
@@ -356,9 +356,9 @@ async fn federation_peer_manager_pull_collects_chunk_frames() {
         .expect("pull");
     assert_eq!(chunks.len(), 2);
     assert_eq!(chunks[0].name, "pull.begin");
-    assert_eq!(chunks[0].data, serde_cbor::Value::Integer(1));
+    assert_eq!(chunks[0].data, less_sync_core::protocol::CborValue::Integer(1));
     assert_eq!(chunks[1].name, "pull.record");
-    assert_eq!(chunks[1].data, serde_cbor::Value::Bytes(vec![1, 2, 3]));
+    assert_eq!(chunks[1].data, less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]));
 
     let req = peer.require_request().await;
     assert_eq!(req.method, "pull");
@@ -379,7 +379,7 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
             return MockPeerReply::CloseConnection;
         }
         MockPeerReply::Respond {
-            result: serde_cbor::value::to_value(PushRpcResult {
+            result: less_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
                 ok: true,
                 cursor: 7,
                 error: String::new(),
@@ -422,7 +422,7 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
 #[tokio::test]
 async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: serde_cbor::value::to_value(SubscribeResult {
+        result: less_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
             spaces: vec![
                 less_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
@@ -521,12 +521,12 @@ async fn peer_tokens(
     peer.space_tokens().await
 }
 
-fn decode_params<T>(params: serde_cbor::Value) -> T
+fn decode_params<T>(params: less_sync_core::protocol::CborValue) -> T
 where
     T: serde::de::DeserializeOwned,
 {
-    let encoded = serde_cbor::to_vec(&params).expect("encode params");
-    serde_cbor::from_slice(&encoded).expect("decode params")
+    let encoded = minicbor_serde::to_vec(&params).expect("encode params");
+    minicbor_serde::from_slice(&encoded).expect("decode params")
 }
 
 async fn handle_socket(
@@ -542,7 +542,7 @@ async fn handle_socket(
             continue;
         }
 
-        let request: InboundRequestFrame = match serde_cbor::from_slice(payload.as_ref()) {
+        let request: InboundRequestFrame = match minicbor_serde::from_slice(payload.as_ref()) {
             Ok(request) => request,
             Err(_) => return,
         };
@@ -557,7 +557,7 @@ async fn handle_socket(
                         name,
                         data,
                     };
-                    let encoded = match serde_cbor::to_vec(&chunk) {
+                    let encoded = match minicbor_serde::to_vec(&chunk) {
                         Ok(encoded) => encoded,
                         Err(_) => return,
                     };
@@ -571,7 +571,7 @@ async fn handle_socket(
                     id: request.id,
                     result,
                 };
-                let encoded = match serde_cbor::to_vec(&response) {
+                let encoded = match minicbor_serde::to_vec(&response) {
                     Ok(encoded) => encoded,
                     Err(_) => return,
                 };

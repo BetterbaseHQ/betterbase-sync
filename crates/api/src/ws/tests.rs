@@ -1153,23 +1153,16 @@ async fn websocket_federation_push_requires_ucan() {
     let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "fed-push-no-ucan",
-            "method": "push",
-            "params": {
-                "space": shared_space_id.to_string(),
-                "changes": [{
-                    "id": Uuid::new_v4().to_string(),
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "fed-push-no-ucan", "push", &less_sync_core::protocol::PushParams {
+        space: shared_space_id.to_string(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: Uuid::new_v4().to_string(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -1212,24 +1205,16 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
     let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "fed-push-1",
-            "method": "push",
-            "params": {
-                "space": shared_space_id.to_string(),
-                "ucan": write_ucan,
-                "changes": [{
-                    "id": Uuid::new_v4().to_string(),
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "fed-push-1", "push", &less_sync_core::protocol::PushParams {
+        space: shared_space_id.to_string(),
+        ucan: write_ucan.clone(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: Uuid::new_v4().to_string(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -1446,47 +1431,31 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
     let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "fed-push-quota-1",
-            "method": "push",
-            "params": {
-                "space": shared_space_id.to_string(),
-                "ucan": write_ucan,
-                "changes": [{
-                    "id": Uuid::new_v4().to_string(),
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "fed-push-quota-1", "push", &less_sync_core::protocol::PushParams {
+        space: shared_space_id.to_string(),
+        ucan: write_ucan.clone(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: Uuid::new_v4().to_string(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
     let first: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert!(first.result.ok);
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "fed-push-quota-2",
-            "method": "push",
-            "params": {
-                "space": shared_space_id.to_string(),
-                "ucan": write_ucan,
-                "changes": [{
-                    "id": Uuid::new_v4().to_string(),
-                    "blob": [4,5,6],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "fed-push-quota-2", "push", &less_sync_core::protocol::PushParams {
+        space: shared_space_id.to_string(),
+        ucan: write_ucan.clone(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: Uuid::new_v4().to_string(),
+            blob: Some(vec![4, 5, 6]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
     let second = read_error_response(&mut socket).await;
     assert_eq!(second.id, "fed-push-quota-2");
@@ -1546,7 +1515,7 @@ async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    let frame = serde_cbor::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(&serde_json::json!({
         "type": less_sync_core::protocol::RPC_REQUEST,
         "method": "subscribe",
         "id": "req-1",
@@ -1720,23 +1689,16 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
     assert!(!response.result.ok);
     assert_eq!(response.result.error, "sync scope required");
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-after-refresh-fail",
-            "method": "push",
-            "params": {
-                "space": space_id,
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-after-refresh-fail", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -1831,23 +1793,16 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
     assert!(!response.result.ok);
     assert_eq!(response.result.error, "token identity mismatch");
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-after-refresh-mismatch",
-            "method": "push",
-            "params": {
-                "space": space_id,
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-after-refresh-mismatch", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -1871,19 +1826,10 @@ async fn websocket_space_create_returns_id_and_key_generation() {
     let space_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "space-create-1",
-            "method": "space.create",
-            "params": {
-                "id": space_id,
-                "root_public_key": [1, 2, 3]
-            }
-        }),
-    )
-    .await;
+    send_rpc_request(&mut socket, "space-create-1", "space.create", &less_sync_core::protocol::SpaceCreateParams {
+        id: space_id.clone(),
+        root_public_key: vec![1, 2, 3],
+    }).await;
 
     let response: RpcResultResponse<less_sync_core::protocol::SpaceCreateResult> =
         read_result_response(&mut socket).await;
@@ -1906,19 +1852,10 @@ async fn websocket_space_create_invalid_space_id_returns_bad_request() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "space-create-2",
-            "method": "space.create",
-            "params": {
-                "id": "not-a-uuid",
-                "root_public_key": [1, 2, 3]
-            }
-        }),
-    )
-    .await;
+    send_rpc_request(&mut socket, "space-create-2", "space.create", &less_sync_core::protocol::SpaceCreateParams {
+        id: "not-a-uuid".to_owned(),
+        root_public_key: vec![1, 2, 3],
+    }).await;
 
     let response = read_error_response(&mut socket).await;
     assert_eq!(response.id, "space-create-2");
@@ -1942,19 +1879,10 @@ async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "space-create-2b",
-            "method": "space.create",
-            "params": {
-                "id": Uuid::new_v4().to_string(),
-                "root_public_key": []
-            }
-        }),
-    )
-    .await;
+    send_rpc_request(&mut socket, "space-create-2b", "space.create", &less_sync_core::protocol::SpaceCreateParams {
+        id: Uuid::new_v4().to_string(),
+        root_public_key: vec![],
+    }).await;
 
     let response = read_error_response(&mut socket).await;
     assert_eq!(response.id, "space-create-2b");
@@ -1980,19 +1908,10 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "space-create-3",
-            "method": "space.create",
-            "params": {
-                "id": Uuid::new_v4().to_string(),
-                "root_public_key": [1, 2, 3]
-            }
-        }),
-    )
-    .await;
+    send_rpc_request(&mut socket, "space-create-3", "space.create", &less_sync_core::protocol::SpaceCreateParams {
+        id: Uuid::new_v4().to_string(),
+        root_public_key: vec![1, 2, 3],
+    }).await;
 
     let response = read_error_response(&mut socket).await;
     assert_eq!(response.id, "space-create-3");
@@ -2011,19 +1930,10 @@ async fn websocket_space_create_without_sync_storage_returns_internal_error() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "space-create-4",
-            "method": "space.create",
-            "params": {
-                "id": Uuid::new_v4().to_string(),
-                "root_public_key": [1, 2, 3]
-            }
-        }),
-    )
-    .await;
+    send_rpc_request(&mut socket, "space-create-4", "space.create", &less_sync_core::protocol::SpaceCreateParams {
+        id: Uuid::new_v4().to_string(),
+        root_public_key: vec![1, 2, 3],
+    }).await;
 
     let response = read_error_response(&mut socket).await;
     assert_eq!(response.id, "space-create-4");
@@ -2047,20 +1957,18 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
+    send_rpc_request(
         &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "membership-append-1",
-            "method": "membership.append",
-            "params": {
-                "space": test_personal_space_id(),
-                "expected_version": 1,
-                "prev_hash": [1, 2, 3],
-                "entry_hash": [4, 5, 6],
-                "payload": [7, 8, 9]
-            }
-        }),
+        "membership-append-1",
+        "membership.append",
+        &less_sync_core::protocol::MembershipAppendParams {
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            expected_version: 1,
+            prev_hash: Some(vec![1, 2, 3]),
+            entry_hash: vec![4, 5, 6],
+            payload: vec![7, 8, 9],
+        },
     )
     .await;
 
@@ -2087,19 +1995,18 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
+    send_rpc_request(
         &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "membership-append-2",
-            "method": "membership.append",
-            "params": {
-                "space": test_personal_space_id(),
-                "expected_version": 1,
-                "entry_hash": [4, 5, 6],
-                "payload": [7, 8, 9]
-            }
-        }),
+        "membership-append-2",
+        "membership.append",
+        &less_sync_core::protocol::MembershipAppendParams {
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            expected_version: 1,
+            prev_hash: None,
+            entry_hash: vec![4, 5, 6],
+            payload: vec![7, 8, 9],
+        },
     )
     .await;
 
@@ -2981,18 +2888,14 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "deks-rewrap-1",
-            "method": "deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": Uuid::new_v4().to_string(), "dek": vec![9; 44] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "deks-rewrap-1", "deks.rewrap", &less_sync_core::protocol::DeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            id: Uuid::new_v4().to_string(),
+            dek: vec![9; 44],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3017,18 +2920,14 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "deks-rewrap-invalid-id",
-            "method": "deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": "", "dek": vec![9; 44] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "deks-rewrap-invalid-id", "deks.rewrap", &less_sync_core::protocol::DeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            id: String::new(),
+            dek: vec![9; 44],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3053,18 +2952,14 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "deks-rewrap-invalid-size",
-            "method": "deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": Uuid::new_v4().to_string(), "dek": vec![9; 43] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "deks-rewrap-invalid-size", "deks.rewrap", &less_sync_core::protocol::DeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            id: Uuid::new_v4().to_string(),
+            dek: vec![9; 43],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3196,18 +3091,14 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "file-deks-rewrap-1",
-            "method": "file.deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": "not-a-uuid", "dek": vec![9; 44] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "file-deks-rewrap-1", "file.deks.rewrap", &less_sync_core::protocol::FileDeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            id: "not-a-uuid".to_owned(),
+            dek: vec![9; 44],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3232,18 +3123,14 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "deks-rewrap-files-alias",
-            "method": "deks.rewrapFiles",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": "not-a-uuid", "dek": vec![9; 44] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "deks-rewrap-files-alias", "deks.rewrapFiles", &less_sync_core::protocol::FileDeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            id: "not-a-uuid".to_owned(),
+            dek: vec![9; 44],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3268,18 +3155,14 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "file-deks-rewrap-bad-size",
-            "method": "file.deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": Uuid::new_v4().to_string(), "dek": vec![9; 43] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "file-deks-rewrap-bad-size", "file.deks.rewrap", &less_sync_core::protocol::FileDeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            id: Uuid::new_v4().to_string(),
+            dek: vec![9; 43],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3306,18 +3189,14 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "file-deks-rewrap-conflict",
-            "method": "file.deks.rewrap",
-            "params": {
-                "space": test_personal_space_id(),
-                "deks": [{ "id": Uuid::new_v4().to_string(), "dek": vec![9; 44] }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "file-deks-rewrap-conflict", "file.deks.rewrap", &less_sync_core::protocol::FileDeksRewrapParams {
+        space: test_personal_space_id(),
+        ucan: String::new(),
+        deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            id: Uuid::new_v4().to_string(),
+            dek: vec![9; 44],
+        }],
+    })
     .await;
 
     let response = read_error_response(&mut socket).await;
@@ -3887,23 +3766,16 @@ async fn websocket_push_returns_cursor_on_success() {
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-1",
-            "method": "push",
-            "params": {
-                "space": space_id,
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-1", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -3936,23 +3808,16 @@ async fn websocket_push_forwards_to_space_home_server() {
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-forward-1",
-            "method": "push",
-            "params": {
-                "space": space_id,
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-forward-1", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -4014,23 +3879,16 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
     assert_eq!(subscribe_response.result.spaces.len(), 1);
     assert!(subscribe_response.result.errors.is_empty());
 
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-forward-restore-1",
-            "method": "push",
-            "params": {
-                "space": space_id,
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-forward-restore-1", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -4075,23 +3933,16 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-2",
-            "method": "push",
-            "params": {
-                "space": "not-a-uuid",
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-2", "push", &less_sync_core::protocol::PushParams {
+        space: "not-a-uuid".to_owned(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -4118,23 +3969,16 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
     let record_id = Uuid::new_v4().to_string();
 
     send_auth(&mut socket).await;
-    send_binary_frame(
-        &mut socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-forbidden-1",
-            "method": "push",
-            "params": {
-                "space": Uuid::new_v4().to_string(),
-                "changes": [{
-                    "id": record_id,
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut socket, "push-forbidden-1", "push", &less_sync_core::protocol::PushParams {
+        space: Uuid::new_v4().to_string(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -4254,7 +4098,7 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
     let remote_chunks = vec![
         crate::federation_client::FederationPullChunk {
             name: "pull.begin".to_owned(),
-            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullBeginData {
+            data: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::WsPullBeginData {
                 space: space_id.clone(),
                 prev: 100,
                 cursor: 240,
@@ -4265,7 +4109,7 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         },
         crate::federation_client::FederationPullChunk {
             name: "pull.record".to_owned(),
-            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullRecordData {
+            data: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::WsPullRecordData {
                 space: space_id.clone(),
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![7, 8, 9]),
@@ -4277,7 +4121,7 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         },
         crate::federation_client::FederationPullChunk {
             name: "pull.commit".to_owned(),
-            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullCommitData {
+            data: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::WsPullCommitData {
                 space: space_id.clone(),
                 prev: 100,
                 cursor: 241,
@@ -4446,23 +4290,16 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
     let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut watcher_socket).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-sync-1",
-            "method": "push",
-            "params": {
-                "space": space_id.clone(),
-                "changes": [{
-                    "id": record_id.clone(),
-                    "blob": [7,8,9],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut sender_socket, "push-sync-1", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![7, 8, 9]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
 
     let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
@@ -4552,23 +4389,16 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
     .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
-            "id": "push-sync-2",
-            "method": "push",
-            "params": {
-                "space": space_id.clone(),
-                "changes": [{
-                    "id": record_id.clone(),
-                    "blob": [1,2,3],
-                    "expected_cursor": 0,
-                    "dek": vec![170; 44]
-                }]
-            }
-        }),
-    )
+    send_rpc_request(&mut sender_socket, "push-sync-2", "push", &less_sync_core::protocol::PushParams {
+        space: space_id.clone(),
+        ucan: String::new(),
+        changes: vec![less_sync_core::protocol::WsPushChange {
+            id: record_id.clone(),
+            blob: Some(vec![1, 2, 3]),
+            expected_cursor: 0,
+            wrapped_dek: Some(vec![170; 44]),
+        }],
+    })
     .await;
     let _: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut sender_socket).await;
@@ -4620,17 +4450,10 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
     let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut sender_socket).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id.clone(),
-                "data": [9, 9, 9]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![9, 9, 9],
+    })
     .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -4682,17 +4505,10 @@ async fn websocket_presence_set_broadcasts_to_other_subscribers() {
     subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-2", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-2", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id.clone(),
-                "data": [1, 2, 3, 4]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![1, 2, 3, 4],
+    })
     .await;
 
     let notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
@@ -4735,17 +4551,10 @@ async fn websocket_presence_clear_broadcasts_leave_notification() {
     subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-3", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-3", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id.clone(),
-                "data": [8, 8]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![8, 8],
+    })
     .await;
 
     let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
@@ -4795,17 +4604,10 @@ async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
     subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-35", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-35", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id.clone(),
-                "data": [2, 2]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![2, 2],
+    })
     .await;
 
     let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
@@ -4855,17 +4657,10 @@ async fn websocket_event_send_broadcasts_to_other_subscribers() {
     subscribe_socket_to_space(&mut sender_socket, "sub-event-sender-1", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-event-watcher-1", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "event.send",
-            "params": {
-                "space": space_id.clone(),
-                "data": [4, 5, 6]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "event.send", &less_sync_core::protocol::WsEventSendParams {
+        space: space_id.clone(),
+        data: vec![4, 5, 6],
+    })
     .await;
 
     let notification: RpcNotificationResponse<less_sync_core::protocol::WsEventData> =
@@ -4902,17 +4697,10 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
     subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-4", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-4", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id.clone(),
-                "data": [1]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![1],
+    })
     .await;
 
     let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
@@ -4957,17 +4745,10 @@ async fn websocket_presence_set_oversized_payload_is_ignored() {
     subscribe_socket_to_space(&mut sender_socket, "sub-presence-sender-5", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-presence-watcher-5", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "presence.set",
-            "params": {
-                "space": space_id,
-                "data": vec![7; super::presence::MAX_PRESENCE_DATA_BYTES + 1]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "presence.set", &less_sync_core::protocol::WsPresenceSetParams {
+        space: space_id.clone(),
+        data: vec![7; super::presence::MAX_PRESENCE_DATA_BYTES + 1],
+    })
     .await;
 
     let watcher_frame =
@@ -5004,17 +4785,10 @@ async fn websocket_event_send_oversized_payload_is_ignored() {
     subscribe_socket_to_space(&mut sender_socket, "sub-event-sender-2", &space_id).await;
     subscribe_socket_to_space(&mut watcher_socket, "sub-event-watcher-2", &space_id).await;
 
-    send_binary_frame(
-        &mut sender_socket,
-        serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
-            "method": "event.send",
-            "params": {
-                "space": space_id,
-                "data": vec![7; super::presence::MAX_EVENT_DATA_BYTES + 1]
-            }
-        }),
-    )
+    send_rpc_notification(&mut sender_socket, "event.send", &less_sync_core::protocol::WsEventSendParams {
+        space: space_id.clone(),
+        data: vec![7; super::presence::MAX_EVENT_DATA_BYTES + 1],
+    })
     .await;
 
     let watcher_frame =
@@ -5448,7 +5222,7 @@ async fn send_auth(socket: &mut TestSocket) {
 }
 
 async fn send_auth_with_token(socket: &mut TestSocket, token: &str) {
-    let frame = serde_cbor::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(&serde_json::json!({
         "type": less_sync_core::protocol::RPC_NOTIFICATION,
         "method": "auth",
         "params": { "token": token }
@@ -5461,11 +5235,62 @@ async fn send_auth_with_token(socket: &mut TestSocket, token: &str) {
 }
 
 async fn send_binary_frame(socket: &mut TestSocket, frame: serde_json::Value) {
-    let encoded = serde_cbor::to_vec(&frame).expect("encode frame");
+    let encoded = minicbor_serde::to_vec(&frame).expect("encode frame");
     socket
         .send(WsMessage::Binary(encoded.into()))
         .await
         .expect("send frame");
+}
+
+async fn send_rpc_request<T: serde::Serialize>(
+    socket: &mut TestSocket,
+    id: &str,
+    method: &str,
+    params: &T,
+) {
+    #[derive(serde::Serialize)]
+    struct Frame<'a, T: serde::Serialize> {
+        #[serde(rename = "type")]
+        frame_type: i32,
+        id: &'a str,
+        method: &'a str,
+        params: &'a T,
+    }
+    let encoded = minicbor_serde::to_vec(&Frame {
+        frame_type: less_sync_core::protocol::RPC_REQUEST,
+        id,
+        method,
+        params,
+    })
+    .expect("encode rpc request");
+    socket
+        .send(WsMessage::Binary(encoded.into()))
+        .await
+        .expect("send rpc request");
+}
+
+async fn send_rpc_notification<T: serde::Serialize>(
+    socket: &mut TestSocket,
+    method: &str,
+    params: &T,
+) {
+    #[derive(serde::Serialize)]
+    struct Frame<'a, T: serde::Serialize> {
+        #[serde(rename = "type")]
+        frame_type: i32,
+        method: &'a str,
+        params: &'a T,
+    }
+    let encoded = minicbor_serde::to_vec(&Frame {
+        frame_type: less_sync_core::protocol::RPC_NOTIFICATION,
+        method,
+        params,
+    })
+    .expect("encode rpc notification");
+    socket
+        .send(WsMessage::Binary(encoded.into()))
+        .await
+        .expect("send rpc notification");
 }
 
 async fn subscribe_socket_to_space(socket: &mut TestSocket, request_id: &str, space_id: &str) {
@@ -5566,7 +5391,7 @@ async fn read_error_response(socket: &mut TestSocket) -> RpcErrorResponse {
         .expect("websocket read");
 
     match frame {
-        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode response"),
+        WsMessage::Binary(data) => minicbor_serde::from_slice(&data).expect("decode response"),
         other => panic!("expected binary response frame, got {other:?}"),
     }
 }
@@ -5582,7 +5407,7 @@ where
         .expect("websocket read");
 
     match frame {
-        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode response"),
+        WsMessage::Binary(data) => minicbor_serde::from_slice(&data).expect("decode response"),
         other => panic!("expected binary response frame, got {other:?}"),
     }
 }
@@ -5598,7 +5423,7 @@ where
         .expect("websocket read");
 
     match frame {
-        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode chunk"),
+        WsMessage::Binary(data) => minicbor_serde::from_slice(&data).expect("decode chunk"),
         other => panic!("expected binary chunk frame, got {other:?}"),
     }
 }
@@ -5614,7 +5439,7 @@ where
         .expect("websocket read");
 
     match frame {
-        WsMessage::Binary(data) => serde_cbor::from_slice(&data).expect("decode notification"),
+        WsMessage::Binary(data) => minicbor_serde::from_slice(&data).expect("decode notification"),
         other => panic!("expected binary notification frame, got {other:?}"),
     }
 }

@@ -27,7 +27,7 @@ pub(super) struct InboundResponseFrame {
     pub(super) frame_type: i32,
     pub(super) id: String,
     #[serde(default)]
-    pub(super) result: Option<serde_cbor::Value>,
+    pub(super) result: Option<less_sync_core::protocol::CborValue>,
     #[serde(default)]
     pub(super) error: Option<RpcError>,
 }
@@ -38,7 +38,7 @@ pub(super) struct InboundChunkFrame {
     pub(super) frame_type: i32,
     pub(super) id: String,
     pub(super) name: String,
-    pub(super) data: serde_cbor::Value,
+    pub(super) data: less_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -55,7 +55,7 @@ pub(super) fn encode_request_frame<T>(
 where
     T: serde::Serialize,
 {
-    serde_cbor::to_vec(&OutboundRequestFrame {
+    minicbor_serde::to_vec(&OutboundRequestFrame {
         frame_type: less_sync_core::protocol::RPC_REQUEST,
         id: request_id,
         method,
@@ -65,17 +65,17 @@ where
 }
 
 pub(super) fn decode_inbound_frame(payload: &[u8]) -> Result<InboundFrame, FederationPeerError> {
-    let tag: FrameTag = serde_cbor::from_slice(payload)
+    let tag: FrameTag = minicbor_serde::from_slice(payload)
         .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
 
     match tag.frame_type {
         RPC_RESPONSE => {
-            let response: InboundResponseFrame = serde_cbor::from_slice(payload)
+            let response: InboundResponseFrame = minicbor_serde::from_slice(payload)
                 .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
             Ok(InboundFrame::Response(response))
         }
         RPC_CHUNK => {
-            let chunk: InboundChunkFrame = serde_cbor::from_slice(payload)
+            let chunk: InboundChunkFrame = minicbor_serde::from_slice(payload)
                 .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
             Ok(InboundFrame::Chunk(chunk))
         }

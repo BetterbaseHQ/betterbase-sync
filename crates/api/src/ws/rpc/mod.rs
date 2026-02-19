@@ -417,7 +417,7 @@ async fn handle_client_notification(
     }
 }
 
-pub(super) fn decode_frame_params<T>(payload: &[u8]) -> Result<T, serde_cbor::Error>
+pub(super) fn decode_frame_params<T>(payload: &[u8]) -> Result<T, minicbor_serde::error::DecodeError>
 where
     T: DeserializeOwned,
 {
@@ -427,7 +427,7 @@ where
         params: T,
     }
 
-    serde_cbor::from_slice::<FrameEnvelope<T>>(payload).map(|envelope| envelope.params)
+    minicbor_serde::from_slice::<FrameEnvelope<T>>(payload).map(|envelope| envelope.params)
 }
 
 #[derive(Debug, serde::Serialize)]

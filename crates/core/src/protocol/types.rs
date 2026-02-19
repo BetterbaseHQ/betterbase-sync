@@ -1,3 +1,4 @@
+use super::ws::option_bytes;
 use serde::{Deserialize, Serialize};
 
 /// Space represents a sync namespace for records.
@@ -9,7 +10,7 @@ pub struct Space {
     pub id: String,
     #[serde(rename = "client_id")]
     pub client_id: String,
-    #[serde(rename = "root_public_key", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "root_public_key", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub root_public_key: Option<Vec<u8>>,
     #[serde(rename = "key_generation")]
     pub key_generation: i32,
@@ -30,11 +31,11 @@ pub struct Space {
 pub struct Change {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob")]
+    #[serde(rename = "blob", with = "option_bytes", default)]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(skip)]
     pub deleted: bool, // storage-only; not part of wire format
@@ -67,8 +68,8 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
 
         assert_eq!(decoded.id, change.id);
         assert_eq!(decoded.blob, change.blob);
@@ -85,8 +86,8 @@ mod tests {
             deleted: true,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
 
         assert_eq!(decoded.blob, None);
         assert!(!decoded.deleted);
@@ -132,8 +133,8 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
 
         assert_eq!(decoded.blob, Some(Vec::new()));
         assert!(!decoded.is_deleted());
@@ -150,8 +151,8 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
 
         let blob = decoded.blob.expect("blob");
         assert_eq!(blob.len(), 256);
@@ -168,8 +169,8 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.cursor, 0);
     }
 
@@ -183,8 +184,8 @@ mod tests {
             deleted: false,
         };
 
-        let encoded = serde_cbor::to_vec(&change).expect("encode");
-        let decoded: Change = serde_cbor::from_slice(&encoded).expect("decode");
+        let encoded = minicbor_serde::to_vec(&change).expect("encode");
+        let decoded: Change = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.cursor, i64::MAX);
     }
 

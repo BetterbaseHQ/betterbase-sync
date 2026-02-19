@@ -26,7 +26,7 @@ where
         id,
         result,
     };
-    let encoded = match serde_cbor::to_vec(&frame) {
+    let encoded = match minicbor_serde::to_vec(&frame) {
         Ok(encoded) => encoded,
         Err(_) => return,
     };
@@ -47,7 +47,7 @@ pub(super) async fn send_chunk_response<T>(
         name,
         data,
     };
-    let encoded = match serde_cbor::to_vec(&frame) {
+    let encoded = match minicbor_serde::to_vec(&frame) {
         Ok(encoded) => encoded,
         Err(_) => return,
     };
@@ -65,7 +65,7 @@ pub(super) async fn send_error_response(
         id,
         error: RpcErrorPayload { code, message },
     };
-    let encoded = match serde_cbor::to_vec(&frame) {
+    let encoded = match minicbor_serde::to_vec(&frame) {
         Ok(encoded) => encoded,
         Err(_) => return,
     };

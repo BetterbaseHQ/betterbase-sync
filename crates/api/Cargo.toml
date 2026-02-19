@@ -18,7 +18,7 @@ less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
 object_store.workspace = true
 serde.workspace = true
-serde_cbor.workspace = true
+minicbor-serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true

@@ -32,7 +32,7 @@ pub fn parse_client_binary_frame(payload: &[u8]) -> Result<ClientFrame, CloseDir
         return Ok(ClientFrame::Keepalive);
     }
 
-    let frame: DecodedFrame = serde_cbor::from_slice(payload)
+    let frame: DecodedFrame = minicbor_serde::from_slice(payload)
         .map_err(|_| CloseDirective::protocol_error("invalid cbor frame"))?;
 
     match frame.frame_type {
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn allows_unknown_frame_types() {
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": 99,
             "method": "noop",
             "id": "req-1"
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn parses_request_frame() {
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_REQUEST,
             "id": "req-1",
             "method": "subscribe",
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn parses_notification_frame() {
-        let frame = serde_cbor::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_NOTIFICATION,
             "method": "presence.set",
             "params": {}
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn parses_response_and_chunk_frames() {
-        let response = serde_cbor::to_vec(&serde_json::json!({
+        let response = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_RESPONSE,
             "id": "r-1",
             "result": {}
@@ -147,7 +147,7 @@ mod tests {
             ClientFrame::Response
         );
 
-        let chunk = serde_cbor::to_vec(&serde_json::json!({
+        let chunk = minicbor_serde::to_vec(&serde_json::json!({
             "type": RPC_CHUNK,
             "id": "c-1",
             "name": "pull.record",
