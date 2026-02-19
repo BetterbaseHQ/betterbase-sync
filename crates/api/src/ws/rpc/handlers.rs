@@ -427,6 +427,7 @@ pub(super) async fn handle_push_request(
 pub(super) async fn handle_pull_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    federation_forwarder: Option<&dyn crate::FederationForwarder>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -463,6 +464,26 @@ pub(super) async fn handle_pull_request(
             Ok(space_state) => space_state,
             Err(_) => continue,
         };
+
+        if let (Some(federation_forwarder), Some(home_server)) =
+            (federation_forwarder, space_state.home_server.clone())
+        {
+            let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+            let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
+            let remote_chunks = match federation_forwarder
+                .pull(&peer_domain, &peer_ws_url, std::slice::from_ref(requested))
+                .await
+            {
+                Ok(chunks) => chunks,
+                Err(_) => continue,
+            };
+            for chunk in remote_chunks {
+                send_chunk_response(outbound, id, &chunk.name, &chunk.data).await;
+                chunk_count += 1;
+            }
+            continue;
+        }
+
         let pull_result = match sync_storage.pull(space_id, requested.since).await {
             Ok(pull_result) => pull_result,
             Err(StorageError::SpaceNotFound) => continue,

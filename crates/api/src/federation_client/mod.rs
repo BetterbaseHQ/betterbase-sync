@@ -68,6 +68,13 @@ pub trait FederationForwarder: Send + Sync {
         params: &PushParams,
     ) -> Result<PushRpcResult, FederationPeerError>;
 
+    async fn pull(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        spaces: &[WsPullSpace],
+    ) -> Result<Vec<FederationPullChunk>, FederationPeerError>;
+
     async fn restore_subscriptions(
         &self,
         peer_domain: &str,
@@ -311,6 +318,15 @@ impl FederationForwarder for FederationPeerManager {
         params: &PushParams,
     ) -> Result<PushRpcResult, FederationPeerError> {
         FederationPeerManager::forward_push(self, peer_domain, peer_ws_url, params).await
+    }
+
+    async fn pull(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        spaces: &[WsPullSpace],
+    ) -> Result<Vec<FederationPullChunk>, FederationPeerError> {
+        FederationPeerManager::pull(self, peer_domain, peer_ws_url, spaces).await
     }
 
     async fn restore_subscriptions(

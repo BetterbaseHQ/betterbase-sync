@@ -96,6 +96,13 @@ struct ForwardedRestoreCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ForwardedPullCall {
+    peer_domain: String,
+    peer_ws_url: String,
+    spaces: Vec<less_sync_core::protocol::WsPullSpace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ForwardedInvitationCall {
     peer_domain: String,
     peer_ws_url: String,
@@ -104,11 +111,14 @@ struct ForwardedInvitationCall {
 
 struct StubFederationForwarder {
     push_result: less_sync_core::protocol::PushRpcResult,
+    pull_chunks: Vec<crate::federation_client::FederationPullChunk>,
     fail_push_once: TokioMutex<bool>,
     fail_subscribe: bool,
+    fail_pull: bool,
     fail_invitation: bool,
     subscribe_calls: TokioMutex<Vec<ForwardedSubscribeCall>>,
     push_calls: TokioMutex<Vec<ForwardedPushCall>>,
+    pull_calls: TokioMutex<Vec<ForwardedPullCall>>,
     restore_calls: TokioMutex<Vec<ForwardedRestoreCall>>,
     invitation_calls: TokioMutex<Vec<ForwardedInvitationCall>>,
 }
@@ -121,11 +131,14 @@ impl StubFederationForwarder {
                 cursor: 901,
                 error: String::new(),
             },
+            pull_chunks: Vec::new(),
             fail_push_once: TokioMutex::new(false),
             fail_subscribe: false,
+            fail_pull: false,
             fail_invitation: false,
             subscribe_calls: TokioMutex::new(Vec::new()),
             push_calls: TokioMutex::new(Vec::new()),
+            pull_calls: TokioMutex::new(Vec::new()),
             restore_calls: TokioMutex::new(Vec::new()),
             invitation_calls: TokioMutex::new(Vec::new()),
         }
@@ -141,6 +154,27 @@ impl StubFederationForwarder {
     fn with_invitation_error() -> Self {
         Self {
             fail_invitation: true,
+            ..Self::healthy()
+        }
+    }
+
+    fn with_subscribe_error() -> Self {
+        Self {
+            fail_subscribe: true,
+            ..Self::healthy()
+        }
+    }
+
+    fn with_pull_chunks(chunks: Vec<crate::federation_client::FederationPullChunk>) -> Self {
+        Self {
+            pull_chunks: chunks,
+            ..Self::healthy()
+        }
+    }
+
+    fn with_pull_error() -> Self {
+        Self {
+            fail_pull: true,
             ..Self::healthy()
         }
     }
@@ -188,6 +222,25 @@ impl FederationForwarder for StubFederationForwarder {
         }
 
         Ok(self.push_result.clone())
+    }
+
+    async fn pull(
+        &self,
+        peer_domain: &str,
+        peer_ws_url: &str,
+        spaces: &[less_sync_core::protocol::WsPullSpace],
+    ) -> Result<Vec<crate::federation_client::FederationPullChunk>, FederationPeerError> {
+        self.pull_calls.lock().await.push(ForwardedPullCall {
+            peer_domain: peer_domain.to_owned(),
+            peer_ws_url: peer_ws_url.to_owned(),
+            spaces: spaces.to_vec(),
+        });
+
+        if self.fail_pull {
+            return Err(FederationPeerError::Connect("pull failed".to_owned()));
+        }
+
+        Ok(self.pull_chunks.clone())
     }
 
     async fn restore_subscriptions(
@@ -410,6 +463,18 @@ impl StubSyncStorage {
         Self {
             shared_spaces,
             revoked_ucans: HashMap::new(),
+            ..Self::healthy()
+        }
+    }
+
+    fn with_shared_spaces_and_home_servers(
+        shared_spaces: HashMap<Uuid, Vec<u8>>,
+        space_home_servers: HashMap<Uuid, String>,
+    ) -> Self {
+        Self {
+            shared_spaces,
+            revoked_ucans: HashMap::new(),
+            space_home_servers,
             ..Self::healthy()
         }
     }
@@ -3102,6 +3167,70 @@ async fn websocket_subscribe_forwards_to_space_home_server() {
 }
 
 #[tokio::test]
+async fn websocket_subscribe_remote_forward_failure_does_not_block_local_space() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let read_ucan =
+        root_issuer.issue_space_ucan("did:key:zDnaStub", shared_space_id, Permission::Read);
+    let storage = Arc::new(StubSyncStorage::with_shared_spaces_and_home_servers(
+        HashMap::from([(
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+        )]),
+        HashMap::from([(test_personal_space_uuid(), "peer.example.com".to_owned())]),
+    ));
+    let forwarder = Arc::new(StubFederationForwarder::with_subscribe_error());
+    let server = spawn_server(base_state_with_ws_storage_and_federation(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+        forwarder.clone(),
+        vec!["peer.example.com".to_owned()],
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-forward-fail-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [
+                    { "id": test_personal_space_id(), "since": 0 },
+                    { "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-forward-fail-1");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert_eq!(response.result.spaces[0].id, shared_space_id.to_string());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(response.result.errors[0].space, test_personal_space_id());
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_INTERNAL
+    );
+
+    let calls = forwarder.subscribe_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].peer_domain, "peer.example.com");
+    assert_eq!(calls[0].spaces.len(), 1);
+    assert_eq!(calls[0].spaces[0].id, test_personal_space_id());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
@@ -3818,6 +3947,151 @@ async fn websocket_pull_skips_unauthorized_space_entries() {
     let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
     assert_eq!(result.id, "pull-multi-1");
     assert_eq!(result.result.chunks, 3);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks() {
+    let space_id = test_personal_space_id();
+    let remote_chunks = vec![
+        crate::federation_client::FederationPullChunk {
+            name: "pull.begin".to_owned(),
+            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullBeginData {
+                space: space_id.clone(),
+                prev: 100,
+                cursor: 240,
+                key_generation: 3,
+                rewrap_epoch: Some(2),
+            })
+            .expect("encode pull.begin"),
+        },
+        crate::federation_client::FederationPullChunk {
+            name: "pull.record".to_owned(),
+            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullRecordData {
+                space: space_id.clone(),
+                id: Uuid::new_v4().to_string(),
+                blob: Some(vec![7, 8, 9]),
+                cursor: 241,
+                wrapped_dek: Some(vec![0xAA; 44]),
+                deleted: false,
+            })
+            .expect("encode pull.record"),
+        },
+        crate::federation_client::FederationPullChunk {
+            name: "pull.commit".to_owned(),
+            data: serde_cbor::value::to_value(less_sync_core::protocol::WsPullCommitData {
+                space: space_id.clone(),
+                prev: 100,
+                cursor: 241,
+                count: 1,
+            })
+            .expect("encode pull.commit"),
+        },
+    ];
+    let storage = Arc::new(StubSyncStorage::with_space_home_server(
+        test_personal_space_uuid(),
+        "peer.example.com",
+    ));
+    let forwarder = Arc::new(StubFederationForwarder::with_pull_chunks(remote_chunks));
+    let server = spawn_server(base_state_with_ws_storage_and_federation(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+        forwarder.clone(),
+        vec!["peer.example.com".to_owned()],
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "pull-forward-1",
+            "method": "pull",
+            "params": {
+                "spaces": [{ "id": space_id, "since": 100, "ucan": "" }]
+            }
+        }),
+    )
+    .await;
+
+    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(begin.id, "pull-forward-1");
+    assert_eq!(begin.name, "pull.begin");
+    assert_eq!(begin.data.cursor, 240);
+
+    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(record.name, "pull.record");
+    assert_eq!(record.data.cursor, 241);
+
+    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(commit.name, "pull.commit");
+    assert_eq!(commit.data.count, 1);
+
+    let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
+    assert_eq!(result.id, "pull-forward-1");
+    assert_eq!(result.result.chunks, 3);
+
+    let calls = forwarder.pull_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].peer_domain, "peer.example.com");
+    assert_eq!(
+        calls[0].peer_ws_url,
+        "wss://peer.example.com/api/v1/federation/ws"
+    );
+    assert_eq!(calls[0].spaces.len(), 1);
+    assert_eq!(calls[0].spaces[0].id, space_id);
+    assert_eq!(calls[0].spaces[0].since, 100);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_pull_remote_forward_failure_skips_space() {
+    let storage = Arc::new(StubSyncStorage::with_space_home_server(
+        test_personal_space_uuid(),
+        "peer.example.com",
+    ));
+    let forwarder = Arc::new(StubFederationForwarder::with_pull_error());
+    let server = spawn_server(base_state_with_ws_storage_and_federation(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+        forwarder.clone(),
+        vec!["peer.example.com".to_owned()],
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "pull-forward-2",
+            "method": "pull",
+            "params": {
+                "spaces": [{ "id": test_personal_space_id(), "since": 100, "ucan": "" }]
+            }
+        }),
+    )
+    .await;
+
+    let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
+    assert_eq!(result.id, "pull-forward-2");
+    assert_eq!(result.result.chunks, 0);
+
+    let calls = forwarder.pull_calls.lock().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].peer_domain, "peer.example.com");
 
     server.handle.abort();
 }

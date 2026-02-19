@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `97904b1` (`Wire websocket remote-home federation subscribe and restore flows`)
-- Working tree status at update time: in progress (app federation runtime integration verification slice)
+- HEAD: `9d609d3` (`Add storage-backed federation runtime and keygen integration coverage`)
+- Working tree status at update time: in progress (phase 6 federation runtime wrap-up slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `140`
+1. `less-sync-api`: `143`
 2. `less-sync-app`: `24`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `45`
 7. `less-sync-federation-keygen`: `6`
-8. Total passing tests: `339`
+8. Total passing tests: `342`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -123,14 +123,15 @@ Go baseline (reference from original local suite):
 16. Websocket remote-home federation orchestration:
 - Client websocket `subscribe` now federates remote-home subscriptions through the forwarder to establish remote peer-manager token state.
 - Client websocket remote-home `push` now attempts `restore_subscriptions` and retries once after transient forwarding failure.
-- Websocket tests now cover remote-home subscribe forwarding and restore-plus-retry push behavior.
+- Client websocket `pull` now federates remote-home pulls through the forwarder and streams remote chunks directly to clients.
+- Websocket tests now cover remote-home subscribe forwarding, subscribe forward-failure isolation, restore-plus-retry push behavior, and remote-home pull forward/failure behavior.
 
 ## Gaps and Open Work
-1. Runtime coverage for remote-home `pull` federation orchestration and chunk forwarding remains limited.
-2. Benchmark parity with Go has not been ported.
-3. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+1. Benchmark parity with Go has not been ported.
+2. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+3. Federation operational runbooks (rotation/deactivation/recovery) are still lightweight and should be expanded before production cutover.
 
 ## Next Recommended Slice
-1. Expand federation integration coverage for peer status/trusted metadata endpoints.
-2. Add runtime coverage for remote-home `pull` federation orchestration and chunk forwarding.
-3. Add negative-path websocket coverage for remote-home subscribe forward failures and fallback semantics.
+1. Start Phase 7 performance work by defining and porting benchmark coverage for pull/push/broker hot paths.
+2. Add optional MinIO-backed object-store smoke tests to validate S3-compatible runtime behavior.
+3. Expand federation operator docs for key rotation/deactivation and incident recovery procedures.

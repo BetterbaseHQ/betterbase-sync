@@ -346,7 +346,15 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            handlers::handle_pull_request(outbound, sync_storage, auth, id, payload).await;
+            handlers::handle_pull_request(
+                outbound,
+                sync_storage,
+                federation_forwarder,
+                auth,
+                id,
+                payload,
+            )
+            .await;
         }
         _ => {
             frames::send_method_not_found_response(outbound, id, method).await;

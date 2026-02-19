@@ -12,10 +12,10 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `97904b1` (`Wire websocket remote-home federation subscribe and restore flows`).
+- Latest commit: `9d609d3` (`Add storage-backed federation runtime and keygen integration coverage`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `339` tests passing.
-1. `less-sync-api`: `140`
+- Rust local test totals (all features): `342` tests passing.
+1. `less-sync-api`: `143`
 2. `less-sync-app`: `24`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
@@ -35,6 +35,8 @@
 9. Client websocket flows now federate remote-home `subscribe` calls, and remote-home `push` now attempts subscription restoration plus a retry after transient forwarding failure.
 10. App runtime federation wiring now has storage-backed integration coverage for empty key state, active-primary selection with JWKS publication, and mismatched keypair rejection.
 11. Federation keygen now has storage-backed operator workflow tests for promote-by-default rotation and staged `--no-promote` rollout behavior.
+12. Client websocket `pull` now forwards remote-home spaces through the federation forwarder and streams returned chunk frames back to clients.
+13. Websocket tests now cover remote-home `subscribe` forward failure isolation (local spaces continue) and remote-home `pull` forwarding/failure behavior.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -45,7 +47,7 @@
 4. Phase 3 (storage + Postgres): complete for current local parity scope.
 5. Phase 4 (WebSocket transport + broker): complete.
 6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
-7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, federation metadata/status HTTP routes, outbound peer-manager orchestration, and runtime forwarding primitives are landed).
+7. Phase 6 (federation): complete for current local parity scope.
 8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
 
 ## Baseline Inventory (Current Go Project)
@@ -257,9 +259,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Expand federation integration coverage for peer status/trusted metadata endpoints.
-2. Add tighter runtime tests for remote `pull` federation orchestration and chunk forwarding behavior.
-3. Add negative-path websocket coverage for remote-home subscribe forward failures and fallback semantics.
+1. Start Phase 7 by defining benchmark parity targets for pull/push hot paths and broker fanout.
+2. Add optional MinIO-backed S3 smoke tests to validate end-to-end object-store behavior beyond config/builder coverage.
+3. Tighten operational docs for federation key rotation/deactivation rollout and recovery playbooks.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.
