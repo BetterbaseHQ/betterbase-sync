@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use axum::extract::Request;
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{
     extract::State, http::StatusCode, response::IntoResponse, response::Response, Json, Router,
 };
@@ -16,9 +16,12 @@ use less_sync_core::protocol::ErrorResponse;
 use less_sync_realtime::broker::MultiBroker;
 use less_sync_storage::{Storage, StorageError};
 
+mod files;
 mod ws;
 
 const DEFAULT_WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub use files::ObjectStoreFileBlobStorage;
 
 #[async_trait]
 pub trait HealthCheck: Send + Sync {
@@ -40,6 +43,8 @@ pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
+    file_sync_storage: Option<Arc<dyn files::FileSyncStorage>>,
+    file_blob_storage: Option<Arc<dyn files::FileBlobStorage>>,
     realtime_broker: Option<Arc<MultiBroker>>,
     presence_registry: Option<Arc<ws::PresenceRegistry>>,
 }
@@ -57,6 +62,8 @@ impl ApiState {
             health,
             websocket: None,
             sync_storage: None,
+            file_sync_storage: None,
+            file_blob_storage: None,
             realtime_broker: None,
             presence_registry: None,
         }
@@ -89,8 +96,10 @@ impl ApiState {
     where
         T: Storage + Send + Sync + 'static,
     {
-        let storage: Arc<dyn ws::SyncStorage> = storage;
-        self.with_sync_storage_adapter(storage)
+        let ws_storage: Arc<dyn ws::SyncStorage> = storage.clone();
+        let file_sync_storage: Arc<dyn files::FileSyncStorage> = storage;
+        self.with_sync_storage_adapter(ws_storage)
+            .with_file_sync_storage_adapter(file_sync_storage)
     }
 
     pub(crate) fn with_sync_storage_adapter(mut self, storage: Arc<dyn ws::SyncStorage>) -> Self {
@@ -100,6 +109,36 @@ impl ApiState {
 
     pub(crate) fn sync_storage(&self) -> Option<Arc<dyn ws::SyncStorage>> {
         self.sync_storage.clone()
+    }
+
+    pub(crate) fn with_file_sync_storage_adapter(
+        mut self,
+        storage: Arc<dyn files::FileSyncStorage>,
+    ) -> Self {
+        self.file_sync_storage = Some(storage);
+        self
+    }
+
+    pub(crate) fn file_sync_storage(&self) -> Option<Arc<dyn files::FileSyncStorage>> {
+        self.file_sync_storage.clone()
+    }
+
+    #[must_use]
+    pub fn with_object_store_file_storage(self, storage: Arc<ObjectStoreFileBlobStorage>) -> Self {
+        let storage: Arc<dyn files::FileBlobStorage> = storage;
+        self.with_file_blob_storage_adapter(storage)
+    }
+
+    pub(crate) fn with_file_blob_storage_adapter(
+        mut self,
+        storage: Arc<dyn files::FileBlobStorage>,
+    ) -> Self {
+        self.file_blob_storage = Some(storage);
+        self
+    }
+
+    pub(crate) fn file_blob_storage(&self) -> Option<Arc<dyn files::FileBlobStorage>> {
+        self.file_blob_storage.clone()
     }
 
     #[must_use]
@@ -120,14 +159,24 @@ impl ApiState {
 
 pub fn router(state: ApiState) -> Router {
     let middleware_state = state.clone();
-    Router::new()
+    let files_enabled = state.file_sync_storage().is_some() && state.file_blob_storage().is_some();
+
+    let mut app = Router::new()
         .route("/health", get(health))
-        .route("/api/v1/ws", get(ws::websocket_upgrade))
-        .with_state(state)
-        .layer(middleware::from_fn_with_state(
-            middleware_state,
-            auth_middleware,
-        ))
+        .route("/api/v1/ws", get(ws::websocket_upgrade));
+    if files_enabled {
+        app = app.route(
+            "/api/v1/spaces/{space_id}/files/{id}",
+            put(files::put_file)
+                .get(files::get_file)
+                .head(files::head_file),
+        );
+    }
+
+    app.with_state(state).layer(middleware::from_fn_with_state(
+        middleware_state,
+        auth_middleware,
+    ))
 }
 
 async fn health(State(state): State<ApiState>) -> StatusCode {

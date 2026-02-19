@@ -8,11 +8,13 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 futures-util = "0.3"
 less-sync-auth = { path = "../auth" }
 less-sync-core = { path = "../core" }
 less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
+object_store.workspace = true
 serde.workspace = true
 serde_cbor.workspace = true
 time.workspace = true

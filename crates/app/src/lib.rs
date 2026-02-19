@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use less_sync_api::ApiState;
+use less_sync_api::{ApiState, ObjectStoreFileBlobStorage};
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::PostgresStorage;
@@ -17,16 +18,28 @@ pub struct AppConfig {
     pub database_url: String,
     pub trusted_issuers: HashMap<String, String>,
     pub audiences: Vec<String>,
+    pub file_storage: FileStorageConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileStorageConfig {
+    Disabled,
+    Local { path: PathBuf },
 }
 
 impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
-        Self::from_values(
+        let mut config = Self::from_values(
             Some(std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:5379".to_string())),
             std::env::var("DATABASE_URL").ok(),
             std::env::var("TRUSTED_ISSUERS").ok(),
             std::env::var("AUDIENCES").ok(),
-        )
+        )?;
+        config.file_storage = parse_file_storage(
+            std::env::var("FILE_STORAGE_BACKEND").ok(),
+            std::env::var("FILE_STORAGE_PATH").ok(),
+        )?;
+        Ok(config)
     }
 
     fn from_values(
@@ -46,6 +59,7 @@ impl AppConfig {
             database_url,
             trusted_issuers,
             audiences,
+            file_storage: FileStorageConfig::Disabled,
         })
     }
 }
@@ -58,15 +72,32 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         audiences: config.audiences.clone(),
         ..MultiValidatorConfig::default()
     }));
-    let api_state = ApiState::new(storage.clone())
+    let mut api_state = ApiState::new(storage.clone())
         .with_websocket(validator)
         .with_realtime_broker(broker)
-        .with_sync_storage(storage);
+        .with_sync_storage(storage.clone());
+
+    if let Some(file_storage) = build_file_blob_storage(&config.file_storage)? {
+        api_state = api_state.with_object_store_file_storage(file_storage);
+    }
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "server listening");
     axum::serve(listener, less_sync_api::router(api_state)).await?;
     Ok(())
+}
+
+fn build_file_blob_storage(
+    config: &FileStorageConfig,
+) -> anyhow::Result<Option<Arc<ObjectStoreFileBlobStorage>>> {
+    match config {
+        FileStorageConfig::Disabled => Ok(None),
+        FileStorageConfig::Local { path } => {
+            std::fs::create_dir_all(path)?;
+            let storage = ObjectStoreFileBlobStorage::local_filesystem(path)?;
+            Ok(Some(Arc::new(storage)))
+        }
+    }
 }
 
 fn parse_trusted_issuers(value: Option<String>) -> anyhow::Result<HashMap<String, String>> {
@@ -108,6 +139,23 @@ fn parse_audiences(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
+fn parse_file_storage(
+    backend: Option<String>,
+    path: Option<String>,
+) -> anyhow::Result<FileStorageConfig> {
+    let backend = backend.unwrap_or_else(|| "none".to_owned());
+    match backend.as_str() {
+        "none" => Ok(FileStorageConfig::Disabled),
+        "local" => Ok(FileStorageConfig::Local {
+            path: PathBuf::from(path.unwrap_or_else(|| "./data/files".to_owned())),
+        }),
+        _ => Err(anyhow::anyhow!(
+            "invalid FILE_STORAGE_BACKEND {:?}: expected \"none\" or \"local\"",
+            backend
+        )),
+    }
+}
+
 fn validate_http_url(raw: &str, label: &str) -> anyhow::Result<()> {
     let parsed =
         Url::parse(raw).map_err(|error| anyhow::anyhow!("invalid {label} URL {raw:?}: {error}"))?;
@@ -121,7 +169,9 @@ fn validate_http_url(raw: &str, label: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use std::path::PathBuf;
+
+    use super::{parse_file_storage, AppConfig, FileStorageConfig};
 
     #[test]
     fn from_values_uses_default_listen_addr() {
@@ -226,5 +276,45 @@ mod tests {
         .expect_err("invalid issuer URL should fail");
 
         assert!(error.to_string().contains("invalid issuer URL"));
+    }
+
+    #[test]
+    fn parse_file_storage_defaults_to_disabled() {
+        let config = parse_file_storage(None, None).expect("parse file storage");
+        assert_eq!(config, FileStorageConfig::Disabled);
+    }
+
+    #[test]
+    fn parse_file_storage_local_uses_default_path() {
+        let config =
+            parse_file_storage(Some("local".to_owned()), None).expect("parse file storage");
+        assert_eq!(
+            config,
+            FileStorageConfig::Local {
+                path: PathBuf::from("./data/files"),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_file_storage_local_uses_explicit_path() {
+        let config = parse_file_storage(
+            Some("local".to_owned()),
+            Some("/tmp/less-sync-files".to_owned()),
+        )
+        .expect("parse file storage");
+        assert_eq!(
+            config,
+            FileStorageConfig::Local {
+                path: PathBuf::from("/tmp/less-sync-files"),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_file_storage_rejects_invalid_backend() {
+        let error = parse_file_storage(Some("s3".to_owned()), None)
+            .expect_err("invalid backend should fail");
+        assert!(error.to_string().contains("FILE_STORAGE_BACKEND"));
     }
 }
