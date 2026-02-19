@@ -35,6 +35,9 @@ async fn run(config: KeygenConfig) -> anyhow::Result<()> {
         storage
             .ensure_federation_key(&key_id, &private_seed, &public_key)
             .await?;
+        if config.promote {
+            storage.set_federation_primary_key(&key_id).await?;
+        }
     }
 
     let public_key_b64 = URL_SAFE_NO_PAD.encode(public_key);
@@ -50,6 +53,7 @@ async fn run(config: KeygenConfig) -> anyhow::Result<()> {
     }
     if config.database_url.is_some() {
         println!("stored_in_database=true");
+        println!("promoted_for_signing={}", config.promote);
     } else {
         println!("stored_in_database=false");
         println!("hint=set --database-url or DATABASE_URL to persist this key");
@@ -64,6 +68,7 @@ struct KeygenConfig {
     kid: Option<String>,
     database_url: Option<String>,
     print_private: bool,
+    promote: bool,
 }
 
 fn parse_args<I>(args: I) -> anyhow::Result<KeygenConfig>
@@ -74,6 +79,7 @@ where
     let mut kid = None;
     let mut database_url = env::var("DATABASE_URL").ok();
     let mut print_private = false;
+    let mut promote = true;
 
     let mut iter = args.into_iter();
     let _program = iter.next();
@@ -100,6 +106,9 @@ where
             "--print-private" => {
                 print_private = true;
             }
+            "--no-promote" => {
+                promote = false;
+            }
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -116,6 +125,7 @@ where
         kid,
         database_url,
         print_private,
+        promote,
     })
 }
 
@@ -128,12 +138,13 @@ fn default_key_fragment() -> String {
 
 fn print_usage() {
     println!(
-        "Usage: less-sync-federation-keygen --domain <domain> [--kid <key-fragment>] [--database-url <url>] [--print-private]"
+        "Usage: less-sync-federation-keygen --domain <domain> [--kid <key-fragment>] [--database-url <url>] [--print-private] [--no-promote]"
     );
     println!("  --domain: public sync domain used in key id URL");
     println!("  --kid: key fragment appended to #... (default: fed-<time>)");
     println!("  --database-url: Postgres URL to persist generated key (default: DATABASE_URL env)");
     println!("  --print-private: include private seed in output");
+    println!("  --no-promote: persist key without promoting it to active signing key");
 }
 
 #[cfg(test)]
@@ -168,6 +179,21 @@ mod tests {
             Some("postgres://localhost/db")
         );
         assert!(config.print_private);
+        assert!(config.promote);
+    }
+
+    #[test]
+    fn parse_args_supports_no_promote() {
+        let config = parse_args(vec![
+            "federation-keygen".to_owned(),
+            "--domain".to_owned(),
+            "sync.example.com".to_owned(),
+            "--no-promote".to_owned(),
+        ])
+        .expect("parse args");
+
+        assert_eq!(config.domain, "sync.example.com");
+        assert!(!config.promote);
     }
 
     #[test]

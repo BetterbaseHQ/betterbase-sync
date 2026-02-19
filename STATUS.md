@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `74ee0ba` (`Wire runtime federation forwarding paths`)
-- Working tree status at update time: in progress (federation peer-manager orchestration slice)
+- HEAD: `217244a` (`Add federation peer orchestration and chunk pull handling`)
+- Working tree status at update time: in progress (federation key lifecycle hardening slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -27,9 +27,9 @@ Rust local tests (`cargo test --workspace --all-features`):
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
-6. `less-sync-storage`: `44`
-7. `less-sync-federation-keygen`: `3`
-8. Total passing tests: `330`
+6. `less-sync-storage`: `45`
+7. `less-sync-federation-keygen`: `4`
+8. Total passing tests: `332`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -78,8 +78,14 @@ Go baseline (reference from original local suite):
 - `bins/federation-keygen` now generates Ed25519 federation signing keys.
 - Supports deterministic federation key-id construction via `--domain` and optional `--kid`.
 - Optionally persists generated key material into Postgres (`--database-url` / `DATABASE_URL`) through storage APIs.
+- Persists with promotion-by-default to the active signing key, with `--no-promote` support for staged rollover workflows.
 - Emits operator-friendly output including `FEDERATION_TRUSTED_KEYS` entry.
-9. HTTP/API:
+9. Federation signing key lifecycle:
+- Added migration `012_federation_key_lifecycle.sql` with explicit `is_active`/`is_primary` state and deterministic backfill of existing primary key.
+- Storage now supports promoting and deactivating federation signing keys and loading the active primary keypair directly.
+- Active-key JWKS publication now naturally supports overlap windows (old keys remain published until deactivated).
+- App startup now selects outbound federation signing material from explicit active-primary storage state instead of insertion order.
+10. HTTP/API:
 - Bearer auth middleware and `/health`.
 - `/api/v1/ws`.
 - File endpoints `/api/v1/spaces/{space_id}/files/{id}` with:
@@ -90,12 +96,12 @@ Go baseline (reference from original local suite):
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
-10. File storage backends:
+11. File storage backends:
 - Disabled mode.
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
 - S3 coverage is currently config/builder-level (no full MinIO integration suite yet).
-11. Federation outbound peer manager:
+12. Federation outbound peer manager:
 - Dedicated `federation_client` module in `less-sync-api` with focused module boundaries (`mod`, `peer`, `wire`, tests).
 - Signed federation websocket dialing using `less_sync_auth::sign_http_request`.
 - Per-peer connection reuse and per-space FST token tracking.
@@ -104,18 +110,18 @@ Go baseline (reference from original local suite):
 - Retry behavior now reconnects once on closed/connect transport failures while preserving request identity.
 - Subscription restore flow now replays cached per-space FST tokens back through `subscribe`.
 - Local tests now cover request forwarding, pull chunk collection, reconnect retry behavior, and FST token persistence/restore behavior.
-12. Runtime federation forwarding integration:
+13. Runtime federation forwarding integration:
 - Client websocket `push` now forwards to remote home servers when `space.home_server` is set and a federation forwarder is configured.
 - `invitation.create` now supports remote delivery via `params.server` for trusted peers, including explicit bad-request and internal-error mappings.
 - API state now carries a pluggable federation forwarder, and app startup wires one from stored federation signing keys when available.
 - New websocket tests cover forwarded push, trusted/untrusted invitation forwarding, and forwarding failure behavior.
 
 ## Gaps and Open Work
-1. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
+1. Websocket-level runtime coverage for automatic remote subscription restoration after transient federation disconnects is still pending.
 2. Benchmark parity with Go has not been ported.
 3. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
+1. Add websocket-level integration tests for auto-restore of remote subscriptions after transient federation disconnects.
 2. Expand federation integration coverage for peer status/trusted metadata endpoints.
-3. Add websocket-level integration tests for auto-restore of remote subscriptions after transient federation disconnects.
+3. Add app-level integration coverage for storage-backed federation key publication and runtime federation config behavior.

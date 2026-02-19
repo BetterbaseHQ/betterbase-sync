@@ -261,6 +261,13 @@ pub struct FederationKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationSigningKey {
+    pub kid: String,
+    pub private_key: Vec<u8>,
+    pub public_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DekRecord {
     pub id: String,
     pub wrapped_dek: Vec<u8>,
@@ -389,7 +396,12 @@ pub trait Storage: Send + Sync {
         private_key: &[u8],
         public_key: &[u8],
     ) -> Result<(), StorageError>;
+    async fn set_federation_primary_key(&self, kid: &str) -> Result<(), StorageError>;
+    async fn deactivate_federation_key(&self, kid: &str) -> Result<(), StorageError>;
     async fn get_federation_private_key(&self, kid: &str) -> Result<Vec<u8>, StorageError>;
+    async fn get_federation_signing_key(
+        &self,
+    ) -> Result<Option<FederationSigningKey>, StorageError>;
     async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError>;
 
     fn close(&self) -> Result<(), StorageError>;

@@ -11,8 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochConflict,
-    FederationKey, FileDekRecord, FileMetadata, Invitation, MembersLogEntry, PullEntry,
-    PullEntryKind, PullResult, PullStreamMeta, PushOptions, PushResult, Storage, StorageError,
+    FederationKey, FederationSigningKey, FileDekRecord, FileMetadata, Invitation, MembersLogEntry,
+    PullEntry, PullEntryKind, PullResult, PullStreamMeta, PushOptions, PushResult, Storage,
+    StorageError,
 };
 
 const MAX_RECORDS_LIMIT: usize = 100_000;
@@ -1164,8 +1165,18 @@ impl PostgresStorage {
     ) -> Result<(), StorageError> {
         sqlx::query(
             r#"
-            INSERT INTO federation_signing_keys (kid, private_key, public_key)
-            VALUES ($1, $2, $3)
+            INSERT INTO federation_signing_keys (kid, private_key, public_key, is_active, is_primary)
+            VALUES (
+                $1,
+                $2,
+                $3,
+                TRUE,
+                NOT EXISTS (
+                    SELECT 1
+                    FROM federation_signing_keys
+                    WHERE is_primary = TRUE AND is_active = TRUE
+                )
+            )
             ON CONFLICT (kid) DO NOTHING
             "#,
         )
@@ -1175,6 +1186,59 @@ impl PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn set_federation_primary_key(&self, kid: &str) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        sqlx::query(
+            "UPDATE federation_signing_keys SET is_primary = FALSE WHERE is_primary = TRUE",
+        )
+        .execute(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let updated = sqlx::query(
+            r#"
+            UPDATE federation_signing_keys
+            SET is_primary = TRUE, is_active = TRUE, deactivated_at = NULL
+            WHERE kid = $1
+            "#,
+        )
+        .bind(kid)
+        .execute(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        if updated.rows_affected() == 0 {
+            return Err(StorageError::FederationKeyNotFound);
+        }
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn deactivate_federation_key(&self, kid: &str) -> Result<(), StorageError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE federation_signing_keys
+            SET is_active = FALSE, is_primary = FALSE, deactivated_at = NOW()
+            WHERE kid = $1
+            "#,
+        )
+        .bind(kid)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        if updated.rows_affected() == 0 {
+            return Err(StorageError::FederationKeyNotFound);
+        }
         Ok(())
     }
 
@@ -1189,9 +1253,37 @@ impl PostgresStorage {
             })
     }
 
+    pub async fn get_federation_signing_key(
+        &self,
+    ) -> Result<Option<FederationSigningKey>, StorageError> {
+        let row = sqlx::query_as::<_, FederationSigningKeyRow>(
+            r#"
+            SELECT kid, private_key, public_key
+            FROM federation_signing_keys
+            WHERE is_active = TRUE AND is_primary = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        Ok(row.map(|row| FederationSigningKey {
+            kid: row.kid,
+            private_key: row.private_key,
+            public_key: row.public_key,
+        }))
+    }
+
     pub async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError> {
         let rows = sqlx::query_as::<_, FederationKeyRow>(
-            "SELECT kid, public_key FROM federation_signing_keys ORDER BY created_at ASC",
+            r#"
+            SELECT kid, public_key
+            FROM federation_signing_keys
+            WHERE is_active = TRUE
+            ORDER BY created_at ASC
+            "#,
         )
         .fetch_all(&self.pool)
         .await
@@ -1598,8 +1690,22 @@ impl Storage for PostgresStorage {
         PostgresStorage::ensure_federation_key(self, kid, private_key, public_key).await
     }
 
+    async fn set_federation_primary_key(&self, kid: &str) -> Result<(), StorageError> {
+        PostgresStorage::set_federation_primary_key(self, kid).await
+    }
+
+    async fn deactivate_federation_key(&self, kid: &str) -> Result<(), StorageError> {
+        PostgresStorage::deactivate_federation_key(self, kid).await
+    }
+
     async fn get_federation_private_key(&self, kid: &str) -> Result<Vec<u8>, StorageError> {
         PostgresStorage::get_federation_private_key(self, kid).await
+    }
+
+    async fn get_federation_signing_key(
+        &self,
+    ) -> Result<Option<FederationSigningKey>, StorageError> {
+        PostgresStorage::get_federation_signing_key(self).await
     }
 
     async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError> {
@@ -1742,6 +1848,13 @@ struct InvitationRow {
 #[derive(Debug, sqlx::FromRow)]
 struct FederationKeyRow {
     kid: String,
+    public_key: Vec<u8>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FederationSigningKeyRow {
+    kid: String,
+    private_key: Vec<u8>,
     public_key: Vec<u8>,
 }
 
@@ -2911,7 +3024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn federation_keys_roundtrip_and_idempotency() {
+    async fn federation_keys_rotation_keeps_overlap_window_and_promotes_new_primary() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -2932,11 +3045,14 @@ mod tests {
             .ensure_federation_key(&kid_a, &private_a, &public_a)
             .await
             .expect("ensure key a");
-        let got_a = storage
-            .get_federation_private_key(&kid_a)
+        let primary_a = storage
+            .get_federation_signing_key()
             .await
-            .expect("get key a");
-        assert_eq!(got_a, private_a);
+            .expect("get primary key a")
+            .expect("primary key a exists");
+        assert_eq!(primary_a.kid, kid_a);
+        assert_eq!(primary_a.private_key, private_a);
+        assert_eq!(primary_a.public_key, public_a);
 
         storage
             .ensure_federation_key(&kid_a, b"different-seed-32-bytes-long!!!!", &public_a)
@@ -2952,6 +3068,21 @@ mod tests {
             .ensure_federation_key(&kid_b, &private_b, &public_b)
             .await
             .expect("ensure key b");
+
+        storage
+            .set_federation_primary_key(&kid_b)
+            .await
+            .expect("promote key b");
+        let primary_b = storage
+            .get_federation_signing_key()
+            .await
+            .expect("get promoted key b")
+            .expect("promoted key b exists");
+        assert_eq!(primary_b.kid, kid_b);
+        assert_eq!(primary_b.private_key, private_b);
+        assert_eq!(primary_b.public_key, public_b);
+
+        // Rotation overlap window: previously active keys remain in JWKS until deactivated.
         let keys = storage
             .list_federation_public_keys()
             .await
@@ -2962,6 +3093,35 @@ mod tests {
         assert!(key_b.is_some());
         assert_eq!(key_a.expect("key a").public_key, public_a);
         assert_eq!(key_b.expect("key b").public_key, public_b);
+
+        storage
+            .deactivate_federation_key(&kid_a)
+            .await
+            .expect("deactivate old key a");
+        let active_keys = storage
+            .list_federation_public_keys()
+            .await
+            .expect("list active federation keys");
+        assert_eq!(active_keys.len(), 1);
+        assert_eq!(active_keys[0].kid, kid_b);
+    }
+
+    #[tokio::test]
+    async fn federation_key_primary_and_deactivate_validate_target_kid() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let missing_primary = storage
+            .set_federation_primary_key("fed-missing")
+            .await
+            .expect_err("promoting missing key should fail");
+        assert_eq!(missing_primary, StorageError::FederationKeyNotFound);
+
+        let missing_deactivate = storage
+            .deactivate_federation_key("fed-missing")
+            .await
+            .expect_err("deactivating missing key should fail");
+        assert_eq!(missing_deactivate, StorageError::FederationKeyNotFound);
     }
 
     #[tokio::test]

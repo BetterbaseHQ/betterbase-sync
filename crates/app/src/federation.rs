@@ -266,13 +266,11 @@ async fn load_jwks(storage: &PostgresStorage) -> anyhow::Result<FederationJwks> 
 async fn load_primary_signing_key(
     storage: &PostgresStorage,
 ) -> anyhow::Result<Option<(String, SigningKey)>> {
-    let keys = storage.list_federation_public_keys().await?;
-    let Some(primary) = keys.first() else {
+    let Some(primary) = storage.get_federation_signing_key().await? else {
         return Ok(None);
     };
 
-    let private_key = storage.get_federation_private_key(&primary.kid).await?;
-    let private_key: [u8; 32] = private_key.as_slice().try_into().map_err(|_| {
+    let private_key: [u8; 32] = primary.private_key.as_slice().try_into().map_err(|_| {
         anyhow::anyhow!(
             "stored federation private key {0:?} is not 32 bytes",
             primary.kid

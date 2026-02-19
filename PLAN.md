@@ -12,16 +12,16 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `74ee0ba` (`Wire runtime federation forwarding paths`).
+- Latest commit: `217244a` (`Add federation peer orchestration and chunk pull handling`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `330` tests passing.
+- Rust local test totals (all features): `332` tests passing.
 1. `less-sync-api`: `138`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
-6. `less-sync-storage`: `44`
-7. `less-sync-federation-keygen`: `3`
+6. `less-sync-storage`: `45`
+7. `less-sync-federation-keygen`: `4`
 - Federation progress in working tree:
 1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
 2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
@@ -31,6 +31,7 @@
 5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing, chunk-aware `pull`, per-peer token tracking, reconnect retry-once handling, and subscription restore support.
 6. Runtime forwarding is now wired for client `push` on remote-home spaces and `invitation.create` with `server` targeting trusted federation peers.
 7. Federation client tests now cover pull chunk collection, reconnect retry behavior, and restore-subscriptions token replay in addition to existing forwarding and token persistence coverage.
+8. Federation signing keys now support explicit lifecycle state (active/primary), key promotion, and deactivation, with runtime loading the active primary key and keygen supporting `--no-promote` for staged rollover.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -52,7 +53,7 @@
 3. `storage/*_test.go` + `storage/files/*_test.go`: `113` tests (Postgres semantics, file metadata/storage).
 4. `protocol/*_test.go`: `20` tests (CBOR/JSON protocol roundtrips).
 5. `spaceid/*_test.go`: `5` tests (deterministic ID vectors).
-- Storage schema: `11` SQL migrations in `storage/migrations/`.
+- Storage schema: `12` SQL migrations in `storage/migrations/`.
 - Current local harness patterns:
 1. Postgres via testcontainers (`postgres:18-alpine`), shared container per package via `TestMain`.
 2. Real JWT/JWKS and UCAN test helpers in `internal/testutil`.
@@ -253,9 +254,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
-2. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
-3. Expand federation runtime orchestration integration tests around reconnect and subscription restoration in websocket handler flows.
+1. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
+2. Expand federation runtime orchestration integration tests around reconnect and subscription restoration in websocket handler flows.
+3. Expand federation integration coverage for peer status/trusted metadata endpoints.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.
