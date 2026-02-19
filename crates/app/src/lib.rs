@@ -10,6 +10,7 @@ use less_sync_api::ApiState;
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::PostgresStorage;
+use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use url::Url;
@@ -26,7 +27,48 @@ pub struct AppConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStorageConfig {
     Disabled,
-    Local { path: PathBuf },
+    Local {
+        path: PathBuf,
+    },
+    S3 {
+        endpoint: String,
+        access_key: String,
+        secret_key: String,
+        bucket: String,
+        region: String,
+        use_ssl: bool,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileStorageEnv {
+    backend: Option<String>,
+    path: Option<String>,
+    s3_endpoint: Option<String>,
+    s3_access_key: Option<String>,
+    s3_secret_key: Option<String>,
+    s3_bucket: Option<String>,
+    s3_region: Option<String>,
+    s3_use_ssl: Option<String>,
+}
+
+impl FileStorageEnv {
+    fn from_env() -> Self {
+        Self {
+            backend: std::env::var("FILE_STORAGE_BACKEND")
+                .ok()
+                .or_else(|| std::env::var("FILE_STORAGE").ok()),
+            path: std::env::var("FILE_STORAGE_PATH")
+                .ok()
+                .or_else(|| std::env::var("FILE_FS_PATH").ok()),
+            s3_endpoint: std::env::var("FILE_S3_ENDPOINT").ok(),
+            s3_access_key: std::env::var("FILE_S3_ACCESS_KEY").ok(),
+            s3_secret_key: std::env::var("FILE_S3_SECRET_KEY").ok(),
+            s3_bucket: std::env::var("FILE_S3_BUCKET").ok(),
+            s3_region: std::env::var("FILE_S3_REGION").ok(),
+            s3_use_ssl: std::env::var("FILE_S3_USE_SSL").ok(),
+        }
+    }
 }
 
 impl AppConfig {
@@ -37,10 +79,7 @@ impl AppConfig {
             std::env::var("TRUSTED_ISSUERS").ok(),
             std::env::var("AUDIENCES").ok(),
         )?;
-        config.file_storage = parse_file_storage(
-            std::env::var("FILE_STORAGE_BACKEND").ok(),
-            std::env::var("FILE_STORAGE_PATH").ok(),
-        )?;
+        config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
         Ok(config)
     }
 
@@ -99,6 +138,30 @@ fn build_file_object_store(
             let storage = LocalFileSystem::new_with_prefix(path)?;
             Ok(Some(Arc::new(storage)))
         }
+        FileStorageConfig::S3 {
+            endpoint,
+            access_key,
+            secret_key,
+            bucket,
+            region,
+            use_ssl,
+        } => {
+            let endpoint = normalize_s3_endpoint(endpoint, *use_ssl);
+            let mut builder = AmazonS3Builder::new()
+                .with_endpoint(endpoint.clone())
+                .with_access_key_id(access_key)
+                .with_secret_access_key(secret_key)
+                .with_bucket_name(bucket)
+                .with_region(region)
+                .with_virtual_hosted_style_request(false);
+            if endpoint.starts_with("http://") {
+                builder = builder.with_allow_http(true);
+            }
+            let storage = builder.build().map_err(|error| {
+                anyhow::anyhow!("failed to initialize S3 object store: {error}")
+            })?;
+            Ok(Some(Arc::new(storage)))
+        }
     }
 }
 
@@ -141,20 +204,58 @@ fn parse_audiences(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
-fn parse_file_storage(
-    backend: Option<String>,
-    path: Option<String>,
-) -> anyhow::Result<FileStorageConfig> {
-    let backend = backend.unwrap_or_else(|| "none".to_owned());
+fn parse_file_storage(env: FileStorageEnv) -> anyhow::Result<FileStorageConfig> {
+    let backend = env.backend.unwrap_or_else(|| "none".to_owned());
     match backend.as_str() {
         "none" => Ok(FileStorageConfig::Disabled),
-        "local" => Ok(FileStorageConfig::Local {
-            path: PathBuf::from(path.unwrap_or_else(|| "./data/files".to_owned())),
+        "local" | "fs" => Ok(FileStorageConfig::Local {
+            path: PathBuf::from(env.path.unwrap_or_else(|| "./data/files".to_owned())),
         }),
+        "s3" => {
+            let endpoint = required_s3_var(env.s3_endpoint, "FILE_S3_ENDPOINT")?;
+            let access_key = required_s3_var(env.s3_access_key, "FILE_S3_ACCESS_KEY")?;
+            let secret_key = required_s3_var(env.s3_secret_key, "FILE_S3_SECRET_KEY")?;
+            let bucket = required_s3_var(env.s3_bucket, "FILE_S3_BUCKET")?;
+            let region = env.s3_region.unwrap_or_else(|| "us-east-1".to_owned());
+            let use_ssl = env.s3_use_ssl.as_deref() != Some("false");
+
+            Ok(FileStorageConfig::S3 {
+                endpoint,
+                access_key,
+                secret_key,
+                bucket,
+                region,
+                use_ssl,
+            })
+        }
         _ => Err(anyhow::anyhow!(
-            "invalid FILE_STORAGE_BACKEND {:?}: expected \"none\" or \"local\"",
+            "invalid FILE_STORAGE_BACKEND {:?}: expected \"none\", \"local\", or \"s3\"",
             backend
         )),
+    }
+}
+
+fn required_s3_var(value: Option<String>, name: &str) -> anyhow::Result<String> {
+    let Some(value) = value.map(|value| value.trim().to_owned()) else {
+        return Err(anyhow::anyhow!(
+            "{name} is required when FILE_STORAGE_BACKEND=s3"
+        ));
+    };
+    if value.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{name} is required when FILE_STORAGE_BACKEND=s3"
+        ));
+    }
+    Ok(value)
+}
+
+fn normalize_s3_endpoint(endpoint: &str, use_ssl: bool) -> String {
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        endpoint.to_owned()
+    } else if use_ssl {
+        format!("https://{endpoint}")
+    } else {
+        format!("http://{endpoint}")
     }
 }
 
@@ -173,7 +274,9 @@ fn validate_http_url(raw: &str, label: &str) -> anyhow::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_file_storage, AppConfig, FileStorageConfig};
+    use super::{
+        build_file_object_store, parse_file_storage, AppConfig, FileStorageConfig, FileStorageEnv,
+    };
 
     #[test]
     fn from_values_uses_default_listen_addr() {
@@ -282,14 +385,17 @@ mod tests {
 
     #[test]
     fn parse_file_storage_defaults_to_disabled() {
-        let config = parse_file_storage(None, None).expect("parse file storage");
+        let config = parse_file_storage(FileStorageEnv::default()).expect("parse file storage");
         assert_eq!(config, FileStorageConfig::Disabled);
     }
 
     #[test]
     fn parse_file_storage_local_uses_default_path() {
-        let config =
-            parse_file_storage(Some("local".to_owned()), None).expect("parse file storage");
+        let config = parse_file_storage(FileStorageEnv {
+            backend: Some("local".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect("parse file storage");
         assert_eq!(
             config,
             FileStorageConfig::Local {
@@ -300,10 +406,11 @@ mod tests {
 
     #[test]
     fn parse_file_storage_local_uses_explicit_path() {
-        let config = parse_file_storage(
-            Some("local".to_owned()),
-            Some("/tmp/less-sync-files".to_owned()),
-        )
+        let config = parse_file_storage(FileStorageEnv {
+            backend: Some("local".to_owned()),
+            path: Some("/tmp/less-sync-files".to_owned()),
+            ..FileStorageEnv::default()
+        })
         .expect("parse file storage");
         assert_eq!(
             config,
@@ -314,9 +421,105 @@ mod tests {
     }
 
     #[test]
+    fn parse_file_storage_supports_fs_alias() {
+        let config = parse_file_storage(FileStorageEnv {
+            backend: Some("fs".to_owned()),
+            path: Some("/tmp/less-sync-files".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect("parse file storage");
+        assert_eq!(
+            config,
+            FileStorageConfig::Local {
+                path: PathBuf::from("/tmp/less-sync-files"),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_file_storage_s3_defaults_region_and_ssl() {
+        let config = parse_file_storage(FileStorageEnv {
+            backend: Some("s3".to_owned()),
+            s3_endpoint: Some("minio.internal:9000".to_owned()),
+            s3_access_key: Some("access".to_owned()),
+            s3_secret_key: Some("secret".to_owned()),
+            s3_bucket: Some("less-sync".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect("parse file storage");
+        assert_eq!(
+            config,
+            FileStorageConfig::S3 {
+                endpoint: "minio.internal:9000".to_owned(),
+                access_key: "access".to_owned(),
+                secret_key: "secret".to_owned(),
+                bucket: "less-sync".to_owned(),
+                region: "us-east-1".to_owned(),
+                use_ssl: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_file_storage_s3_supports_region_and_ssl_override() {
+        let config = parse_file_storage(FileStorageEnv {
+            backend: Some("s3".to_owned()),
+            s3_endpoint: Some("minio.internal:9000".to_owned()),
+            s3_access_key: Some("access".to_owned()),
+            s3_secret_key: Some("secret".to_owned()),
+            s3_bucket: Some("less-sync".to_owned()),
+            s3_region: Some("auto".to_owned()),
+            s3_use_ssl: Some("false".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect("parse file storage");
+        assert_eq!(
+            config,
+            FileStorageConfig::S3 {
+                endpoint: "minio.internal:9000".to_owned(),
+                access_key: "access".to_owned(),
+                secret_key: "secret".to_owned(),
+                bucket: "less-sync".to_owned(),
+                region: "auto".to_owned(),
+                use_ssl: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_file_storage_s3_requires_endpoint() {
+        let error = parse_file_storage(FileStorageEnv {
+            backend: Some("s3".to_owned()),
+            s3_access_key: Some("access".to_owned()),
+            s3_secret_key: Some("secret".to_owned()),
+            s3_bucket: Some("less-sync".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect_err("missing endpoint should fail");
+        assert!(error.to_string().contains("FILE_S3_ENDPOINT"));
+    }
+
+    #[test]
     fn parse_file_storage_rejects_invalid_backend() {
-        let error = parse_file_storage(Some("s3".to_owned()), None)
-            .expect_err("invalid backend should fail");
+        let error = parse_file_storage(FileStorageEnv {
+            backend: Some("gcs".to_owned()),
+            ..FileStorageEnv::default()
+        })
+        .expect_err("invalid backend should fail");
         assert!(error.to_string().contains("FILE_STORAGE_BACKEND"));
+    }
+
+    #[test]
+    fn build_file_object_store_s3_constructs_without_network_calls() {
+        let config = FileStorageConfig::S3 {
+            endpoint: "localhost:9000".to_owned(),
+            access_key: "access".to_owned(),
+            secret_key: "secret".to_owned(),
+            bucket: "less-sync".to_owned(),
+            region: "us-east-1".to_owned(),
+            use_ssl: false,
+        };
+        let store = build_file_object_store(&config).expect("build object store");
+        assert!(store.is_some());
     }
 }
