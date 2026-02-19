@@ -23,12 +23,12 @@ Last updated: 2026-02-19
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
 1. `less-sync-api`: `125`
-2. `less-sync-app`: `16`
+2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
-7. Total passing tests: `307`
+7. Total passing tests: `312`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -68,7 +68,11 @@ Go baseline (reference from original local suite):
 - `GET /.well-known/jwks.json` (public metadata route)
 - `GET /api/v1/federation/trusted` (authenticated trusted-domain view)
 - `GET /api/v1/federation/status/{domain}` (authenticated quota/status view)
-7. HTTP/API:
+7. App/runtime federation wiring:
+- Parses federation runtime env config for trusted domains/keys, FST secrets, and quota overrides.
+- Wires federation authenticator and FST token keys into `ApiState` when configured.
+- Loads federation public signing keys from storage and publishes them through JWKS route metadata.
+8. HTTP/API:
 - Bearer auth middleware and `/health`.
 - `/api/v1/ws`.
 - File endpoints `/api/v1/spaces/{space_id}/files/{id}` with:
@@ -79,7 +83,7 @@ Go baseline (reference from original local suite):
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
-8. File storage backends:
+9. File storage backends:
 - Disabled mode.
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
@@ -87,10 +91,9 @@ Go baseline (reference from original local suite):
 
 ## Gaps and Open Work
 1. Federation peer manager and forwarding/integration paths are not yet ported.
-2. Federation key bootstrap/runtime wiring is partial (`/.well-known/jwks.json` surface exists; full production keygen lifecycle remains).
-3. `bins/federation-keygen` is still scaffold-level output.
-4. Benchmark parity with Go has not been ported.
-5. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+2. Federation key lifecycle is still incomplete: runtime loading is wired, but `bins/federation-keygen` remains scaffold-level.
+3. Benchmark parity with Go has not been ported.
+4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
 1. Port federation peer-manager forwarding flows and additional federation local tests.

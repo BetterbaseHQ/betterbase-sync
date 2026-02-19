@@ -14,9 +14,9 @@
 ## Current Snapshot (2026-02-19)
 - Latest commit: `5639509` (`Refactor federation RPC handlers into focused modules`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `307` tests passing.
+- Rust local test totals (all features): `312` tests passing.
 1. `less-sync-api`: `125`
-2. `less-sync-app`: `16`
+2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
@@ -24,6 +24,7 @@
 - Federation progress in working tree:
 1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
 2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
+3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -247,8 +248,8 @@ Exit criteria:
 
 ## Immediate Execution Plan
 1. Port federation peer-manager/forwarding paths and remaining federation integration scenarios from local Go tests.
-2. Complete federation key bootstrap/runtime wiring beyond scaffold-level `federation-keygen`.
-3. Expand app-level federation configuration surface (trusted peers, key material, quota overrides).
+2. Complete federation key bootstrap lifecycle beyond scaffold-level `federation-keygen`.
+3. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.

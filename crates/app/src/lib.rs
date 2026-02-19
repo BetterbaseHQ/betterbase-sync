@@ -15,6 +15,8 @@ use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
 use url::Url;
 
+mod federation;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
@@ -22,6 +24,7 @@ pub struct AppConfig {
     pub trusted_issuers: HashMap<String, String>,
     pub audiences: Vec<String>,
     pub file_storage: FileStorageConfig,
+    federation: federation::FederationRuntimeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +83,8 @@ impl AppConfig {
             std::env::var("AUDIENCES").ok(),
         )?;
         config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
+        config.federation =
+            federation::parse_federation_runtime_config(federation::FederationEnv::from_env())?;
         Ok(config)
     }
 
@@ -101,6 +106,7 @@ impl AppConfig {
             trusted_issuers,
             audiences,
             file_storage: FileStorageConfig::Disabled,
+            federation: federation::FederationRuntimeConfig::default(),
         })
     }
 }
@@ -121,6 +127,8 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     if let Some(file_storage) = build_file_object_store(&config.file_storage)? {
         api_state = api_state.with_file_object_store(file_storage);
     }
+    api_state =
+        federation::apply_federation_runtime_config(api_state, storage, &config.federation).await?;
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "server listening");
