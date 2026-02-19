@@ -1235,6 +1235,12 @@ name = "less-sync-federation-keygen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "ed25519-dalek",
+ "less-sync-auth",
+ "less-sync-storage",
+ "rand_core 0.6.4",
+ "tokio",
 ]
 
 [[package]]

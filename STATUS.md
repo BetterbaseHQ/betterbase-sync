@@ -28,7 +28,8 @@ Rust local tests (`cargo test --workspace --all-features`):
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
-7. Total passing tests: `312`
+7. `less-sync-federation-keygen`: `3`
+8. Total passing tests: `315`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -72,7 +73,12 @@ Go baseline (reference from original local suite):
 - Parses federation runtime env config for trusted domains/keys, FST secrets, and quota overrides.
 - Wires federation authenticator and FST token keys into `ApiState` when configured.
 - Loads federation public signing keys from storage and publishes them through JWKS route metadata.
-8. HTTP/API:
+8. Federation keygen bootstrap command:
+- `bins/federation-keygen` now generates Ed25519 federation signing keys.
+- Supports deterministic federation key-id construction via `--domain` and optional `--kid`.
+- Optionally persists generated key material into Postgres (`--database-url` / `DATABASE_URL`) through storage APIs.
+- Emits operator-friendly output including `FEDERATION_TRUSTED_KEYS` entry.
+9. HTTP/API:
 - Bearer auth middleware and `/health`.
 - `/api/v1/ws`.
 - File endpoints `/api/v1/spaces/{space_id}/files/{id}` with:
@@ -83,7 +89,7 @@ Go baseline (reference from original local suite):
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
-9. File storage backends:
+10. File storage backends:
 - Disabled mode.
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
@@ -91,11 +97,11 @@ Go baseline (reference from original local suite):
 
 ## Gaps and Open Work
 1. Federation peer manager and forwarding/integration paths are not yet ported.
-2. Federation key lifecycle is still incomplete: runtime loading is wired, but `bins/federation-keygen` remains scaffold-level.
+2. Federation key lifecycle still needs rotation/operational workflow hardening beyond initial key generation.
 3. Benchmark parity with Go has not been ported.
 4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
 1. Port federation peer-manager forwarding flows and additional federation local tests.
-2. Complete federation keygen/bootstrap lifecycle and app-level runtime config wiring.
+2. Add federation key rotation and operator workflow coverage on top of the new keygen bootstrap command.
 3. Expand federation integration coverage for peer status/trusted metadata endpoints.
