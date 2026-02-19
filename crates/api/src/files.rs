@@ -596,12 +596,21 @@ fn file_object_path(space_id: Uuid, file_id: Uuid) -> ObjectPath {
 mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::header::{AUTHORIZATION, CONTENT_LENGTH};
     use axum::http::Request;
-    use less_sync_auth::{AuthError, TokenValidator};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use jsonwebtoken::{Algorithm, Header};
+    use less_sync_auth::{
+        compress_public_key, encode_did_key, AudienceClaim, AuthError, TokenValidator, UcanClaims,
+    };
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
+    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::PublicKey;
     use tower::ServiceExt;
 
     use crate::{router, ApiState, HealthCheck};
@@ -636,6 +645,7 @@ mod tests {
         record_exists: bool,
         metadata: Mutex<HashMap<(Uuid, Uuid), FileMetadata>>,
         personal_spaces: [Uuid; 2],
+        shared_spaces: HashMap<Uuid, Vec<u8>>,
     }
 
     #[async_trait]
@@ -646,6 +656,19 @@ mod tests {
                     id: space_id.to_string(),
                     client_id: "client".to_owned(),
                     root_public_key: None,
+                    key_generation: 1,
+                    min_key_generation: 0,
+                    metadata_version: 0,
+                    cursor: 0,
+                    rewrap_epoch: None,
+                    home_server: None,
+                });
+            }
+            if let Some(root_public_key) = self.shared_spaces.get(&space_id) {
+                return Ok(Space {
+                    id: space_id.to_string(),
+                    client_id: "client".to_owned(),
+                    root_public_key: Some(root_public_key.clone()),
                     key_generation: 1,
                     min_key_generation: 0,
                     metadata_version: 0,
@@ -1127,23 +1150,237 @@ mod tests {
         assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
     }
 
+    #[tokio::test]
+    async fn shared_space_put_get_and_head_with_valid_ucan_succeeds() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let write_ucan =
+            root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
+        let read_ucan =
+            root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Read);
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+        let payload = b"shared payload";
+        let put_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/spaces/{shared_space_id}/files/{file_id}"))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", write_ucan)
+                    .header(CONTENT_LENGTH, payload.len().to_string())
+                    .header("X-Record-ID", record_id.to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from(payload.to_vec()))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(put_response.status(), StatusCode::CREATED);
+
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/spaces/{shared_space_id}/files/{file_id}"))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", read_ucan.clone())
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let get_body = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert_eq!(get_body.as_ref(), payload);
+
+        let head_response = app
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri(format!("/api/v1/spaces/{shared_space_id}/files/{file_id}"))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", read_ucan)
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(head_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn shared_space_put_without_ucan_returns_unauthorized() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn shared_space_put_with_invalid_ucan_returns_forbidden() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", "not-a-valid-ucan")
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn shared_space_put_requires_write_permission() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let read_ucan =
+            root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Read);
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", read_ucan)
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     fn file_app(record_exists: bool) -> axum::Router {
+        file_app_with(
+            record_exists,
+            build_default_tokens(),
+            HashMap::<Uuid, Vec<u8>>::new(),
+        )
+    }
+
+    fn file_app_with_shared_space(
+        record_exists: bool,
+        shared_space_id: Uuid,
+        shared_root_public_key: Vec<u8>,
+        auth_did: String,
+    ) -> axum::Router {
+        let mut shared_spaces = HashMap::new();
+        shared_spaces.insert(shared_space_id, shared_root_public_key);
+
+        let mut tokens = build_default_tokens();
+        tokens.insert(
+            "files-shared-user".to_owned(),
+            auth_context_with_did("sync files", personal_space_user1(), &auth_did),
+        );
+
+        file_app_with(record_exists, tokens, shared_spaces)
+    }
+
+    fn file_app_with(
+        record_exists: bool,
+        tokens: HashMap<String, AuthContext>,
+        shared_spaces: HashMap<Uuid, Vec<u8>>,
+    ) -> axum::Router {
         let sync_storage = Arc::new(StubFileSyncStorage {
             record_exists,
             metadata: Mutex::new(HashMap::new()),
             personal_spaces: [personal_space_user1(), personal_space_user2()],
+            shared_spaces,
         });
         let blob_storage = Arc::new(StubFileBlobStorage::default());
 
         router(
             ApiState::new(Arc::new(StubHealth))
-                .with_websocket(Arc::new(build_validator()))
+                .with_websocket(Arc::new(StubValidator { tokens }))
                 .with_file_sync_storage_adapter(sync_storage)
                 .with_file_blob_storage_adapter(blob_storage),
         )
     }
 
     fn build_validator() -> StubValidator {
+        StubValidator {
+            tokens: build_default_tokens(),
+        }
+    }
+
+    fn build_default_tokens() -> HashMap<String, AuthContext> {
         let mut tokens = HashMap::new();
         tokens.insert(
             "files-user1".to_owned(),
@@ -1157,19 +1394,88 @@ mod tests {
             "files-user2".to_owned(),
             auth_context("sync files", personal_space_user2()),
         );
-        StubValidator { tokens }
+        tokens
     }
 
     fn auth_context(scope: &str, personal_space_id: Uuid) -> AuthContext {
+        auth_context_with_did(scope, personal_space_id, "did:key:z6Mkexample")
+    }
+
+    fn auth_context_with_did(scope: &str, personal_space_id: Uuid, did: &str) -> AuthContext {
         AuthContext {
             issuer: "https://accounts.less.so".to_owned(),
             user_id: "user".to_owned(),
             client_id: "client".to_owned(),
             personal_space_id: personal_space_id.to_string(),
-            did: "did:key:z6Mkexample".to_owned(),
+            did: did.to_owned(),
             mailbox_id: "mailbox".to_owned(),
             scope: scope.to_owned(),
         }
+    }
+
+    #[derive(Clone)]
+    struct TestIssuer {
+        key: SigningKey,
+        did: String,
+    }
+
+    impl TestIssuer {
+        fn new() -> Self {
+            let key = SigningKey::random(&mut OsRng);
+            let public_key =
+                PublicKey::from_sec1_bytes(key.verifying_key().to_encoded_point(false).as_bytes())
+                    .expect("public key should decode");
+            let did = encode_did_key(&public_key);
+            Self { key, did }
+        }
+
+        fn compressed_public_key(&self) -> [u8; 33] {
+            let public_key = PublicKey::from_sec1_bytes(
+                self.key.verifying_key().to_encoded_point(false).as_bytes(),
+            )
+            .expect("public key should decode");
+            compress_public_key(&public_key)
+        }
+
+        fn issue_space_ucan(
+            &self,
+            audience_did: &str,
+            space_id: Uuid,
+            permission: Permission,
+        ) -> String {
+            let claims = UcanClaims {
+                iss: self.did.clone(),
+                aud: Some(AudienceClaim::One(audience_did.to_owned())),
+                exp: Some(
+                    (SystemTime::now() + Duration::from_secs(60 * 60))
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time should be after epoch")
+                        .as_secs(),
+                ),
+                nbf: None,
+                cmd: permission.as_cmd().to_owned(),
+                with_resource: format!("space:{space_id}"),
+                nonce: "test-nonce".to_owned(),
+                prf: Vec::new(),
+            };
+            sign_es256_token(&claims, &self.key)
+        }
+    }
+
+    fn sign_es256_token(claims: &UcanClaims, key: &SigningKey) -> String {
+        let header = Header {
+            alg: Algorithm::ES256,
+            typ: Some("JWT".to_owned()),
+            ..Header::default()
+        };
+        let header = serde_json::to_vec(&header).expect("serialize header");
+        let claims = serde_json::to_vec(claims).expect("serialize claims");
+        let header = URL_SAFE_NO_PAD.encode(header);
+        let claims = URL_SAFE_NO_PAD.encode(claims);
+        let signing_input = format!("{header}.{claims}");
+        let signature: Signature = key.sign(signing_input.as_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        format!("{signing_input}.{signature}")
     }
 
     fn personal_space_user1() -> Uuid {

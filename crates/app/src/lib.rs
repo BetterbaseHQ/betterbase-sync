@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use less_sync_api::{ApiState, ObjectStoreFileBlobStorage};
+use less_sync_api::ApiState;
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::PostgresStorage;
+use object_store::local::LocalFileSystem;
+use object_store::ObjectStore;
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -77,8 +79,8 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         .with_realtime_broker(broker)
         .with_sync_storage(storage.clone());
 
-    if let Some(file_storage) = build_file_blob_storage(&config.file_storage)? {
-        api_state = api_state.with_object_store_file_storage(file_storage);
+    if let Some(file_storage) = build_file_object_store(&config.file_storage)? {
+        api_state = api_state.with_file_object_store(file_storage);
     }
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
@@ -87,14 +89,14 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_file_blob_storage(
+fn build_file_object_store(
     config: &FileStorageConfig,
-) -> anyhow::Result<Option<Arc<ObjectStoreFileBlobStorage>>> {
+) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
     match config {
         FileStorageConfig::Disabled => Ok(None),
         FileStorageConfig::Local { path } => {
             std::fs::create_dir_all(path)?;
-            let storage = ObjectStoreFileBlobStorage::local_filesystem(path)?;
+            let storage = LocalFileSystem::new_with_prefix(path)?;
             Ok(Some(Arc::new(storage)))
         }
     }

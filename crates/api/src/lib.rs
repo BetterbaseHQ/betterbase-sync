@@ -15,6 +15,7 @@ use less_sync_auth::{AuthError, TokenValidator};
 use less_sync_core::protocol::ErrorResponse;
 use less_sync_realtime::broker::MultiBroker;
 use less_sync_storage::{Storage, StorageError};
+use object_store::ObjectStore;
 
 mod files;
 mod ws;
@@ -127,6 +128,11 @@ impl ApiState {
     pub fn with_object_store_file_storage(self, storage: Arc<ObjectStoreFileBlobStorage>) -> Self {
         let storage: Arc<dyn files::FileBlobStorage> = storage;
         self.with_file_blob_storage_adapter(storage)
+    }
+
+    #[must_use]
+    pub fn with_file_object_store(self, store: Arc<dyn ObjectStore>) -> Self {
+        self.with_object_store_file_storage(Arc::new(ObjectStoreFileBlobStorage::new(store)))
     }
 
     pub(crate) fn with_file_blob_storage_adapter(
