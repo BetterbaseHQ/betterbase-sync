@@ -114,9 +114,7 @@ async fn websocket_upgrade_with_mode(
     };
 
     ws.protocols([WS_SUBPROTOCOL])
-        .on_upgrade(move |socket| {
-            serve_websocket(socket, config, None, runtime_context)
-        })
+        .on_upgrade(move |socket| serve_websocket(socket, config, None, runtime_context))
         .into_response()
 }
 
