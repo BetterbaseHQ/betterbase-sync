@@ -1,23 +1,25 @@
 use super::realtime::{OutboundSender, RealtimeSession};
 use super::PresenceRegistry;
 use super::SyncStorage;
-use less_sync_auth::AuthContext;
+use less_sync_auth::{AuthContext, TokenValidator};
 use less_sync_core::protocol::{ERR_CODE_INTERNAL, RPC_RESPONSE};
 use serde::de::DeserializeOwned;
 
 mod frames;
 mod handlers;
+mod token_refresh;
 
 pub(crate) struct RequestContext<'a> {
     pub sync_storage: Option<&'a dyn SyncStorage>,
     pub realtime: Option<&'a RealtimeSession>,
     pub presence_registry: Option<&'a PresenceRegistry>,
-    pub auth: &'a AuthContext,
 }
 
 pub(crate) async fn handle_request(
     outbound: &OutboundSender,
     context: RequestContext<'_>,
+    auth: &mut AuthContext,
+    validator: &(dyn TokenValidator + Send + Sync),
     id: &str,
     method: &str,
     payload: &[u8],
@@ -26,10 +28,12 @@ pub(crate) async fn handle_request(
         sync_storage,
         realtime,
         presence_registry,
-        auth,
     } = context;
 
     match method {
+        "token.refresh" => {
+            token_refresh::handle_request(outbound, auth, validator, id, payload).await;
+        }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {
                 frames::send_error_response(

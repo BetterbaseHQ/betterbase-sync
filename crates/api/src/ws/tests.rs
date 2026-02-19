@@ -9,7 +9,7 @@ use http::{HeaderValue, StatusCode};
 use less_sync_auth::{AuthContext, AuthError, TokenValidator};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -33,24 +33,30 @@ impl HealthCheck for StubHealth {
 }
 
 struct StubValidator {
-    scope: &'static str,
+    tokens: HashMap<String, AuthContext>,
+}
+
+impl StubValidator {
+    fn with_scope(scope: &'static str) -> Self {
+        Self::with_token_scopes(&[("valid-token", scope)])
+    }
+
+    fn with_token_scopes(tokens: &[(&str, &str)]) -> Self {
+        let mut configured = HashMap::with_capacity(tokens.len());
+        for (token, scope) in tokens {
+            configured.insert((*token).to_owned(), test_auth_context(scope));
+        }
+        Self { tokens: configured }
+    }
 }
 
 #[async_trait]
 impl TokenValidator for StubValidator {
     async fn validate_token(&self, token: &str) -> Result<AuthContext, AuthError> {
-        if token != "valid-token" {
-            return Err(AuthError::InvalidToken);
-        }
-        Ok(AuthContext {
-            issuer: "https://accounts.less.so".to_owned(),
-            user_id: "user-1".to_owned(),
-            client_id: "client-1".to_owned(),
-            personal_space_id: test_personal_space_id(),
-            did: "did:key:zDnaStub".to_owned(),
-            mailbox_id: "mailbox-1".to_owned(),
-            scope: self.scope.to_owned(),
-        })
+        self.tokens
+            .get(token)
+            .cloned()
+            .ok_or(AuthError::InvalidToken)
     }
 }
 
@@ -312,6 +318,205 @@ async fn websocket_unknown_method_returns_method_not_found() {
         response.error.code,
         less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
     );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_token_refresh_returns_error_for_invalid_token() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "refresh-1",
+            "method": "token.refresh",
+            "params": { "token": "unknown-token" }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "refresh-1");
+    assert!(!response.result.ok);
+    assert_eq!(response.result.error, "invalid auth token");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
+    let validator = Arc::new(StubValidator::with_token_scopes(&[
+        ("valid-token", "sync"),
+        ("refresh-no-sync", "files"),
+    ]));
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let space_id = test_personal_space_id();
+    let record_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "refresh-2",
+            "method": "token.refresh",
+            "params": { "token": "refresh-no-sync" }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "refresh-2");
+    assert!(!response.result.ok);
+    assert_eq!(response.result.error, "sync scope required");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-after-refresh-fail",
+            "method": "push",
+            "params": {
+                "space": space_id,
+                "changes": [{
+                    "id": record_id,
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(push.id, "push-after-refresh-fail");
+    assert!(push.result.ok);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_token_refresh_accepts_new_valid_token() {
+    let validator = Arc::new(StubValidator::with_token_scopes(&[
+        ("valid-token", "sync"),
+        ("refresh-token", "sync"),
+    ]));
+    let server = spawn_server(base_state_with_ws_validator(
+        Duration::from_secs(1),
+        validator,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "refresh-3",
+            "method": "token.refresh",
+            "params": { "token": "refresh-token" }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "refresh-3");
+    assert!(response.result.ok);
+    assert!(response.result.error.is_empty());
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "refresh-post-unknown",
+            "method": "nonexistent.method",
+            "params": {}
+        }),
+    )
+    .await;
+    let unknown = read_error_response(&mut socket).await;
+    assert_eq!(unknown.id, "refresh-post-unknown");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_token_refresh_rejects_identity_mismatch() {
+    let mut tokens = HashMap::new();
+    tokens.insert("valid-token".to_owned(), test_auth_context("sync"));
+    let mut mismatched = test_auth_context("sync");
+    mismatched.user_id = "user-2".to_owned();
+    tokens.insert("refresh-mismatch".to_owned(), mismatched);
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), Arc::new(StubValidator { tokens }))
+            .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let space_id = test_personal_space_id();
+    let record_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "refresh-4",
+            "method": "token.refresh",
+            "params": { "token": "refresh-mismatch" }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "refresh-4");
+    assert!(!response.result.ok);
+    assert_eq!(response.result.error, "token identity mismatch");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-after-refresh-mismatch",
+            "method": "push",
+            "params": {
+                "space": space_id,
+                "changes": [{
+                    "id": record_id,
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(push.id, "push-after-refresh-mismatch");
+    assert!(push.result.ok);
 
     server.handle.abort();
 }
@@ -1529,8 +1734,26 @@ async fn spawn_server(state: ApiState) -> TestServer {
 }
 
 fn base_state_with_ws(auth_timeout: Duration, scope: &'static str) -> ApiState {
-    ApiState::new(Arc::new(StubHealth))
-        .with_websocket_timeout(Arc::new(StubValidator { scope }), auth_timeout)
+    base_state_with_ws_validator(auth_timeout, Arc::new(StubValidator::with_scope(scope)))
+}
+
+fn base_state_with_ws_validator(
+    auth_timeout: Duration,
+    validator: Arc<dyn TokenValidator + Send + Sync>,
+) -> ApiState {
+    ApiState::new(Arc::new(StubHealth)).with_websocket_timeout(validator, auth_timeout)
+}
+
+fn test_auth_context(scope: &str) -> AuthContext {
+    AuthContext {
+        issuer: "https://accounts.less.so".to_owned(),
+        user_id: "user-1".to_owned(),
+        client_id: "client-1".to_owned(),
+        personal_space_id: test_personal_space_id(),
+        did: "did:key:zDnaStub".to_owned(),
+        mailbox_id: "mailbox-1".to_owned(),
+        scope: scope.to_owned(),
+    }
 }
 
 fn test_personal_space_id() -> String {
@@ -1589,10 +1812,14 @@ fn assert_http_status(error: WsError, status: StatusCode) {
 }
 
 async fn send_auth(socket: &mut TestSocket) {
+    send_auth_with_token(socket, "valid-token").await;
+}
+
+async fn send_auth_with_token(socket: &mut TestSocket, token: &str) {
     let frame = serde_cbor::to_vec(&serde_json::json!({
         "type": less_sync_core::protocol::RPC_NOTIFICATION,
         "method": "auth",
-        "params": { "token": "valid-token" }
+        "params": { "token": token }
     }))
     .expect("encode auth frame");
     socket

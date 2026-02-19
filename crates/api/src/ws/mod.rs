@@ -133,7 +133,7 @@ async fn serve_websocket(
             }
         };
 
-    let auth_context =
+    let mut auth_context =
         match authenticate_first_message(config.validator.as_ref(), first_message).await {
             Ok(context) => context,
             Err(error) => {
@@ -178,8 +178,9 @@ async fn serve_websocket(
                             sync_storage: sync_storage.as_deref(),
                             realtime: realtime_session.as_ref(),
                             presence_registry: presence_registry.as_deref(),
-                            auth: &auth_context,
                         },
+                        &mut auth_context,
+                        config.validator.as_ref(),
                         &id,
                         &method,
                         &payload,
