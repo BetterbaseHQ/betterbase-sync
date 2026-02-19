@@ -14,8 +14,8 @@
 ## Current Snapshot (2026-02-19)
 - Latest commit: `5639509` (`Refactor federation RPC handlers into focused modules`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `315` tests passing.
-1. `less-sync-api`: `125`
+- Rust local test totals (all features): `316` tests passing.
+1. `less-sync-api`: `126`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
@@ -25,6 +25,7 @@
 - Federation progress in working tree:
 1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
 2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
+  - Includes JWKS cache headers and trusted-peer gating on status route when allowlists are configured.
 3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
 4. `federation-keygen` now generates Ed25519 keys, emits trust entries, and can persist key material to Postgres.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.

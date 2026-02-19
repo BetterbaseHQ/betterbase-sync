@@ -1,12 +1,20 @@
 use axum::extract::{Path, State};
+use axum::http::header::CACHE_CONTROL;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
 use less_sync_auth::canonicalize_domain;
 use serde::Serialize;
 
-use crate::{ApiState, FederationJwks, FederationPeerStatus};
+use crate::{ApiState, FederationPeerStatus};
 
-pub(crate) async fn jwks(State(state): State<ApiState>) -> Json<FederationJwks> {
-    Json(state.federation_jwks())
+pub(crate) async fn jwks(State(state): State<ApiState>) -> impl IntoResponse {
+    let mut response = Json(state.federation_jwks()).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600, stale-while-revalidate=86400"),
+    );
+    response
 }
 
 pub(crate) async fn trusted_peers(State(state): State<ApiState>) -> Json<FederationTrustedPeers> {
@@ -18,14 +26,23 @@ pub(crate) async fn trusted_peers(State(state): State<ApiState>) -> Json<Federat
 pub(crate) async fn peer_status(
     Path(domain): Path<String>,
     State(state): State<ApiState>,
-) -> Json<FederationPeerStatus> {
+) -> Result<Json<FederationPeerStatus>, StatusCode> {
     let canonical_domain = canonicalize_domain(&domain);
-    Json(
+    let trusted_domains = state.federation_trusted_domains();
+    if !trusted_domains.is_empty()
+        && !trusted_domains
+            .iter()
+            .any(|entry| entry == &canonical_domain)
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    Ok(Json(
         state
             .federation_quota_tracker()
             .peer_status(&canonical_domain)
             .await,
-    )
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -98,7 +98,7 @@ impl FederationJwk {
             kid: kid.into(),
             kty: "OKP".to_owned(),
             alg: "EdDSA".to_owned(),
-            use_: "sig".to_owned(),
+            use_: "federation".to_owned(),
             crv: "Ed25519".to_owned(),
             x: URL_SAFE_NO_PAD.encode(verifying_key.as_bytes()),
         }

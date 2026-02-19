@@ -369,6 +369,7 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use axum::http::StatusCode;
+    use http::header::CACHE_CONTROL;
     use serde::Deserialize;
     use tower::util::ServiceExt;
 
@@ -519,6 +520,13 @@ mod tests {
             .expect("dispatch request");
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=3600, stale-while-revalidate=86400")
+        );
     }
 
     #[tokio::test]
@@ -579,6 +587,7 @@ mod tests {
     async fn federation_status_route_returns_quota_usage() {
         let state = ApiState::new(Arc::new(StubHealth { healthy: true }))
             .with_websocket(Arc::new(StubValidator))
+            .with_federation_trusted_domains(vec!["peer.example.com".to_owned()])
             .with_federation_quota_limits(FederationQuotaLimits {
                 max_connections: 10,
                 max_spaces: 10,
@@ -618,6 +627,26 @@ mod tests {
         assert_eq!(payload.spaces, 2);
         assert_eq!(payload.records_this_hour, 3);
         assert_eq!(payload.bytes_this_hour, 128);
+    }
+
+    #[tokio::test]
+    async fn federation_status_route_rejects_untrusted_peer() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator))
+                .with_federation_trusted_domains(vec!["peer.example.com".to_owned()]),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/status/other.example.com")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[derive(Debug, Deserialize)]

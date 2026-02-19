@@ -22,14 +22,14 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `125`
+1. `less-sync-api`: `126`
 2. `less-sync-app`: `21`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
 7. `less-sync-federation-keygen`: `3`
-8. Total passing tests: `315`
+8. Total passing tests: `316`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -69,6 +69,7 @@ Go baseline (reference from original local suite):
 - `GET /.well-known/jwks.json` (public metadata route)
 - `GET /api/v1/federation/trusted` (authenticated trusted-domain view)
 - `GET /api/v1/federation/status/{domain}` (authenticated quota/status view)
+- JWKS route now emits cache headers and status route rejects unknown peers when trusted-domain allowlist is configured.
 7. App/runtime federation wiring:
 - Parses federation runtime env config for trusted domains/keys, FST secrets, and quota overrides.
 - Wires federation authenticator and FST token keys into `ApiState` when configured.
