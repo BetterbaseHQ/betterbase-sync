@@ -11,8 +11,8 @@ use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use jsonwebtoken::{Algorithm, Header};
 use less_sync_auth::{
-    compress_public_key, compute_ucan_cid, encode_did_key, sign_http_request, AudienceClaim,
-    AuthContext, AuthError, Permission, TokenValidator, UcanClaims,
+    compress_public_key, compute_ucan_cid, derive_fst_key, encode_did_key, sign_http_request,
+    AudienceClaim, AuthContext, AuthError, Permission, TokenValidator, UcanClaims,
 };
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use p256::ecdsa::signature::Signer;
@@ -29,8 +29,9 @@ use uuid::Uuid;
 
 use super::storage::SubscribedSpaceState;
 use super::SyncStorage;
-use crate::federation::federation_personal_space_id;
-use crate::{router, ApiState, HealthCheck, HttpSignatureFederationAuthenticator};
+use crate::{
+    router, ApiState, FederationTokenKeys, HealthCheck, HttpSignatureFederationAuthenticator,
+};
 
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -588,27 +589,35 @@ async fn websocket_federation_route_without_authenticator_returns_not_found() {
 }
 
 #[tokio::test]
-async fn websocket_federation_route_supports_rpc_flow() {
+async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let read_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Read);
     let signing_key = Ed25519SigningKey::generate(&mut OsRng);
     let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
-    let server = spawn_server(
+    let server = spawn_server(with_federation_auth(
         base_state_with_ws_and_storage(
             Duration::from_secs(1),
             "sync",
-            Arc::new(StubSyncStorage::healthy()),
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
         )
-        .with_federation_authenticator(Arc::new(
-            HttpSignatureFederationAuthenticator::new(
-                vec!["peer.example.com".to_owned()],
-                HashMap::from([(key_id.to_owned(), signing_key.verifying_key())]),
-            ),
-        )),
-    )
+        .with_federation_token_keys(FederationTokenKeys::new(derive_fst_key(
+            b"01234567890123456789012345678901",
+        ))),
+        &signing_key,
+        key_id,
+    ))
     .await;
     let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    let space_id = federation_personal_space_id("peer.example.com");
     send_binary_frame(
         &mut socket,
         serde_json::json!({
@@ -616,7 +625,110 @@ async fn websocket_federation_route_supports_rpc_flow() {
             "id": "fed-sub-1",
             "method": "subscribe",
             "params": {
-                "spaces": [{ "id": space_id.to_string(), "since": 0 }]
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let first: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(first.id, "fed-sub-1");
+    assert_eq!(first.result.spaces.len(), 1);
+    assert!(first.result.errors.is_empty());
+    assert!(!first.result.spaces[0].token.is_empty());
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-2",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "token": first.result.spaces[0].token }]
+            }
+        }),
+    )
+    .await;
+
+    let second: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(second.id, "fed-sub-2");
+    assert_eq!(second.result.spaces.len(), 1);
+    assert!(second.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_rejects_client_only_methods() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws(Duration::from_secs(1), "sync"),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-refresh-1",
+            "method": "token.refresh",
+            "params": { "token": "ignored" }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "fed-refresh-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_subscribe_rejects_invalid_fst() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
+        )
+        .with_federation_token_keys(FederationTokenKeys::new(derive_fst_key(
+            b"01234567890123456789012345678901",
+        ))),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-bad-fst",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "token": "not-a-token" }]
             }
         }),
     )
@@ -624,9 +736,157 @@ async fn websocket_federation_route_supports_rpc_flow() {
 
     let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
-    assert_eq!(response.id, "fed-sub-1");
-    assert_eq!(response.result.spaces.len(), 1);
-    assert!(response.result.errors.is_empty());
+    assert!(response.result.spaces.is_empty());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_push_requires_ucan() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-push-no-ucan",
+            "method": "push",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "changes": [{
+                    "id": Uuid::new_v4().to_string(),
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert!(!response.result.ok);
+    assert_eq!(
+        response.result.error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_push_and_pull_with_valid_ucan() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let write_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Write);
+    let read_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Read);
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-push-1",
+            "method": "push",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "changes": [{
+                    "id": Uuid::new_v4().to_string(),
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+
+    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(push.id, "fed-push-1");
+    assert!(push.result.ok);
+    assert_eq!(push.result.cursor, 77);
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-pull-1",
+            "method": "pull",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 100, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(begin.id, "fed-pull-1");
+    assert_eq!(begin.name, "pull.begin");
+    assert_eq!(begin.data.space, shared_space_id.to_string());
+
+    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(record.name, "pull.record");
+    assert_eq!(record.data.space, shared_space_id.to_string());
+
+    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+        read_chunk_response(&mut socket).await;
+    assert_eq!(commit.name, "pull.commit");
+    assert_eq!(commit.data.count, 1);
+
+    let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
+    assert_eq!(result.id, "fed-pull-1");
+    assert_eq!(result.result.chunks, 3);
 
     server.handle.abort();
 }
@@ -3847,6 +4107,17 @@ fn signed_federation_ws_request(
     );
     sign_http_request(&mut request, signing_key, key_id);
     request
+}
+
+fn with_federation_auth(
+    state: ApiState,
+    signing_key: &Ed25519SigningKey,
+    key_id: &str,
+) -> ApiState {
+    state.with_federation_authenticator(Arc::new(HttpSignatureFederationAuthenticator::new(
+        vec!["peer.example.com".to_owned()],
+        HashMap::from([(key_id.to_owned(), signing_key.verifying_key())]),
+    )))
 }
 
 fn assert_http_status(error: WsError, status: StatusCode) {

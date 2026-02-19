@@ -25,6 +25,21 @@ mod storage;
 pub(crate) use presence::PresenceRegistry;
 pub(crate) use storage::SyncStorage;
 
+#[derive(Clone)]
+enum ConnectionMode {
+    Client,
+    Federation { peer_domain: String },
+}
+
+#[derive(Clone)]
+struct WebSocketRuntimeContext {
+    sync_storage: Option<Arc<dyn SyncStorage>>,
+    realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
+    presence_registry: Option<Arc<PresenceRegistry>>,
+    connection_mode: ConnectionMode,
+    federation_token_keys: Option<crate::FederationTokenKeys>,
+}
+
 pub(crate) async fn websocket_upgrade(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -54,20 +69,26 @@ pub(crate) async fn federation_websocket_upgrade(
         Ok(context) => context,
         Err(error) => return (error.status, error.message).into_response(),
     };
+    let Some(peer_domain) =
+        crate::federation::federation_peer_domain(&auth_context).map(ToOwned::to_owned)
+    else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid federation auth context",
+        )
+            .into_response();
+    };
 
-    let sync_storage = state.sync_storage();
-    let realtime_broker = state.realtime_broker();
-    let presence_registry = state.presence_registry();
+    let runtime_context = WebSocketRuntimeContext {
+        sync_storage: state.sync_storage(),
+        realtime_broker: state.realtime_broker(),
+        presence_registry: state.presence_registry(),
+        connection_mode: ConnectionMode::Federation { peer_domain },
+        federation_token_keys: state.federation_token_keys(),
+    };
     ws.protocols([WS_SUBPROTOCOL])
         .on_upgrade(move |socket| {
-            serve_websocket(
-                socket,
-                config,
-                sync_storage,
-                realtime_broker,
-                presence_registry,
-                Some(auth_context),
-            )
+            serve_websocket(socket, config, Some(auth_context), runtime_context)
         })
         .into_response()
 }
@@ -84,20 +105,17 @@ async fn websocket_upgrade_with_mode(
     let Some(config) = state.websocket() else {
         return StatusCode::NOT_IMPLEMENTED.into_response();
     };
-    let sync_storage = state.sync_storage();
-    let realtime_broker = state.realtime_broker();
-    let presence_registry = state.presence_registry();
+    let runtime_context = WebSocketRuntimeContext {
+        sync_storage: state.sync_storage(),
+        realtime_broker: state.realtime_broker(),
+        presence_registry: state.presence_registry(),
+        connection_mode: ConnectionMode::Client,
+        federation_token_keys: state.federation_token_keys(),
+    };
 
     ws.protocols([WS_SUBPROTOCOL])
         .on_upgrade(move |socket| {
-            serve_websocket(
-                socket,
-                config,
-                sync_storage,
-                realtime_broker,
-                presence_registry,
-                None,
-            )
+            serve_websocket(socket, config, None, runtime_context)
         })
         .into_response()
 }
@@ -135,10 +153,8 @@ fn build_federation_auth_request(uri: &Uri, headers: &HeaderMap) -> Request<()> 
 async fn serve_websocket(
     socket: WebSocket,
     config: crate::WebSocketState,
-    sync_storage: Option<Arc<dyn SyncStorage>>,
-    realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
-    presence_registry: Option<Arc<PresenceRegistry>>,
     initial_auth_context: Option<AuthContext>,
+    runtime_context: WebSocketRuntimeContext,
 ) {
     let (mut socket_sender, mut socket_receiver) = socket.split();
     let (outbound, mut outbound_rx) = realtime::outbound_channel();
@@ -218,7 +234,7 @@ async fn serve_websocket(
 
     let connection_id = Uuid::new_v4().to_string();
     let realtime_session = match realtime::register_session(
-        realtime_broker,
+        runtime_context.realtime_broker.clone(),
         &auth_context,
         &connection_id,
         outbound.clone(),
@@ -244,25 +260,47 @@ async fn serve_websocket(
         match message {
             Message::Binary(payload) => match parse_client_binary_frame(&payload) {
                 Ok(ClientFrame::Request { id, method }) => {
+                    let request_mode = match &runtime_context.connection_mode {
+                        ConnectionMode::Client => rpc::RequestMode::Client,
+                        ConnectionMode::Federation { peer_domain } => {
+                            rpc::RequestMode::Federation {
+                                peer_domain,
+                                token_keys: runtime_context.federation_token_keys.as_ref(),
+                            }
+                        }
+                    };
                     rpc::handle_request(
                         &outbound,
                         rpc::RequestContext {
-                            sync_storage: sync_storage.as_deref(),
+                            sync_storage: runtime_context.sync_storage.as_deref(),
                             realtime: realtime_session.as_ref(),
-                            presence_registry: presence_registry.as_deref(),
+                            presence_registry: runtime_context.presence_registry.as_deref(),
                         },
+                        request_mode,
                         &mut auth_context,
                         config.validator.as_ref(),
-                        &id,
-                        &method,
-                        &payload,
+                        rpc::RequestFrame {
+                            id: &id,
+                            method: &method,
+                            payload: &payload,
+                        },
                     )
                     .await;
                 }
                 Ok(ClientFrame::Notification { method }) => {
+                    let request_mode = match &runtime_context.connection_mode {
+                        ConnectionMode::Client => rpc::RequestMode::Client,
+                        ConnectionMode::Federation { peer_domain } => {
+                            rpc::RequestMode::Federation {
+                                peer_domain,
+                                token_keys: runtime_context.federation_token_keys.as_ref(),
+                            }
+                        }
+                    };
                     rpc::handle_notification(
+                        request_mode,
                         realtime_session.as_ref(),
-                        presence_registry.as_deref(),
+                        runtime_context.presence_registry.as_deref(),
                         &method,
                         &payload,
                     )
@@ -293,7 +331,7 @@ async fn serve_websocket(
     }
 
     if let Some(session) = realtime_session.as_ref() {
-        if let Some(presence_registry) = presence_registry.as_deref() {
+        if let Some(presence_registry) = runtime_context.presence_registry.as_deref() {
             let cleared_spaces = presence_registry.clear_peer(session.peer_id()).await;
             for space_id in &cleared_spaces {
                 session

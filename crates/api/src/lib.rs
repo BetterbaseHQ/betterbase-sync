@@ -24,7 +24,8 @@ mod ws;
 const DEFAULT_WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub use federation::{
-    FederationAuthError, FederationAuthenticator, HttpSignatureFederationAuthenticator,
+    FederationAuthError, FederationAuthenticator, FederationTokenKeys,
+    HttpSignatureFederationAuthenticator,
 };
 pub use files::ObjectStoreFileBlobStorage;
 
@@ -48,6 +49,7 @@ pub struct ApiState {
     health: Arc<dyn HealthCheck>,
     websocket: Option<WebSocketState>,
     federation_authenticator: Option<Arc<dyn FederationAuthenticator>>,
+    federation_token_keys: Option<FederationTokenKeys>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
     file_sync_storage: Option<Arc<dyn files::FileSyncStorage>>,
     file_blob_storage: Option<Arc<dyn files::FileBlobStorage>>,
@@ -68,6 +70,7 @@ impl ApiState {
             health,
             websocket: None,
             federation_authenticator: None,
+            federation_token_keys: None,
             sync_storage: None,
             file_sync_storage: None,
             file_blob_storage: None,
@@ -109,6 +112,16 @@ impl ApiState {
 
     pub(crate) fn federation_authenticator(&self) -> Option<Arc<dyn FederationAuthenticator>> {
         self.federation_authenticator.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_token_keys(mut self, keys: FederationTokenKeys) -> Self {
+        self.federation_token_keys = Some(keys);
+        self
+    }
+
+    pub(crate) fn federation_token_keys(&self) -> Option<FederationTokenKeys> {
+        self.federation_token_keys.clone()
     }
 
     #[must_use]

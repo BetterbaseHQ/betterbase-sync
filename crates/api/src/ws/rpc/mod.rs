@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 
 mod deks;
 mod epoch;
+mod federation;
 mod frames;
 mod handlers;
 mod invitation;
@@ -22,15 +23,53 @@ pub(crate) struct RequestContext<'a> {
     pub presence_registry: Option<&'a PresenceRegistry>,
 }
 
+pub(crate) enum RequestMode<'a> {
+    Client,
+    Federation {
+        peer_domain: &'a str,
+        token_keys: Option<&'a crate::FederationTokenKeys>,
+    },
+}
+
+pub(crate) struct RequestFrame<'a> {
+    pub id: &'a str,
+    pub method: &'a str,
+    pub payload: &'a [u8],
+}
+
 pub(crate) async fn handle_request(
+    outbound: &OutboundSender,
+    context: RequestContext<'_>,
+    mode: RequestMode<'_>,
+    auth: &mut AuthContext,
+    validator: &(dyn TokenValidator + Send + Sync),
+    frame: RequestFrame<'_>,
+) {
+    match mode {
+        RequestMode::Client => {
+            handle_client_request(outbound, context, auth, validator, frame).await;
+        }
+        RequestMode::Federation {
+            peer_domain,
+            token_keys,
+        } => {
+            federation::handle_request(outbound, context, frame, peer_domain, token_keys).await;
+        }
+    }
+}
+
+async fn handle_client_request(
     outbound: &OutboundSender,
     context: RequestContext<'_>,
     auth: &mut AuthContext,
     validator: &(dyn TokenValidator + Send + Sync),
-    id: &str,
-    method: &str,
-    payload: &[u8],
+    frame: RequestFrame<'_>,
 ) {
+    let RequestFrame {
+        id,
+        method,
+        payload,
+    } = frame;
     let RequestContext {
         sync_storage,
         realtime,
@@ -279,6 +318,26 @@ pub(crate) async fn handle_request(
 }
 
 pub(crate) async fn handle_notification(
+    mode: RequestMode<'_>,
+    realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
+    method: &str,
+    payload: &[u8],
+) {
+    match mode {
+        RequestMode::Client => {
+            handle_client_notification(realtime, presence_registry, method, payload).await;
+        }
+        RequestMode::Federation { .. } => {
+            if method == "unsubscribe" {
+                handlers::handle_unsubscribe_notification(realtime, presence_registry, payload)
+                    .await;
+            }
+        }
+    }
+}
+
+async fn handle_client_notification(
     realtime: Option<&RealtimeSession>,
     presence_registry: Option<&PresenceRegistry>,
     method: &str,

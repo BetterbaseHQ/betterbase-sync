@@ -4,8 +4,9 @@ use std::time::Duration;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::VerifyingKey;
 use less_sync_auth::{
-    canonicalize_domain, extract_domain_from_key_id, verify_http_signature_with_max_age,
-    AuthContext, DEFAULT_SIGNATURE_MAX_AGE,
+    canonicalize_domain, create_fst, extract_domain_from_key_id, verify_fst_dual_key,
+    verify_http_signature_with_max_age, AuthContext, FederationSubscribeClaims,
+    FederationTokenError, DEFAULT_SIGNATURE_MAX_AGE,
 };
 use uuid::Uuid;
 
@@ -13,6 +14,50 @@ use uuid::Uuid;
 pub struct FederationAuthError {
     pub status: StatusCode,
     pub message: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationTokenKeys {
+    primary_key: [u8; 32],
+    previous_key: Option<[u8; 32]>,
+}
+
+impl FederationTokenKeys {
+    #[must_use]
+    pub fn new(primary_key: [u8; 32]) -> Self {
+        Self {
+            primary_key,
+            previous_key: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_previous_key(mut self, previous_key: [u8; 32]) -> Self {
+        self.previous_key = Some(previous_key);
+        self
+    }
+
+    pub(crate) fn verify_fst(
+        &self,
+        token: &str,
+        peer_domain: &str,
+    ) -> Result<FederationSubscribeClaims, FederationTokenError> {
+        verify_fst_dual_key(
+            &self.primary_key,
+            self.previous_key.as_ref().map(|key| key.as_slice()),
+            token,
+            peer_domain,
+        )
+    }
+
+    pub(crate) fn create_fst(
+        &self,
+        space_id: Uuid,
+        peer_domain: &str,
+        expiry_cap: Option<std::time::SystemTime>,
+    ) -> Result<String, FederationTokenError> {
+        create_fst(&self.primary_key, space_id, peer_domain, expiry_cap)
+    }
 }
 
 pub trait FederationAuthenticator: Send + Sync {
@@ -109,6 +154,10 @@ fn federation_auth_context(peer_domain: &str) -> AuthContext {
         mailbox_id: format!("federation:{canonical}"),
         scope: "sync".to_owned(),
     }
+}
+
+pub(crate) fn federation_peer_domain(auth: &AuthContext) -> Option<&str> {
+    auth.user_id.strip_prefix("federation:")
 }
 
 #[cfg(test)]

@@ -88,7 +88,7 @@ fn is_personal_space(auth: &AuthContext, space_id: Uuid) -> bool {
         .is_some_and(|personal_space_id| personal_space_id == space_id)
 }
 
-async fn ensure_chain_not_revoked(
+pub(crate) async fn ensure_chain_not_revoked(
     sync_storage: &dyn SyncStorage,
     space_id: Uuid,
     token: &str,
