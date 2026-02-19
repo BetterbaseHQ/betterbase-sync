@@ -169,7 +169,11 @@ pub fn router(state: ApiState) -> Router {
 
     let mut app = Router::new()
         .route("/health", get(health))
-        .route("/api/v1/ws", get(ws::websocket_upgrade));
+        .route("/api/v1/ws", get(ws::websocket_upgrade))
+        .route(
+            "/api/v1/federation/ws",
+            get(ws::federation_websocket_upgrade),
+        );
     if files_enabled {
         app = app.route(
             "/api/v1/spaces/{space_id}/files/{id}",

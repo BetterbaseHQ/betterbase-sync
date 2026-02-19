@@ -556,6 +556,57 @@ async fn websocket_rejects_missing_subprotocol() {
 }
 
 #[tokio::test]
+async fn websocket_federation_route_rejects_missing_subprotocol() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request_path(server.addr, "/api/v1/federation/ws", None);
+
+    let error = connect_async(request)
+        .await
+        .expect_err("missing subprotocol should be rejected");
+    assert_http_status(error, StatusCode::BAD_REQUEST);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_supports_rpc_flow() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request_path(
+        server.addr,
+        "/api/v1/federation/ws",
+        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": test_personal_space_id(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "fed-sub-1");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert!(response.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_auth_timeout_closes_with_auth_failed() {
     let server = spawn_server(base_state_with_ws(Duration::from_millis(100), "sync")).await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
@@ -3716,7 +3767,11 @@ fn base_state_with_ws_storage_and_broker(
 }
 
 fn ws_request(addr: SocketAddr, subprotocol: Option<&str>) -> http::Request<()> {
-    let mut request = format!("ws://{addr}/api/v1/ws")
+    ws_request_path(addr, "/api/v1/ws", subprotocol)
+}
+
+fn ws_request_path(addr: SocketAddr, path: &str, subprotocol: Option<&str>) -> http::Request<()> {
+    let mut request = format!("ws://{addr}{path}")
         .into_client_request()
         .expect("request");
     if let Some(subprotocol) = subprotocol {

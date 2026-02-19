@@ -29,6 +29,23 @@ pub(crate) async fn websocket_upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    websocket_upgrade_with_mode(state, headers, ws).await
+}
+
+pub(crate) async fn federation_websocket_upgrade(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Federation transport has a dedicated route even while auth semantics are shared.
+    websocket_upgrade_with_mode(state, headers, ws).await
+}
+
+async fn websocket_upgrade_with_mode(
+    state: ApiState,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
     if !requested_subprotocol(&headers) {
         return StatusCode::BAD_REQUEST.into_response();
     }
