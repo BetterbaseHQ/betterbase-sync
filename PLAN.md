@@ -11,6 +11,29 @@
 3. Test rigor is at least as strong as today, with explicit coverage gates and no merge without tests.
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
+## Current Snapshot (2026-02-19)
+- Latest commit: `62a84e8` (`Add minimal S3-compatible object_store backend config`).
+- Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
+- Rust local test totals (all features): `277` tests passing.
+1. `less-sync-api`: `96`
+2. `less-sync-app`: `16`
+3. `less-sync-auth`: `77`
+4. `less-sync-core`: `27`
+5. `less-sync-realtime`: `17`
+6. `less-sync-storage`: `44`
+- Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
+- Detailed implementation inventory is tracked in `STATUS.md`.
+
+## Phase Status
+1. Phase 0 (foundation/tooling): complete.
+2. Phase 1 (core protocol/ids/validation): complete.
+3. Phase 2 (auth/crypto primitives): complete.
+4. Phase 3 (storage + Postgres): complete for current local parity scope.
+5. Phase 4 (WebSocket transport + broker): complete for non-federation paths.
+6. Phase 5 (core server features, non-federation): mostly complete.
+7. Phase 6 (federation): not started in Rust runtime path.
+8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
+
 ## Baseline Inventory (Current Go Project)
 - Test surface: `53` local test files, `467` tests, `20` benchmarks.
 - Test distribution:
@@ -216,8 +239,13 @@ Exit criteria:
 
 ### Runtime test requirements
 1. Postgres container required for storage/server integration tests.
-2. MinIO container required for S3 file backend tests.
+2. MinIO-based S3 integration tests are optional and can be added as a targeted smoke suite.
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
+
+## Immediate Execution Plan
+1. Wire UCAN revocation checks into HTTP file and WS shared-space auth paths (parity with Go `IsRevoked` flow).
+2. Begin Phase 6 federation transport/server implementation behind explicit modules.
+3. Decide whether to add a minimal MinIO smoke test (single put/get/head path) or keep S3 coverage at config/builder level for now.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.
