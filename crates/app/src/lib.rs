@@ -9,7 +9,7 @@ use std::sync::Arc;
 use less_sync_api::ApiState;
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
-use less_sync_storage::PostgresStorage;
+use less_sync_storage::{migrate_with_pool, PostgresStorage};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
@@ -113,6 +113,7 @@ impl AppConfig {
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let storage = Arc::new(PostgresStorage::connect(&config.database_url).await?);
+    migrate_with_pool(storage.pool()).await?;
     let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let validator = Arc::new(MultiValidator::new(MultiValidatorConfig {
         trusted_issuers: config.trusted_issuers.clone(),
