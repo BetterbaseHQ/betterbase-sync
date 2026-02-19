@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,7 +9,10 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use less_sync_auth::{validate_chain, AuthContext, Permission, ValidateChainParams};
+use less_sync_auth::{
+    compute_ucan_cid, parse_ucan, validate_chain, AuthContext, Permission, UcanError,
+    ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
+};
 use less_sync_core::protocol::{ErrorResponse, Space};
 use less_sync_storage::{FileMetadata, StorageError};
 use object_store::local::LocalFileSystem;
@@ -61,6 +65,7 @@ pub(crate) trait FileSyncStorage: Send + Sync {
         space_id: Uuid,
         file_id: Uuid,
     ) -> Result<FileMetadata, StorageError>;
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError>;
 }
 
 #[async_trait]
@@ -109,6 +114,10 @@ where
         file_id: Uuid,
     ) -> Result<FileMetadata, StorageError> {
         less_sync_storage::Storage::get_file_metadata(self, space_id, file_id).await
+    }
+
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
+        less_sync_storage::Storage::is_revoked(self, space_id, ucan_cid).await
     }
 }
 
@@ -456,6 +465,13 @@ async fn authorize_space(
         });
     }
 
+    ensure_chain_not_revoked(sync_storage, space_id, ucan)
+        .await
+        .map_err(|_| HttpFailure {
+            status: StatusCode::FORBIDDEN,
+            message: "access denied",
+        })?;
+
     validate_chain(ValidateChainParams {
         token: ucan,
         expected_audience: &auth.did,
@@ -469,6 +485,49 @@ async fn authorize_space(
         status: StatusCode::FORBIDDEN,
         message: "access denied",
     })
+}
+
+async fn ensure_chain_not_revoked(
+    sync_storage: &dyn FileSyncStorage,
+    space_id: Uuid,
+    token: &str,
+) -> Result<(), UcanError> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![(token.to_owned(), 0_usize)];
+
+    while let Some((current, depth)) = stack.pop() {
+        if depth >= MAX_CHAIN_DEPTH {
+            return Err(UcanError::ChainTooDeep);
+        }
+
+        let cid = compute_ucan_cid(&current);
+        if !visited.insert(cid.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_TOKENS_PER_CHAIN {
+            return Err(UcanError::InvalidUcan);
+        }
+
+        let revoked = sync_storage
+            .is_revoked(space_id, &cid)
+            .await
+            .map_err(|_| UcanError::RevocationCheckFailed)?;
+        if revoked {
+            return Err(UcanError::UcanRevoked);
+        }
+
+        let parsed = parse_ucan(&current)?;
+        for delegated in parsed
+            .claims
+            .prf
+            .into_iter()
+            .filter(|token| !token.is_empty())
+        {
+            stack.push((delegated, depth + 1));
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_ids(path: &FilePathParams) -> Result<(Uuid, Uuid), HttpFailure> {
@@ -594,7 +653,7 @@ fn file_object_path(space_id: Uuid, file_id: Uuid) -> ObjectPath {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -605,7 +664,8 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{Algorithm, Header};
     use less_sync_auth::{
-        compress_public_key, encode_did_key, AudienceClaim, AuthError, TokenValidator, UcanClaims,
+        compress_public_key, compute_ucan_cid, encode_did_key, AudienceClaim, AuthError,
+        TokenValidator, UcanClaims,
     };
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
@@ -646,6 +706,7 @@ mod tests {
         metadata: Mutex<HashMap<(Uuid, Uuid), FileMetadata>>,
         personal_spaces: [Uuid; 2],
         shared_spaces: HashMap<Uuid, Vec<u8>>,
+        revoked_ucans: HashMap<Uuid, HashSet<String>>,
     }
 
     #[async_trait]
@@ -739,6 +800,13 @@ mod tests {
                 .get(&(space_id, file_id))
                 .cloned()
                 .ok_or(StorageError::FileNotFound)
+        }
+
+        async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
+            Ok(self
+                .revoked_ucans
+                .get(&space_id)
+                .is_some_and(|revoked| revoked.contains(ucan_cid)))
         }
     }
 
@@ -1327,11 +1395,52 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[tokio::test]
+    async fn shared_space_put_with_revoked_ucan_returns_forbidden() {
+        let shared_space_id =
+            Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let write_ucan =
+            root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
+        let mut revoked_ucan_cids = HashSet::new();
+        revoked_ucan_cids.insert(compute_ucan_cid(&write_ucan));
+        let app = file_app_with_shared_space_and_revocations(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+            revoked_ucan_cids,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .header("X-UCAN", write_ucan)
+                    .header(CONTENT_LENGTH, "4")
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([3u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("test"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     fn file_app(record_exists: bool) -> axum::Router {
         file_app_with(
             record_exists,
             build_default_tokens(),
             HashMap::<Uuid, Vec<u8>>::new(),
+            HashMap::<Uuid, HashSet<String>>::new(),
         )
     }
 
@@ -1341,8 +1450,28 @@ mod tests {
         shared_root_public_key: Vec<u8>,
         auth_did: String,
     ) -> axum::Router {
+        file_app_with_shared_space_and_revocations(
+            record_exists,
+            shared_space_id,
+            shared_root_public_key,
+            auth_did,
+            HashSet::new(),
+        )
+    }
+
+    fn file_app_with_shared_space_and_revocations(
+        record_exists: bool,
+        shared_space_id: Uuid,
+        shared_root_public_key: Vec<u8>,
+        auth_did: String,
+        revoked_ucan_cids: HashSet<String>,
+    ) -> axum::Router {
         let mut shared_spaces = HashMap::new();
         shared_spaces.insert(shared_space_id, shared_root_public_key);
+        let mut revoked_ucans = HashMap::new();
+        if !revoked_ucan_cids.is_empty() {
+            revoked_ucans.insert(shared_space_id, revoked_ucan_cids);
+        }
 
         let mut tokens = build_default_tokens();
         tokens.insert(
@@ -1350,19 +1479,21 @@ mod tests {
             auth_context_with_did("sync files", personal_space_user1(), &auth_did),
         );
 
-        file_app_with(record_exists, tokens, shared_spaces)
+        file_app_with(record_exists, tokens, shared_spaces, revoked_ucans)
     }
 
     fn file_app_with(
         record_exists: bool,
         tokens: HashMap<String, AuthContext>,
         shared_spaces: HashMap<Uuid, Vec<u8>>,
+        revoked_ucans: HashMap<Uuid, HashSet<String>>,
     ) -> axum::Router {
         let sync_storage = Arc::new(StubFileSyncStorage {
             record_exists,
             metadata: Mutex::new(HashMap::new()),
             personal_spaces: [personal_space_user1(), personal_space_user2()],
             shared_spaces,
+            revoked_ucans,
         });
         let blob_storage = Arc::new(StubFileBlobStorage::default());
 

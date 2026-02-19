@@ -48,6 +48,7 @@ pub(crate) trait SyncStorage: Send + Sync {
     ) -> Result<Vec<MembersLogEntry>, StorageError>;
 
     async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError>;
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError>;
 
     async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError>;
 
@@ -146,6 +147,10 @@ where
 
     async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError> {
         Storage::revoke_ucan(self, space_id, ucan_cid).await
+    }
+
+    async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
+        Storage::is_revoked(self, space_id, ucan_cid).await
     }
 
     async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError> {

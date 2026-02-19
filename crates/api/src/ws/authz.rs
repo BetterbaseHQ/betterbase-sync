@@ -1,4 +1,9 @@
-use less_sync_auth::{validate_chain, AuthContext, Permission, ValidateChainParams};
+use std::collections::HashSet;
+
+use less_sync_auth::{
+    compute_ucan_cid, parse_ucan, validate_chain, AuthContext, Permission, UcanError,
+    ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
+};
 use uuid::Uuid;
 
 use super::storage::SubscribedSpaceState;
@@ -55,6 +60,10 @@ async fn authorize_space(
         return Err(SpaceAuthzError::Forbidden);
     }
 
+    ensure_chain_not_revoked(sync_storage, space_id, ucan)
+        .await
+        .map_err(|_| SpaceAuthzError::Forbidden)?;
+
     validate_chain(ValidateChainParams {
         token: ucan,
         expected_audience: &auth.did,
@@ -77,4 +86,47 @@ fn is_personal_space(auth: &AuthContext, space_id: Uuid) -> bool {
     Uuid::parse_str(&auth.personal_space_id)
         .ok()
         .is_some_and(|personal_space_id| personal_space_id == space_id)
+}
+
+async fn ensure_chain_not_revoked(
+    sync_storage: &dyn SyncStorage,
+    space_id: Uuid,
+    token: &str,
+) -> Result<(), UcanError> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![(token.to_owned(), 0_usize)];
+
+    while let Some((current, depth)) = stack.pop() {
+        if depth >= MAX_CHAIN_DEPTH {
+            return Err(UcanError::ChainTooDeep);
+        }
+
+        let cid = compute_ucan_cid(&current);
+        if !visited.insert(cid.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_TOKENS_PER_CHAIN {
+            return Err(UcanError::InvalidUcan);
+        }
+
+        let revoked = sync_storage
+            .is_revoked(space_id, &cid)
+            .await
+            .map_err(|_| UcanError::RevocationCheckFailed)?;
+        if revoked {
+            return Err(UcanError::UcanRevoked);
+        }
+
+        let parsed = parse_ucan(&current)?;
+        for delegated in parsed
+            .claims
+            .prf
+            .into_iter()
+            .filter(|token| !token.is_empty())
+        {
+            stack.push((delegated, depth + 1));
+        }
+    }
+
+    Ok(())
 }

@@ -12,10 +12,10 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `62a84e8` (`Add minimal S3-compatible object_store backend config`).
+- Latest commit: `7896c5c` (`Document current port inventory and next execution plan`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `277` tests passing.
-1. `less-sync-api`: `96`
+- Rust local test totals (all features): `280` tests passing.
+1. `less-sync-api`: `99`
 2. `less-sync-app`: `16`
 3. `less-sync-auth`: `77`
 4. `less-sync-core`: `27`

@@ -3,11 +3,21 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
-use less_sync_auth::{AuthContext, AuthError, TokenValidator};
+use jsonwebtoken::{Algorithm, Header};
+use less_sync_auth::{
+    compress_public_key, compute_ucan_cid, encode_did_key, AudienceClaim, AuthContext, AuthError,
+    Permission, TokenValidator, UcanClaims,
+};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
+use p256::ecdsa::signature::Signer;
+use p256::ecdsa::{Signature, SigningKey};
+use p256::elliptic_curve::rand_core::OsRng;
+use p256::PublicKey;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinHandle;
@@ -79,6 +89,8 @@ struct StubSyncStorage {
     file_deks_result: Vec<less_sync_storage::FileDekRecord>,
     deks_rewrap_error: Option<less_sync_storage::StorageError>,
     file_deks_rewrap_error: Option<less_sync_storage::StorageError>,
+    shared_spaces: HashMap<Uuid, Vec<u8>>,
+    revoked_ucans: HashMap<Uuid, HashSet<String>>,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -128,6 +140,8 @@ impl StubSyncStorage {
             }],
             deks_rewrap_error: None,
             file_deks_rewrap_error: None,
+            shared_spaces: HashMap::new(),
+            revoked_ucans: HashMap::new(),
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -215,6 +229,25 @@ impl StubSyncStorage {
             ..Self::healthy()
         }
     }
+
+    fn with_shared_space_and_revocations(
+        shared_space_id: Uuid,
+        root_public_key: Vec<u8>,
+        revoked_ucan_cids: HashSet<String>,
+    ) -> Self {
+        let mut shared_spaces = HashMap::new();
+        shared_spaces.insert(shared_space_id, root_public_key);
+        let mut revoked_ucans = HashMap::new();
+        if !revoked_ucan_cids.is_empty() {
+            revoked_ucans.insert(shared_space_id, revoked_ucan_cids);
+        }
+
+        Self {
+            shared_spaces,
+            revoked_ucans,
+            ..Self::healthy()
+        }
+    }
 }
 
 #[async_trait]
@@ -227,21 +260,34 @@ impl SyncStorage for StubSyncStorage {
             return Err(less_sync_storage::StorageError::Unavailable);
         }
 
-        if space_id != test_personal_space_uuid() {
-            return Err(less_sync_storage::StorageError::SpaceNotFound);
+        if space_id == test_personal_space_uuid() {
+            return Ok(less_sync_core::protocol::Space {
+                id: space_id.to_string(),
+                client_id: "client-1".to_owned(),
+                root_public_key: None,
+                key_generation: 3,
+                min_key_generation: 0,
+                metadata_version: self.metadata_version,
+                cursor: 42,
+                rewrap_epoch: Some(2),
+                home_server: None,
+            });
+        }
+        if let Some(root_public_key) = self.shared_spaces.get(&space_id) {
+            return Ok(less_sync_core::protocol::Space {
+                id: space_id.to_string(),
+                client_id: "client-1".to_owned(),
+                root_public_key: Some(root_public_key.clone()),
+                key_generation: 3,
+                min_key_generation: 0,
+                metadata_version: self.metadata_version,
+                cursor: 42,
+                rewrap_epoch: Some(2),
+                home_server: None,
+            });
         }
 
-        Ok(less_sync_core::protocol::Space {
-            id: space_id.to_string(),
-            client_id: "client-1".to_owned(),
-            root_public_key: None,
-            key_generation: 3,
-            min_key_generation: 0,
-            metadata_version: self.metadata_version,
-            cursor: 42,
-            rewrap_epoch: Some(2),
-            home_server: None,
-        })
+        Err(less_sync_storage::StorageError::SpaceNotFound)
     }
 
     async fn create_space(
@@ -346,6 +392,20 @@ impl SyncStorage for StubSyncStorage {
             return Err(error.clone());
         }
         Ok(())
+    }
+
+    async fn is_revoked(
+        &self,
+        space_id: Uuid,
+        ucan_cid: &str,
+    ) -> Result<bool, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+        Ok(self
+            .revoked_ucans
+            .get(&space_id)
+            .is_some_and(|revoked| revoked.contains(ucan_cid)))
     }
 
     async fn create_invitation(
@@ -2170,6 +2230,120 @@ async fn websocket_subscribe_non_personal_space_without_ucan_reports_forbidden()
 }
 
 #[tokio::test]
+async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let read_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Read);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-shared-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-shared-1");
+    assert_eq!(response.result.spaces.len(), 1);
+    assert!(response.result.errors.is_empty());
+    assert_eq!(response.result.spaces[0].id, shared_space_id.to_string());
+    assert_eq!(response.result.spaces[0].cursor, 42);
+    assert_eq!(response.result.spaces[0].key_generation, 3);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let read_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Read);
+    let mut revoked_ucan_cids = HashSet::new();
+    revoked_ucan_cids.insert(compute_ucan_cid(&read_ucan));
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        revoked_ucan_cids,
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-shared-revoked-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": read_ucan }]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-shared-revoked-1");
+    assert!(response.result.spaces.is_empty());
+    assert_eq!(response.result.errors.len(), 1);
+    assert_eq!(response.result.errors[0].space, shared_space_id.to_string());
+    assert_eq!(
+        response.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
@@ -3279,15 +3453,83 @@ fn base_state_with_ws_validator(
 }
 
 fn test_auth_context(scope: &str) -> AuthContext {
+    test_auth_context_with_did(scope, "did:key:zDnaStub")
+}
+
+fn test_auth_context_with_did(scope: &str, did: &str) -> AuthContext {
     AuthContext {
         issuer: "https://accounts.less.so".to_owned(),
         user_id: "user-1".to_owned(),
         client_id: "client-1".to_owned(),
         personal_space_id: test_personal_space_id(),
-        did: "did:key:zDnaStub".to_owned(),
+        did: did.to_owned(),
         mailbox_id: "mailbox-1".to_owned(),
         scope: scope.to_owned(),
     }
+}
+
+#[derive(Clone)]
+struct TestIssuer {
+    key: SigningKey,
+    did: String,
+}
+
+impl TestIssuer {
+    fn new() -> Self {
+        let key = SigningKey::random(&mut OsRng);
+        let public_key =
+            PublicKey::from_sec1_bytes(key.verifying_key().to_encoded_point(false).as_bytes())
+                .expect("public key should decode");
+        let did = encode_did_key(&public_key);
+        Self { key, did }
+    }
+
+    fn compressed_public_key(&self) -> [u8; 33] {
+        let public_key =
+            PublicKey::from_sec1_bytes(self.key.verifying_key().to_encoded_point(false).as_bytes())
+                .expect("public key should decode");
+        compress_public_key(&public_key)
+    }
+
+    fn issue_space_ucan(
+        &self,
+        audience_did: &str,
+        space_id: Uuid,
+        permission: Permission,
+    ) -> String {
+        let claims = UcanClaims {
+            iss: self.did.clone(),
+            aud: Some(AudienceClaim::One(audience_did.to_owned())),
+            exp: Some(
+                (SystemTime::now() + Duration::from_secs(60 * 60))
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("time should be after epoch")
+                    .as_secs(),
+            ),
+            nbf: None,
+            cmd: permission.as_cmd().to_owned(),
+            with_resource: format!("space:{space_id}"),
+            nonce: "test-nonce".to_owned(),
+            prf: Vec::new(),
+        };
+        sign_es256_token(&claims, &self.key)
+    }
+}
+
+fn sign_es256_token(claims: &UcanClaims, key: &SigningKey) -> String {
+    let header = Header {
+        alg: Algorithm::ES256,
+        typ: Some("JWT".to_owned()),
+        ..Header::default()
+    };
+    let header = serde_json::to_vec(&header).expect("serialize header");
+    let claims = serde_json::to_vec(claims).expect("serialize claims");
+    let header = URL_SAFE_NO_PAD.encode(header);
+    let claims = URL_SAFE_NO_PAD.encode(claims);
+    let signing_input = format!("{header}.{claims}");
+    let signature: Signature = key.sign(signing_input.as_bytes());
+    let signature = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    format!("{signing_input}.{signature}")
 }
 
 fn test_invitation(id: Uuid, mailbox_id: &str, payload: &str) -> less_sync_storage::Invitation {

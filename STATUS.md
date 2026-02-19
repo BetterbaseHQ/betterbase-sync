@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `62a84e8` (`Add minimal S3-compatible object_store backend config`)
-- Working tree status at update time: clean
+- HEAD: `7896c5c` (`Document current port inventory and next execution plan`)
+- Working tree status at update time: pending local changes
 
 ## Workspace Inventory
 1. Crates:
@@ -22,13 +22,13 @@ Last updated: 2026-02-19
 
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
-1. `less-sync-api`: `96`
+1. `less-sync-api`: `99`
 2. `less-sync-app`: `16`
 3. `less-sync-auth`: `77`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
-7. Total passing tests: `277`
+7. Total passing tests: `280`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -64,6 +64,7 @@ Go baseline (reference from original local suite):
 - scope enforcement
 - personal/shared-space authz
 - UCAN checks for shared spaces
+- UCAN revocation checks for shared-space chains (HTTP and WS authz)
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
@@ -75,12 +76,11 @@ Go baseline (reference from original local suite):
 
 ## Gaps and Open Work
 1. Federation server/runtime paths are not yet ported in `api`/`realtime` server flow.
-2. UCAN revocation checks are not wired through shared-space authorization paths yet.
-3. `bins/federation-keygen` is still scaffold-level output.
-4. Benchmark parity with Go has not been ported.
-5. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
+2. `bins/federation-keygen` is still scaffold-level output.
+3. Benchmark parity with Go has not been ported.
+4. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Add revocation-aware shared-space authorization (`is_revoked`) for WS and HTTP file endpoints.
-2. Start federation transport/server module implementation behind explicit boundaries.
+1. Start federation transport/server module implementation behind explicit boundaries.
+2. Add minimal end-to-end coverage for federation auth handshake and one routed RPC path.
 3. Optionally add one minimal MinIO smoke test path (`PUT` -> `GET` -> `HEAD`) for backend confidence.
