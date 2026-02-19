@@ -1875,6 +1875,41 @@ async fn websocket_file_deks_get_returns_records() {
 }
 
 #[tokio::test]
+async fn websocket_deks_get_files_alias_returns_records() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync files",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-get-files-alias",
+            "method": "deks.getFiles",
+            "params": {
+                "space": test_personal_space_id(),
+                "since": 0
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::FileDeksGetResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "deks-get-files-alias");
+    assert_eq!(response.result.deks.len(), 1);
+    assert_eq!(response.result.deks[0].cursor, 8);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
@@ -1902,6 +1937,42 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
 
     let response = read_error_response(&mut socket).await;
     assert_eq!(response.id, "file-deks-rewrap-1");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_id() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync files",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-rewrap-files-alias",
+            "method": "deks.rewrapFiles",
+            "params": {
+                "space": test_personal_space_id(),
+                "deks": [{ "id": "not-a-uuid", "dek": vec![9; 44] }]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-rewrap-files-alias");
     assert_eq!(
         response.error.code,
         less_sync_core::protocol::ERR_CODE_BAD_REQUEST

@@ -197,7 +197,7 @@ pub(crate) async fn handle_request(
             };
             deks::handle_rewrap_request(outbound, sync_storage, auth, id, payload).await;
         }
-        "file.deks.get" => {
+        "file.deks.get" | "deks.getFiles" => {
             let Some(sync_storage) = sync_storage else {
                 frames::send_error_response(
                     outbound,
@@ -210,7 +210,7 @@ pub(crate) async fn handle_request(
             };
             deks::handle_file_get_request(outbound, sync_storage, auth, id, payload).await;
         }
-        "file.deks.rewrap" => {
+        "file.deks.rewrap" | "deks.rewrapFiles" => {
             let Some(sync_storage) = sync_storage else {
                 frames::send_error_response(
                     outbound,
