@@ -4,6 +4,7 @@ use less_sync_auth::Permission;
 use less_sync_core::protocol::{
     SubscribeParams, SubscribeResult, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST,
     ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
+    ERR_CODE_RATE_LIMITED,
 };
 use uuid::Uuid;
 
@@ -15,15 +16,26 @@ use super::frames::{send_error_response, send_result_response};
 use crate::ws::realtime::{OutboundSender, RealtimeSession};
 use crate::ws::SyncStorage;
 
+pub(super) struct FederationSubscribeContext<'a> {
+    pub peer_domain: &'a str,
+    pub token_keys: Option<&'a crate::FederationTokenKeys>,
+    pub quota_tracker: Option<&'a crate::FederationQuotaTracker>,
+}
+
 pub(super) async fn handle_subscribe_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
     id: &str,
     payload: &[u8],
-    peer_domain: &str,
-    token_keys: Option<&crate::FederationTokenKeys>,
+    context: FederationSubscribeContext<'_>,
 ) {
+    let FederationSubscribeContext {
+        peer_domain,
+        token_keys,
+        quota_tracker,
+    } = context;
+
     let params = match decode_frame_params::<SubscribeParams>(payload) {
         Ok(params) => params,
         Err(_) => {
@@ -165,8 +177,37 @@ pub(super) async fn handle_subscribe_request(
         });
     }
 
+    let new_space_count = if let Some(realtime) = realtime {
+        let mut already_subscribed = 0_usize;
+        for space_id in &added_spaces {
+            if realtime.is_subscribed(space_id).await {
+                already_subscribed = already_subscribed.saturating_add(1);
+            }
+        }
+        added_spaces.len().saturating_sub(already_subscribed)
+    } else {
+        0
+    };
+
+    if new_space_count > 0 {
+        if let Some(quota_tracker) = quota_tracker {
+            if !quota_tracker
+                .try_add_spaces(peer_domain, new_space_count)
+                .await
+            {
+                for space in spaces.drain(..) {
+                    errors.push(WsSpaceError {
+                        space: space.id,
+                        error: ERR_CODE_RATE_LIMITED.to_owned(),
+                    });
+                }
+                added_spaces.clear();
+            }
+        }
+    }
+
     if let Some(realtime) = realtime {
-        realtime.add_spaces(&added_spaces).await;
+        let _ = realtime.add_spaces(&added_spaces).await;
     }
 
     send_result_response(outbound, id, &SubscribeResult { spaces, errors }).await;

@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use less_sync_auth::AuthContext;
+use less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS;
 use less_sync_realtime::ws::{
     authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
     FirstMessage, WS_SUBPROTOCOL,
@@ -38,6 +39,7 @@ struct WebSocketRuntimeContext {
     presence_registry: Option<Arc<PresenceRegistry>>,
     connection_mode: ConnectionMode,
     federation_token_keys: Option<crate::FederationTokenKeys>,
+    federation_quota_tracker: Arc<crate::FederationQuotaTracker>,
 }
 
 pub(crate) async fn websocket_upgrade(
@@ -85,6 +87,7 @@ pub(crate) async fn federation_websocket_upgrade(
         presence_registry: state.presence_registry(),
         connection_mode: ConnectionMode::Federation { peer_domain },
         federation_token_keys: state.federation_token_keys(),
+        federation_quota_tracker: state.federation_quota_tracker(),
     };
     ws.protocols([WS_SUBPROTOCOL])
         .on_upgrade(move |socket| {
@@ -111,6 +114,7 @@ async fn websocket_upgrade_with_mode(
         presence_registry: state.presence_registry(),
         connection_mode: ConnectionMode::Client,
         federation_token_keys: state.federation_token_keys(),
+        federation_quota_tracker: state.federation_quota_tracker(),
     };
 
     ws.protocols([WS_SUBPROTOCOL])
@@ -154,6 +158,28 @@ async fn serve_websocket(
     initial_auth_context: Option<AuthContext>,
     runtime_context: WebSocketRuntimeContext,
 ) {
+    let mut socket = socket;
+    let federation_connection_tracked =
+        if let ConnectionMode::Federation { peer_domain } = &runtime_context.connection_mode {
+            if runtime_context
+                .federation_quota_tracker
+                .try_add_connection(peer_domain)
+                .await
+            {
+                true
+            } else {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CLOSE_TOO_MANY_CONNECTIONS as u16,
+                        reason: "too many federation connections".into(),
+                    })))
+                    .await;
+                return;
+            }
+        } else {
+            false
+        };
+
     let (mut socket_sender, mut socket_receiver) = socket.split();
     let (outbound, mut outbound_rx) = realtime::outbound_channel();
     let closed = Arc::new(AtomicBool::new(false));
@@ -199,6 +225,9 @@ async fn serve_websocket(
                 .await;
                 drop(outbound);
                 let _ = writer.await;
+                if federation_connection_tracked {
+                    release_federation_quotas(&runtime_context, None).await;
+                }
                 return;
             }
             Ok(None) => {
@@ -209,12 +238,18 @@ async fn serve_websocket(
                 .await;
                 drop(outbound);
                 let _ = writer.await;
+                if federation_connection_tracked {
+                    release_federation_quotas(&runtime_context, None).await;
+                }
                 return;
             }
             Err(_) => {
                 realtime::send_close(&outbound, CloseDirective::auth_failed("auth timeout")).await;
                 drop(outbound);
                 let _ = writer.await;
+                if federation_connection_tracked {
+                    release_federation_quotas(&runtime_context, None).await;
+                }
                 return;
             }
         };
@@ -225,6 +260,9 @@ async fn serve_websocket(
                 realtime::send_close(&outbound, error.close).await;
                 drop(outbound);
                 let _ = writer.await;
+                if federation_connection_tracked {
+                    release_federation_quotas(&runtime_context, None).await;
+                }
                 return;
             }
         }
@@ -245,6 +283,9 @@ async fn serve_websocket(
             realtime::send_close(&outbound, close).await;
             drop(outbound);
             let _ = writer.await;
+            if federation_connection_tracked {
+                release_federation_quotas(&runtime_context, None).await;
+            }
             return;
         }
     };
@@ -264,6 +305,9 @@ async fn serve_websocket(
                             rpc::RequestMode::Federation {
                                 peer_domain,
                                 token_keys: runtime_context.federation_token_keys.as_ref(),
+                                quota_tracker: Some(
+                                    runtime_context.federation_quota_tracker.as_ref(),
+                                ),
                             }
                         }
                     };
@@ -292,6 +336,9 @@ async fn serve_websocket(
                             rpc::RequestMode::Federation {
                                 peer_domain,
                                 token_keys: runtime_context.federation_token_keys.as_ref(),
+                                quota_tracker: Some(
+                                    runtime_context.federation_quota_tracker.as_ref(),
+                                ),
                             }
                         }
                     };
@@ -339,9 +386,34 @@ async fn serve_websocket(
         }
         session.unregister().await;
     }
+    if federation_connection_tracked {
+        release_federation_quotas(&runtime_context, realtime_session.as_ref()).await;
+    }
     closed.store(true, Ordering::Relaxed);
     drop(outbound);
     let _ = writer.await;
+}
+
+async fn release_federation_quotas(
+    runtime_context: &WebSocketRuntimeContext,
+    realtime_session: Option<&realtime::RealtimeSession>,
+) {
+    let ConnectionMode::Federation { peer_domain } = &runtime_context.connection_mode else {
+        return;
+    };
+
+    if let Some(session) = realtime_session {
+        let subscribed = session.subscribed_space_count().await;
+        runtime_context
+            .federation_quota_tracker
+            .remove_spaces(peer_domain, subscribed)
+            .await;
+    }
+
+    runtime_context
+        .federation_quota_tracker
+        .remove_connection(peer_domain)
+        .await;
 }
 
 fn to_first_message(message: Message) -> FirstMessage {

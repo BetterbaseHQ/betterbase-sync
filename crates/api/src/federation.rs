@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use axum::http::{Request, StatusCode};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
 use less_sync_auth::{
     canonicalize_domain, create_fst, extract_domain_from_key_id, verify_fst_dual_key,
@@ -60,6 +62,49 @@ impl FederationTokenKeys {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FederationJwks {
+    pub keys: Vec<FederationJwk>,
+}
+
+impl FederationJwks {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { keys: Vec::new() }
+    }
+}
+
+impl Default for FederationJwks {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FederationJwk {
+    pub kid: String,
+    pub kty: String,
+    pub alg: String,
+    #[serde(rename = "use")]
+    pub use_: String,
+    pub crv: String,
+    pub x: String,
+}
+
+impl FederationJwk {
+    #[must_use]
+    pub fn ed25519(kid: impl Into<String>, verifying_key: &VerifyingKey) -> Self {
+        Self {
+            kid: kid.into(),
+            kty: "OKP".to_owned(),
+            alg: "EdDSA".to_owned(),
+            use_: "sig".to_owned(),
+            crv: "Ed25519".to_owned(),
+            x: URL_SAFE_NO_PAD.encode(verifying_key.as_bytes()),
+        }
+    }
+}
+
 pub trait FederationAuthenticator: Send + Sync {
     fn authenticate_request(
         &self,
@@ -93,6 +138,13 @@ impl HttpSignatureFederationAuthenticator {
     pub fn with_signature_max_age(mut self, signature_max_age: Duration) -> Self {
         self.signature_max_age = signature_max_age;
         self
+    }
+
+    #[must_use]
+    pub fn trusted_domains(&self) -> Vec<String> {
+        let mut domains = self.trusted_domains.iter().cloned().collect::<Vec<_>>();
+        domains.sort_unstable();
+        domains
     }
 }
 

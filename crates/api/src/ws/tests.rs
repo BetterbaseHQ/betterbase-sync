@@ -30,7 +30,8 @@ use uuid::Uuid;
 use super::storage::SubscribedSpaceState;
 use super::SyncStorage;
 use crate::{
-    router, ApiState, FederationTokenKeys, HealthCheck, HttpSignatureFederationAuthenticator,
+    router, ApiState, FederationQuotaLimits, FederationTokenKeys, HealthCheck,
+    HttpSignatureFederationAuthenticator,
 };
 
 type TestSocket =
@@ -238,8 +239,7 @@ impl StubSyncStorage {
         root_public_key: Vec<u8>,
         revoked_ucan_cids: HashSet<String>,
     ) -> Self {
-        let mut shared_spaces = HashMap::new();
-        shared_spaces.insert(shared_space_id, root_public_key);
+        let shared_spaces = HashMap::from([(shared_space_id, root_public_key)]);
         let mut revoked_ucans = HashMap::new();
         if !revoked_ucan_cids.is_empty() {
             revoked_ucans.insert(shared_space_id, revoked_ucan_cids);
@@ -248,6 +248,14 @@ impl StubSyncStorage {
         Self {
             shared_spaces,
             revoked_ucans,
+            ..Self::healthy()
+        }
+    }
+
+    fn with_shared_spaces(shared_spaces: HashMap<Uuid, Vec<u8>>) -> Self {
+        Self {
+            shared_spaces,
+            revoked_ucans: HashMap::new(),
             ..Self::healthy()
         }
     }
@@ -887,6 +895,233 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
     let result: RpcResultResponse<PullSummaryResult> = read_result_response(&mut socket).await;
     assert_eq!(result.id, "fed-pull-1");
     assert_eq!(result.result.chunks, 3);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_enforces_connection_quota() {
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws(Duration::from_secs(1), "sync").with_federation_quota_limits(
+            FederationQuotaLimits {
+                max_connections: 1,
+                ..FederationQuotaLimits::default()
+            },
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+
+    let first_request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (_first_socket, _) = connect_async(first_request)
+        .await
+        .expect("connect first socket");
+
+    let second_request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut second_socket, _) = connect_async(second_request)
+        .await
+        .expect("connect second socket");
+    let close_code = expect_close_code(&mut second_socket).await;
+    assert_eq!(
+        close_code,
+        less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
+    let first_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let second_space_id =
+        Uuid::parse_str("b90968fb-c95d-425c-9c0f-8f0dd4f835f8").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let read_first =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, first_space_id, Permission::Read);
+    let read_second =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, second_space_id, Permission::Read);
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_storage_and_broker(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_spaces(HashMap::from([
+                (first_space_id, root_issuer.compressed_public_key().to_vec()),
+                (
+                    second_space_id,
+                    root_issuer.compressed_public_key().to_vec(),
+                ),
+            ]))),
+            Arc::new(MultiBroker::new(BrokerConfig::default())),
+        )
+        .with_federation_quota_limits(FederationQuotaLimits {
+            max_spaces: 1,
+            ..FederationQuotaLimits::default()
+        }),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-quota-first",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": first_space_id.to_string(), "since": 0, "ucan": read_first }]
+            }
+        }),
+    )
+    .await;
+    let first: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(first.id, "fed-sub-quota-first");
+    assert_eq!(first.result.spaces.len(), 1);
+    assert!(first.result.errors.is_empty());
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-quota-second",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": second_space_id.to_string(), "since": 0, "ucan": read_second }]
+            }
+        }),
+    )
+    .await;
+    let second: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert!(second.result.spaces.is_empty());
+    assert_eq!(second.result.errors.len(), 1);
+    assert_eq!(
+        second.result.errors[0].error,
+        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+    );
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "unsubscribe",
+            "params": { "spaces": [first_space_id.to_string()] }
+        }),
+    )
+    .await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-quota-third",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": second_space_id.to_string(), "since": 0, "ucan": read_second }]
+            }
+        }),
+    )
+    .await;
+    let third: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(third.id, "fed-sub-quota-third");
+    assert_eq!(third.result.spaces.len(), 1);
+    assert!(third.result.errors.is_empty());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_push_enforces_rate_limit_quota() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let delegate_issuer = TestIssuer::new();
+    let write_ucan =
+        root_issuer.issue_space_ucan(&delegate_issuer.did, shared_space_id, Permission::Write);
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_and_storage(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
+        )
+        .with_federation_quota_limits(FederationQuotaLimits {
+            max_records_per_hour: 1,
+            max_bytes_per_hour: 1_024,
+            ..FederationQuotaLimits::default()
+        }),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+    let request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-push-quota-1",
+            "method": "push",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "changes": [{
+                    "id": Uuid::new_v4().to_string(),
+                    "blob": [1,2,3],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+    let first: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert!(first.result.ok);
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-push-quota-2",
+            "method": "push",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "changes": [{
+                    "id": Uuid::new_v4().to_string(),
+                    "blob": [4,5,6],
+                    "expected_cursor": 0,
+                    "dek": vec![170; 44]
+                }]
+            }
+        }),
+    )
+    .await;
+    let second: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert!(!second.result.ok);
+    assert_eq!(
+        second.result.error,
+        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+    );
 
     server.handle.abort();
 }

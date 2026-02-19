@@ -18,15 +18,18 @@ use less_sync_storage::{Storage, StorageError};
 use object_store::ObjectStore;
 
 mod federation;
+mod federation_http;
+mod federation_quota;
 mod files;
 mod ws;
 
 const DEFAULT_WS_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub use federation::{
-    FederationAuthError, FederationAuthenticator, FederationTokenKeys,
-    HttpSignatureFederationAuthenticator,
+    FederationAuthError, FederationAuthenticator, FederationJwk, FederationJwks,
+    FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
+pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
 pub use files::ObjectStoreFileBlobStorage;
 
 #[async_trait]
@@ -50,6 +53,9 @@ pub struct ApiState {
     websocket: Option<WebSocketState>,
     federation_authenticator: Option<Arc<dyn FederationAuthenticator>>,
     federation_token_keys: Option<FederationTokenKeys>,
+    federation_jwks: FederationJwks,
+    federation_trusted_domains: Vec<String>,
+    federation_quota_tracker: Arc<FederationQuotaTracker>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
     file_sync_storage: Option<Arc<dyn files::FileSyncStorage>>,
     file_blob_storage: Option<Arc<dyn files::FileBlobStorage>>,
@@ -71,6 +77,11 @@ impl ApiState {
             websocket: None,
             federation_authenticator: None,
             federation_token_keys: None,
+            federation_jwks: FederationJwks::default(),
+            federation_trusted_domains: Vec::new(),
+            federation_quota_tracker: Arc::new(FederationQuotaTracker::new(
+                FederationQuotaLimits::default(),
+            )),
             sync_storage: None,
             file_sync_storage: None,
             file_blob_storage: None,
@@ -122,6 +133,42 @@ impl ApiState {
 
     pub(crate) fn federation_token_keys(&self) -> Option<FederationTokenKeys> {
         self.federation_token_keys.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_jwks(mut self, jwks: FederationJwks) -> Self {
+        self.federation_jwks = jwks;
+        self
+    }
+
+    pub(crate) fn federation_jwks(&self) -> FederationJwks {
+        self.federation_jwks.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_trusted_domains(mut self, domains: Vec<String>) -> Self {
+        let mut domains = domains
+            .into_iter()
+            .map(|domain| less_sync_auth::canonicalize_domain(&domain))
+            .collect::<Vec<_>>();
+        domains.sort_unstable();
+        domains.dedup();
+        self.federation_trusted_domains = domains;
+        self
+    }
+
+    pub(crate) fn federation_trusted_domains(&self) -> Vec<String> {
+        self.federation_trusted_domains.clone()
+    }
+
+    #[must_use]
+    pub fn with_federation_quota_limits(mut self, limits: FederationQuotaLimits) -> Self {
+        self.federation_quota_tracker = Arc::new(FederationQuotaTracker::new(limits));
+        self
+    }
+
+    pub(crate) fn federation_quota_tracker(&self) -> Arc<FederationQuotaTracker> {
+        Arc::clone(&self.federation_quota_tracker)
     }
 
     #[must_use]
@@ -201,10 +248,19 @@ pub fn router(state: ApiState) -> Router {
 
     let mut app = Router::new()
         .route("/health", get(health))
+        .route("/.well-known/jwks.json", get(federation_http::jwks))
         .route("/api/v1/ws", get(ws::websocket_upgrade))
         .route(
             "/api/v1/federation/ws",
             get(ws::federation_websocket_upgrade),
+        )
+        .route(
+            "/api/v1/federation/trusted",
+            get(federation_http::trusted_peers),
+        )
+        .route(
+            "/api/v1/federation/status/{domain}",
+            get(federation_http::peer_status),
         );
     if files_enabled {
         app = app.route(
@@ -310,15 +366,16 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use axum::body::Body;
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use axum::http::StatusCode;
+    use serde::Deserialize;
     use tower::util::ServiceExt;
 
     use http::header::AUTHORIZATION;
     use less_sync_auth::{AuthContext, AuthError, TokenValidator};
 
-    use super::{router, ApiState, HealthCheck};
+    use super::{router, ApiState, FederationJwks, FederationQuotaLimits, HealthCheck};
 
     struct StubHealth {
         healthy: bool,
@@ -443,5 +500,128 @@ mod tests {
             .expect("dispatch request");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn federation_jwks_route_is_public() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_federation_jwks(FederationJwks::default()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/jwks.json")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn federation_trusted_route_requires_authorization() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator)),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/trusted")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn federation_trusted_route_returns_configured_domains() {
+        let app = router(
+            ApiState::new(Arc::new(StubHealth { healthy: true }))
+                .with_websocket(Arc::new(StubValidator))
+                .with_federation_trusted_domains(vec![
+                    "Peer.Example.com".to_owned(),
+                    "other.example.com".to_owned(),
+                ]),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/trusted")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: TrustedPeersResponse = serde_json::from_slice(&body).expect("decode body");
+        assert_eq!(
+            payload.domains,
+            vec![
+                "other.example.com".to_owned(),
+                "peer.example.com".to_owned()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn federation_status_route_returns_quota_usage() {
+        let state = ApiState::new(Arc::new(StubHealth { healthy: true }))
+            .with_websocket(Arc::new(StubValidator))
+            .with_federation_quota_limits(FederationQuotaLimits {
+                max_connections: 10,
+                max_spaces: 10,
+                max_records_per_hour: 10,
+                max_bytes_per_hour: 1024,
+            });
+        let tracker = state.federation_quota_tracker();
+        assert!(tracker.try_add_connection("peer.example.com").await);
+        assert!(tracker.try_add_spaces("peer.example.com", 2).await);
+        assert!(
+            tracker
+                .check_and_record_push("peer.example.com", 3, 128)
+                .await
+        );
+
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/federation/status/Peer.Example.com")
+                    .header(AUTHORIZATION, "Bearer valid-token")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let payload: super::FederationPeerStatus =
+            serde_json::from_slice(&body).expect("decode body");
+        assert_eq!(payload.domain, "peer.example.com");
+        assert_eq!(payload.connections, 1);
+        assert_eq!(payload.spaces, 2);
+        assert_eq!(payload.records_this_hour, 3);
+        assert_eq!(payload.bytes_this_hour, 128);
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TrustedPeersResponse {
+        domains: Vec<String>,
     }
 }

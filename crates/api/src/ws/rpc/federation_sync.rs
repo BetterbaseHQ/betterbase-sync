@@ -4,7 +4,7 @@ use less_sync_core::protocol::{
     WsPullBeginData, WsPullCommitData, WsPullFileData, WsPullRecordData, WsSyncRecord,
     ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
     ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND,
-    ERR_CODE_PAYLOAD_TOO_LARGE,
+    ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
 use less_sync_storage::{PullEntryKind, StorageError};
 use serde::Serialize;
@@ -24,6 +24,8 @@ pub(super) async fn handle_push_request(
     realtime: Option<&RealtimeSession>,
     id: &str,
     payload: &[u8],
+    peer_domain: &str,
+    quota_tracker: Option<&crate::FederationQuotaTracker>,
 ) {
     let params = match decode_frame_params::<PushParams>(payload) {
         Ok(params) => params,
@@ -101,6 +103,30 @@ pub(super) async fn handle_push_request(
                     ok: false,
                     cursor: 0,
                     error: ERR_CODE_INTERNAL.to_owned(),
+                },
+            )
+            .await;
+            return;
+        }
+    }
+
+    let push_bytes = params
+        .changes
+        .iter()
+        .map(push_change_bytes)
+        .fold(0_u64, u64::saturating_add);
+    if let Some(quota_tracker) = quota_tracker {
+        if !quota_tracker
+            .check_and_record_push(peer_domain, params.changes.len(), push_bytes)
+            .await
+        {
+            send_result_response(
+                outbound,
+                id,
+                &PushRpcResult {
+                    ok: false,
+                    cursor: 0,
+                    error: ERR_CODE_RATE_LIMITED.to_owned(),
                 },
             )
             .await;
@@ -350,4 +376,10 @@ pub(super) async fn handle_pull_request(
 struct PullRpcResult {
     #[serde(rename = "_chunks")]
     chunks: i32,
+}
+
+fn push_change_bytes(change: &less_sync_core::protocol::WsPushChange) -> u64 {
+    let blob_bytes = change.blob.as_ref().map_or(0, Vec::len) as u64;
+    let dek_bytes = change.wrapped_dek.as_ref().map_or(0, Vec::len) as u64;
+    blob_bytes.saturating_add(dek_bytes)
 }

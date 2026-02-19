@@ -10,6 +10,7 @@ pub(super) async fn handle_request(
     frame: RequestFrame<'_>,
     peer_domain: &str,
     token_keys: Option<&crate::FederationTokenKeys>,
+    quota_tracker: Option<&crate::FederationQuotaTracker>,
 ) {
     let RequestContext {
         sync_storage,
@@ -34,8 +35,11 @@ pub(super) async fn handle_request(
                 realtime,
                 id,
                 payload,
-                peer_domain,
-                token_keys,
+                super::federation_subscribe::FederationSubscribeContext {
+                    peer_domain,
+                    token_keys,
+                    quota_tracker,
+                },
             )
             .await;
         }
@@ -50,6 +54,8 @@ pub(super) async fn handle_request(
                 realtime,
                 id,
                 payload,
+                peer_domain,
+                quota_tracker,
             )
             .await;
         }

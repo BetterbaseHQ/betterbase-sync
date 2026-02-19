@@ -31,6 +31,7 @@ pub(crate) enum RequestMode<'a> {
     Federation {
         peer_domain: &'a str,
         token_keys: Option<&'a crate::FederationTokenKeys>,
+        quota_tracker: Option<&'a crate::FederationQuotaTracker>,
     },
 }
 
@@ -55,8 +56,17 @@ pub(crate) async fn handle_request(
         RequestMode::Federation {
             peer_domain,
             token_keys,
+            quota_tracker,
         } => {
-            federation::handle_request(outbound, context, frame, peer_domain, token_keys).await;
+            federation::handle_request(
+                outbound,
+                context,
+                frame,
+                peer_domain,
+                token_keys,
+                quota_tracker,
+            )
+            .await;
         }
     }
 }
@@ -331,10 +341,20 @@ pub(crate) async fn handle_notification(
         RequestMode::Client => {
             handle_client_notification(realtime, presence_registry, method, payload).await;
         }
-        RequestMode::Federation { .. } => {
+        RequestMode::Federation {
+            peer_domain,
+            quota_tracker,
+            ..
+        } => {
             if method == "unsubscribe" {
-                handlers::handle_unsubscribe_notification(realtime, presence_registry, payload)
-                    .await;
+                let removed =
+                    handlers::handle_unsubscribe_notification(realtime, presence_registry, payload)
+                        .await;
+                if removed > 0 {
+                    if let Some(quota_tracker) = quota_tracker {
+                        quota_tracker.remove_spaces(peer_domain, removed).await;
+                    }
+                }
             }
         }
     }
@@ -348,7 +368,8 @@ async fn handle_client_notification(
 ) {
     match method {
         "unsubscribe" => {
-            handlers::handle_unsubscribe_notification(realtime, presence_registry, payload).await
+            let _ = handlers::handle_unsubscribe_notification(realtime, presence_registry, payload)
+                .await;
         }
         "presence.set" => {
             handlers::handle_presence_set_notification(realtime, presence_registry, payload).await;

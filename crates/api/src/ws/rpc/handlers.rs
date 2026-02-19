@@ -21,23 +21,23 @@ pub(super) async fn handle_unsubscribe_notification(
     realtime: Option<&RealtimeSession>,
     presence_registry: Option<&PresenceRegistry>,
     payload: &[u8],
-) {
+) -> usize {
     let Some(realtime) = realtime else {
-        return;
+        return 0;
     };
 
     let params = match decode_frame_params::<UnsubscribeParams>(payload) {
         Ok(params) => params,
-        Err(_) => return,
+        Err(_) => return 0,
     };
 
     if params.spaces.is_empty() {
-        return;
+        return 0;
     }
 
-    realtime.remove_spaces(&params.spaces).await;
+    let removed = realtime.remove_spaces(&params.spaces).await;
     let Some(presence_registry) = presence_registry else {
-        return;
+        return removed;
     };
 
     let peer = realtime.peer_id().to_owned();
@@ -46,6 +46,7 @@ pub(super) async fn handle_unsubscribe_notification(
             realtime.broadcast_presence_leave(space_id, &peer).await;
         }
     }
+    removed
 }
 
 pub(super) async fn handle_presence_set_notification(
@@ -207,7 +208,7 @@ pub(super) async fn handle_subscribe_request(
     }
 
     if let Some(realtime) = realtime {
-        realtime.add_spaces(&added_spaces).await;
+        let _ = realtime.add_spaces(&added_spaces).await;
     }
 
     send_result_response(outbound, id, &SubscribeResult { spaces, errors }).await;

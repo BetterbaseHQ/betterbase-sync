@@ -14,13 +14,16 @@
 ## Current Snapshot (2026-02-19)
 - Latest commit: `5639509` (`Refactor federation RPC handlers into focused modules`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `297` tests passing.
-1. `less-sync-api`: `115`
+- Rust local test totals (all features): `307` tests passing.
+1. `less-sync-api`: `125`
 2. `less-sync-app`: `16`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `27`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `44`
+- Federation progress in working tree:
+1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
+2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -31,7 +34,7 @@
 4. Phase 3 (storage + Postgres): complete for current local parity scope.
 5. Phase 4 (WebSocket transport + broker): complete.
 6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
-7. Phase 6 (federation): in progress (HTTP-signature WS auth route and dedicated federation `subscribe`/`push`/`pull` handlers with UCAN/FST checks are landed).
+7. Phase 6 (federation): in progress (HTTP-signature WS auth route, dedicated federation `subscribe`/`push`/`pull` handlers, quota enforcement, and federation metadata/status HTTP routes are landed).
 8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
 
 ## Baseline Inventory (Current Go Project)
@@ -243,9 +246,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Implement federation quota and limit enforcement on the federation WS path.
-2. Port federation HTTP/JWKS server surfaces and wire key bootstrap lifecycle beyond scaffold-level binaries.
-3. Port peer-manager/forwarding paths and remaining federation integration scenarios from local Go tests.
+1. Port federation peer-manager/forwarding paths and remaining federation integration scenarios from local Go tests.
+2. Complete federation key bootstrap/runtime wiring beyond scaffold-level `federation-keygen`.
+3. Expand app-level federation configuration surface (trusted peers, key material, quota overrides).
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.

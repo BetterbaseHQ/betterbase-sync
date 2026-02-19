@@ -33,27 +33,59 @@ pub(crate) struct RealtimeSession {
 }
 
 impl RealtimeSession {
-    pub(crate) async fn add_spaces(&self, spaces: &[String]) {
-        if !spaces.is_empty() {
-            let mut subscribed = self.subscribed_spaces.write().await;
-            subscribed.extend(spaces.iter().cloned());
+    pub(crate) async fn add_spaces(&self, spaces: &[String]) -> usize {
+        if spaces.is_empty() {
+            return 0;
         }
-        let _ = self.broker.add_spaces(self.subscriber_id, spaces).await;
-    }
 
-    pub(crate) async fn remove_spaces(&self, spaces: &[String]) {
-        if !spaces.is_empty() {
+        let mut added = Vec::new();
+        {
             let mut subscribed = self.subscribed_spaces.write().await;
             for space_id in spaces {
-                subscribed.remove(space_id);
+                if subscribed.insert(space_id.clone()) {
+                    added.push(space_id.clone());
+                }
             }
         }
-        let _ = self.broker.remove_spaces(self.subscriber_id, spaces).await;
+
+        if !added.is_empty() {
+            let _ = self.broker.add_spaces(self.subscriber_id, &added).await;
+        }
+        added.len()
+    }
+
+    pub(crate) async fn remove_spaces(&self, spaces: &[String]) -> usize {
+        if spaces.is_empty() {
+            return 0;
+        }
+
+        let mut removed = Vec::new();
+        {
+            let mut subscribed = self.subscribed_spaces.write().await;
+            for space_id in spaces {
+                if subscribed.remove(space_id) {
+                    removed.push(space_id.clone());
+                }
+            }
+        }
+
+        if !removed.is_empty() {
+            let _ = self
+                .broker
+                .remove_spaces(self.subscriber_id, &removed)
+                .await;
+        }
+        removed.len()
     }
 
     pub(crate) async fn is_subscribed(&self, space_id: &str) -> bool {
         let subscribed = self.subscribed_spaces.read().await;
         subscribed.contains(space_id)
+    }
+
+    pub(crate) async fn subscribed_space_count(&self) -> usize {
+        let subscribed = self.subscribed_spaces.read().await;
+        subscribed.len()
     }
 
     pub(crate) fn peer_id(&self) -> &str {
