@@ -62,6 +62,8 @@ impl TokenValidator for StubValidator {
 
 struct StubSyncStorage {
     fail_for: HashSet<Uuid>,
+    create_error: Option<less_sync_storage::StorageError>,
+    create_key_generation: i32,
     push_result: less_sync_storage::PushResult,
     pull_result: less_sync_storage::PullResult,
 }
@@ -70,6 +72,8 @@ impl StubSyncStorage {
     fn healthy() -> Self {
         Self {
             fail_for: HashSet::new(),
+            create_error: None,
+            create_key_generation: 1,
             push_result: less_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
@@ -92,6 +96,13 @@ impl StubSyncStorage {
                 record_count: 1,
                 cursor: 101,
             },
+        }
+    }
+
+    fn with_create_error(error: less_sync_storage::StorageError) -> Self {
+        Self {
+            create_error: Some(error),
+            ..Self::healthy()
         }
     }
 }
@@ -119,6 +130,32 @@ impl SyncStorage for StubSyncStorage {
             metadata_version: 0,
             cursor: 42,
             rewrap_epoch: Some(2),
+            home_server: None,
+        })
+    }
+
+    async fn create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+        root_public_key: Option<&[u8]>,
+    ) -> Result<less_sync_core::protocol::Space, less_sync_storage::StorageError> {
+        if self.fail_for.contains(&space_id) {
+            return Err(less_sync_storage::StorageError::Unavailable);
+        }
+        if let Some(error) = &self.create_error {
+            return Err(error.clone());
+        }
+
+        Ok(less_sync_core::protocol::Space {
+            id: space_id.to_string(),
+            client_id: client_id.to_owned(),
+            root_public_key: root_public_key.map(ToOwned::to_owned),
+            key_generation: self.create_key_generation,
+            min_key_generation: 0,
+            metadata_version: 0,
+            cursor: 0,
+            rewrap_epoch: None,
             home_server: None,
         })
     }
@@ -517,6 +554,183 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
         read_result_response(&mut socket).await;
     assert_eq!(push.id, "push-after-refresh-mismatch");
     assert!(push.result.ok);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_returns_id_and_key_generation() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    let space_id = Uuid::new_v4().to_string();
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "space-create-1",
+            "method": "space.create",
+            "params": {
+                "id": space_id,
+                "root_public_key": [1, 2, 3]
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SpaceCreateResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "space-create-1");
+    assert_eq!(response.result.id, space_id);
+    assert_eq!(response.result.key_generation, 1);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_invalid_space_id_returns_bad_request() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "space-create-2",
+            "method": "space.create",
+            "params": {
+                "id": "not-a-uuid",
+                "root_public_key": [1, 2, 3]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "space-create-2");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::healthy()),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "space-create-2b",
+            "method": "space.create",
+            "params": {
+                "id": Uuid::new_v4().to_string(),
+                "root_public_key": []
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "space-create-2b");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_conflict_returns_conflict_error() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_create_error(
+            less_sync_storage::StorageError::SpaceExists,
+        )),
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "space-create-3",
+            "method": "space.create",
+            "params": {
+                "id": Uuid::new_v4().to_string(),
+                "root_public_key": [1, 2, 3]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "space-create-3");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_without_sync_storage_returns_internal_error() {
+    let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "space-create-4",
+            "method": "space.create",
+            "params": {
+                "id": Uuid::new_v4().to_string(),
+                "root_public_key": [1, 2, 3]
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "space-create-4");
+    assert_eq!(
+        response.error.code,
+        less_sync_core::protocol::ERR_CODE_INTERNAL
+    );
 
     server.handle.abort();
 }

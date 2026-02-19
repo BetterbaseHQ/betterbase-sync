@@ -14,6 +14,12 @@ pub(crate) struct SubscribedSpaceState {
 #[async_trait]
 pub(crate) trait SyncStorage: Send + Sync {
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError>;
+    async fn create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+        root_public_key: Option<&[u8]>,
+    ) -> Result<Space, StorageError>;
 
     async fn get_or_create_space(
         &self,
@@ -33,6 +39,15 @@ where
 {
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
         Storage::get_space(self, space_id).await
+    }
+
+    async fn create_space(
+        &self,
+        space_id: Uuid,
+        client_id: &str,
+        root_public_key: Option<&[u8]>,
+    ) -> Result<Space, StorageError> {
+        Storage::create_space(self, space_id, client_id, root_public_key).await
     }
 
     async fn get_or_create_space(

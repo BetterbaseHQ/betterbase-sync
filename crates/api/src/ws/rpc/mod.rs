@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 
 mod frames;
 mod handlers;
+mod space_create;
 mod token_refresh;
 
 pub(crate) struct RequestContext<'a> {
@@ -33,6 +34,19 @@ pub(crate) async fn handle_request(
     match method {
         "token.refresh" => {
             token_refresh::handle_request(outbound, auth, validator, id, payload).await;
+        }
+        "space.create" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            space_create::handle_request(outbound, sync_storage, auth, id, payload).await;
         }
         "subscribe" => {
             let Some(sync_storage) = sync_storage else {
