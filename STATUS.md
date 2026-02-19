@@ -4,8 +4,8 @@ Last updated: 2026-02-19
 
 ## Repository State
 - Branch: `main`
-- HEAD: `51ee6e8` (`Add rotation-safe federation signing key lifecycle`)
-- Working tree status at update time: in progress (websocket federation restore integration slice)
+- HEAD: `97904b1` (`Wire websocket remote-home federation subscribe and restore flows`)
+- Working tree status at update time: in progress (app federation runtime integration verification slice)
 
 ## Workspace Inventory
 1. Crates:
@@ -23,13 +23,13 @@ Last updated: 2026-02-19
 ## Test Inventory
 Rust local tests (`cargo test --workspace --all-features`):
 1. `less-sync-api`: `140`
-2. `less-sync-app`: `21`
+2. `less-sync-app`: `24`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `45`
-7. `less-sync-federation-keygen`: `4`
-8. Total passing tests: `334`
+7. `less-sync-federation-keygen`: `6`
+8. Total passing tests: `339`
 
 Go baseline (reference from original local suite):
 1. `467` tests
@@ -85,7 +85,12 @@ Go baseline (reference from original local suite):
 - Storage now supports promoting and deactivating federation signing keys and loading the active primary keypair directly.
 - Active-key JWKS publication now naturally supports overlap windows (old keys remain published until deactivated).
 - App startup now selects outbound federation signing material from explicit active-primary storage state instead of insertion order.
-10. HTTP/API:
+10. Federation runtime/key lifecycle integration coverage:
+- App-level storage-backed tests now cover empty-key runtime startup, active-primary key selection, active JWKS publication overlap behavior, and keypair mismatch rejection in `apply_federation_runtime_config`.
+- Keygen command now has storage-backed tests for promote-by-default rotation and staged `--no-promote` behavior preserving current primary key.
+11. Websocket subscribe state factoring:
+- `SubscribedSpaceState` now carries `home_server` so authz output includes remote-home routing context without extra storage lookups in subscribe handlers.
+12. HTTP/API:
 - Bearer auth middleware and `/health`.
 - `/api/v1/ws`.
 - File endpoints `/api/v1/spaces/{space_id}/files/{id}` with:
@@ -96,12 +101,12 @@ Go baseline (reference from original local suite):
 - strict header/body validation
 - idempotent PUT semantics
 - object blob backend via `object_store`.
-11. File storage backends:
+13. File storage backends:
 - Disabled mode.
 - Local filesystem mode.
 - Minimal S3-compatible mode via `object_store` (`AmazonS3Builder`).
 - S3 coverage is currently config/builder-level (no full MinIO integration suite yet).
-12. Federation outbound peer manager:
+14. Federation outbound peer manager:
 - Dedicated `federation_client` module in `less-sync-api` with focused module boundaries (`mod`, `peer`, `wire`, tests).
 - Signed federation websocket dialing using `less_sync_auth::sign_http_request`.
 - Per-peer connection reuse and per-space FST token tracking.
@@ -110,12 +115,12 @@ Go baseline (reference from original local suite):
 - Retry behavior now reconnects once on closed/connect transport failures while preserving request identity.
 - Subscription restore flow now replays cached per-space FST tokens back through `subscribe`.
 - Local tests now cover request forwarding, pull chunk collection, reconnect retry behavior, and FST token persistence/restore behavior.
-13. Runtime federation forwarding integration:
+15. Runtime federation forwarding integration:
 - Client websocket `push` now forwards to remote home servers when `space.home_server` is set and a federation forwarder is configured.
 - `invitation.create` now supports remote delivery via `params.server` for trusted peers, including explicit bad-request and internal-error mappings.
 - API state now carries a pluggable federation forwarder, and app startup wires one from stored federation signing keys when available.
 - New websocket tests cover forwarded push, trusted/untrusted invitation forwarding, and forwarding failure behavior.
-14. Websocket remote-home federation orchestration:
+16. Websocket remote-home federation orchestration:
 - Client websocket `subscribe` now federates remote-home subscriptions through the forwarder to establish remote peer-manager token state.
 - Client websocket remote-home `push` now attempts `restore_subscriptions` and retries once after transient forwarding failure.
 - Websocket tests now cover remote-home subscribe forwarding and restore-plus-retry push behavior.
@@ -126,6 +131,6 @@ Go baseline (reference from original local suite):
 3. S3 integration tests are intentionally minimal; optional MinIO smoke tests can be added later.
 
 ## Next Recommended Slice
-1. Add app-level integration coverage for storage-backed federation key publication and runtime federation config behavior.
-2. Expand federation integration coverage for peer status/trusted metadata endpoints.
-3. Add runtime coverage for remote-home `pull` federation orchestration and chunk forwarding.
+1. Expand federation integration coverage for peer status/trusted metadata endpoints.
+2. Add runtime coverage for remote-home `pull` federation orchestration and chunk forwarding.
+3. Add negative-path websocket coverage for remote-home subscribe forward failures and fallback semantics.

@@ -13,3 +13,6 @@ less-sync-auth = { path = "../../crates/auth" }
 less-sync-storage = { path = "../../crates/storage" }
 rand_core.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true

@@ -501,6 +501,7 @@ impl SyncStorage for StubSyncStorage {
             cursor: 42,
             key_generation: 3,
             rewrap_epoch: Some(2),
+            home_server: self.space_home_servers.get(&space_id).cloned(),
         })
     }
 

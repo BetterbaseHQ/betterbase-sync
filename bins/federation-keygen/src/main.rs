@@ -149,7 +149,12 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_args;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{parse_args, run, KeygenConfig};
+    use ed25519_dalek::SigningKey;
+    use less_sync_storage::{migrate_with_pool, PostgresStorage};
+    use sqlx::postgres::{PgPool, PgPoolOptions};
 
     #[test]
     fn parse_args_requires_domain() {
@@ -206,5 +211,163 @@ mod tests {
         ])
         .expect_err("unknown flag should fail");
         assert!(error.to_string().contains("unknown argument"));
+    }
+
+    #[tokio::test]
+    async fn run_promotes_new_key_by_default() {
+        let Some(test_db) = isolated_database().await else {
+            return;
+        };
+
+        let old_kid = "https://sync.example.com/.well-known/jwks.json#fed-old";
+        let old_key = SigningKey::from_bytes(&[9_u8; 32]);
+        test_db
+            .storage
+            .ensure_federation_key(
+                old_kid,
+                &old_key.to_bytes(),
+                old_key.verifying_key().as_bytes(),
+            )
+            .await
+            .expect("insert existing key");
+
+        run(KeygenConfig {
+            domain: "sync.example.com".to_owned(),
+            kid: Some("fed-new".to_owned()),
+            database_url: Some(test_db.scoped_url.clone()),
+            print_private: false,
+            promote: true,
+        })
+        .await
+        .expect("run keygen");
+
+        let primary = test_db
+            .storage
+            .get_federation_signing_key()
+            .await
+            .expect("load primary signing key")
+            .expect("primary key should exist");
+        assert_eq!(
+            primary.kid,
+            "https://sync.example.com/.well-known/jwks.json#fed-new"
+        );
+
+        let keys = test_db
+            .storage
+            .list_federation_public_keys()
+            .await
+            .expect("list active keys");
+        assert_eq!(keys.len(), 2);
+
+        cleanup_database(test_db).await;
+    }
+
+    #[tokio::test]
+    async fn run_no_promote_keeps_existing_primary() {
+        let Some(test_db) = isolated_database().await else {
+            return;
+        };
+
+        let old_kid = "https://sync.example.com/.well-known/jwks.json#fed-old";
+        let old_key = SigningKey::from_bytes(&[10_u8; 32]);
+        test_db
+            .storage
+            .ensure_federation_key(
+                old_kid,
+                &old_key.to_bytes(),
+                old_key.verifying_key().as_bytes(),
+            )
+            .await
+            .expect("insert existing key");
+
+        run(KeygenConfig {
+            domain: "sync.example.com".to_owned(),
+            kid: Some("fed-staged".to_owned()),
+            database_url: Some(test_db.scoped_url.clone()),
+            print_private: false,
+            promote: false,
+        })
+        .await
+        .expect("run keygen without promote");
+
+        let primary = test_db
+            .storage
+            .get_federation_signing_key()
+            .await
+            .expect("load primary signing key")
+            .expect("primary key should exist");
+        assert_eq!(primary.kid, old_kid);
+
+        let keys = test_db
+            .storage
+            .list_federation_public_keys()
+            .await
+            .expect("list active keys");
+        assert_eq!(keys.len(), 2);
+
+        cleanup_database(test_db).await;
+    }
+
+    struct TestDatabase {
+        storage: PostgresStorage,
+        admin_pool: PgPool,
+        schema: String,
+        scoped_url: String,
+    }
+
+    async fn isolated_database() -> Option<TestDatabase> {
+        let base_database_url = match std::env::var("DATABASE_URL") {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&base_database_url)
+            .await
+            .expect("connect admin pool");
+        let schema = format!("keygen_test_{}", unique_suffix());
+        let create_schema = format!("CREATE SCHEMA \"{schema}\"");
+        sqlx::query(&create_schema)
+            .execute(&admin_pool)
+            .await
+            .expect("create test schema");
+
+        let scoped_url = scoped_database_url(&base_database_url, &schema);
+        let storage = PostgresStorage::connect(&scoped_url)
+            .await
+            .expect("connect scoped storage");
+        migrate_with_pool(storage.pool())
+            .await
+            .expect("apply migrations");
+
+        Some(TestDatabase {
+            storage,
+            admin_pool,
+            schema,
+            scoped_url,
+        })
+    }
+
+    async fn cleanup_database(test_db: TestDatabase) {
+        test_db.storage.close().await;
+        let drop_schema = format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", test_db.schema);
+        let _ = sqlx::query(&drop_schema).execute(&test_db.admin_pool).await;
+    }
+
+    fn scoped_database_url(base_database_url: &str, schema: &str) -> String {
+        let separator = if base_database_url.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
+        format!("{base_database_url}{separator}options=-csearch_path={schema}")
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
     }
 }

@@ -79,6 +79,7 @@ async fn authorize_space(
         cursor: space.cursor,
         key_generation: space.key_generation,
         rewrap_epoch: space.rewrap_epoch,
+        home_server: space.home_server,
     })
 }
 

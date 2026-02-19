@@ -185,11 +185,7 @@ pub(super) async fn handle_subscribe_request(
 
         match authz::authorize_read_space(sync_storage, auth, space_id, &requested.ucan).await {
             Ok(space_state) => {
-                let home_server = sync_storage
-                    .get_space(space_id)
-                    .await
-                    .ok()
-                    .and_then(|space| space.home_server);
+                let home_server = space_state.home_server.clone();
                 if let (Some(federation_forwarder), Some(home_server)) =
                     (federation_forwarder, home_server)
                 {

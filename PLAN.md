@@ -12,16 +12,16 @@
 4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
 
 ## Current Snapshot (2026-02-19)
-- Latest commit: `51ee6e8` (`Add rotation-safe federation signing key lifecycle`).
+- Latest commit: `97904b1` (`Wire websocket remote-home federation subscribe and restore flows`).
 - Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `334` tests passing.
+- Rust local test totals (all features): `339` tests passing.
 1. `less-sync-api`: `140`
-2. `less-sync-app`: `21`
+2. `less-sync-app`: `24`
 3. `less-sync-auth`: `78`
 4. `less-sync-core`: `29`
 5. `less-sync-realtime`: `17`
 6. `less-sync-storage`: `45`
-7. `less-sync-federation-keygen`: `4`
+7. `less-sync-federation-keygen`: `6`
 - Federation progress in working tree:
 1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
 2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
@@ -33,6 +33,8 @@
 7. Federation client tests now cover pull chunk collection, reconnect retry behavior, and restore-subscriptions token replay in addition to existing forwarding and token persistence coverage.
 8. Federation signing keys now support explicit lifecycle state (active/primary), key promotion, and deactivation, with runtime loading the active primary key and keygen supporting `--no-promote` for staged rollover.
 9. Client websocket flows now federate remote-home `subscribe` calls, and remote-home `push` now attempts subscription restoration plus a retry after transient forwarding failure.
+10. App runtime federation wiring now has storage-backed integration coverage for empty key state, active-primary selection with JWKS publication, and mismatched keypair rejection.
+11. Federation keygen now has storage-backed operator workflow tests for promote-by-default rotation and staged `--no-promote` rollout behavior.
 - Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
 - Detailed implementation inventory is tracked in `STATUS.md`.
 
@@ -255,9 +257,9 @@ Exit criteria:
 3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
 
 ## Immediate Execution Plan
-1. Add integration coverage for storage-backed federation key publication and runtime federation config behavior.
-2. Expand federation integration coverage for peer status/trusted metadata endpoints.
-3. Add tighter runtime tests for remote `pull` federation orchestration and chunk forwarding behavior.
+1. Expand federation integration coverage for peer status/trusted metadata endpoints.
+2. Add tighter runtime tests for remote `pull` federation orchestration and chunk forwarding behavior.
+3. Add negative-path websocket coverage for remote-home subscribe forward failures and fallback semantics.
 
 ## Rust Best-Practice Standards (Template for Future Projects)
 1. Clear crate boundaries with narrow public APIs.

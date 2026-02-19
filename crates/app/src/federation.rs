@@ -290,10 +290,22 @@ async fn load_primary_signing_key(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_federation_runtime_config, FederationEnv};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{
+        apply_federation_runtime_config, load_primary_signing_key, parse_federation_runtime_config,
+        FederationEnv, FederationRuntimeConfig,
+    };
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
+    use less_sync_api::{router, ApiState};
+    use less_sync_storage::{migrate_with_pool, PostgresStorage};
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
 
     fn test_public_key() -> [u8; 32] {
         SigningKey::from_bytes(&[7_u8; 32])
@@ -380,5 +392,194 @@ mod tests {
         .expect_err("zero limit should fail");
 
         assert!(error.to_string().contains("FEDERATION_MAX_CONNECTIONS"));
+    }
+
+    #[tokio::test]
+    async fn apply_federation_runtime_config_handles_empty_key_state() {
+        let Some((storage, schema)) = isolated_storage().await else {
+            return;
+        };
+        let api_state = ApiState::new(Arc::new(storage.clone()));
+        let configured = apply_federation_runtime_config(
+            api_state,
+            Arc::new(storage.clone()),
+            &FederationRuntimeConfig::default(),
+        )
+        .await
+        .expect("apply federation config");
+
+        let primary = load_primary_signing_key(&storage)
+            .await
+            .expect("load primary key");
+        assert!(primary.is_none());
+
+        let kids = jwks_kids(configured).await;
+        assert!(kids.is_empty());
+
+        cleanup_schema(&storage, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn apply_federation_runtime_config_uses_primary_key_and_publishes_active_jwks() {
+        let Some((storage, schema)) = isolated_storage().await else {
+            return;
+        };
+
+        let key_a = SigningKey::from_bytes(&[11_u8; 32]);
+        let key_b = SigningKey::from_bytes(&[22_u8; 32]);
+        let kid_a = "https://sync.example.com/.well-known/jwks.json#fed-a";
+        let kid_b = "https://sync.example.com/.well-known/jwks.json#fed-b";
+
+        storage
+            .ensure_federation_key(kid_a, &key_a.to_bytes(), key_a.verifying_key().as_bytes())
+            .await
+            .expect("store key a");
+        storage
+            .ensure_federation_key(kid_b, &key_b.to_bytes(), key_b.verifying_key().as_bytes())
+            .await
+            .expect("store key b");
+        storage
+            .set_federation_primary_key(kid_b)
+            .await
+            .expect("promote key b");
+
+        let (selected_kid, selected_signing_key) = load_primary_signing_key(&storage)
+            .await
+            .expect("load primary key")
+            .expect("primary key should exist");
+        assert_eq!(selected_kid, kid_b);
+        assert_eq!(selected_signing_key.to_bytes(), key_b.to_bytes());
+
+        let api_state = ApiState::new(Arc::new(storage.clone()));
+        let configured = apply_federation_runtime_config(
+            api_state,
+            Arc::new(storage.clone()),
+            &FederationRuntimeConfig::default(),
+        )
+        .await
+        .expect("apply federation config");
+
+        let mut kids = jwks_kids(configured).await;
+        kids.sort_unstable();
+        assert_eq!(kids, vec![kid_a.to_owned(), kid_b.to_owned()]);
+
+        storage
+            .deactivate_federation_key(kid_a)
+            .await
+            .expect("deactivate key a");
+        let api_state = ApiState::new(Arc::new(storage.clone()));
+        let configured = apply_federation_runtime_config(
+            api_state,
+            Arc::new(storage.clone()),
+            &FederationRuntimeConfig::default(),
+        )
+        .await
+        .expect("re-apply federation config");
+        assert_eq!(jwks_kids(configured).await, vec![kid_b.to_owned()]);
+
+        cleanup_schema(&storage, &schema).await;
+    }
+
+    #[tokio::test]
+    async fn apply_federation_runtime_config_rejects_mismatched_primary_keypair() {
+        let Some((storage, schema)) = isolated_storage().await else {
+            return;
+        };
+
+        let key = SigningKey::from_bytes(&[33_u8; 32]);
+        let mismatched_public = SigningKey::from_bytes(&[44_u8; 32]).verifying_key();
+        let kid = "https://sync.example.com/.well-known/jwks.json#fed-mismatch";
+        storage
+            .ensure_federation_key(kid, &key.to_bytes(), key.verifying_key().as_bytes())
+            .await
+            .expect("store key");
+
+        sqlx::query("UPDATE federation_signing_keys SET public_key = $2 WHERE kid = $1")
+            .bind(kid)
+            .bind(mismatched_public.as_bytes())
+            .execute(storage.pool())
+            .await
+            .expect("corrupt public key");
+
+        let api_state = ApiState::new(Arc::new(storage.clone()));
+        let result = apply_federation_runtime_config(
+            api_state,
+            Arc::new(storage.clone()),
+            &FederationRuntimeConfig::default(),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("mismatched keypair should fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("mismatch"));
+
+        cleanup_schema(&storage, &schema).await;
+    }
+
+    async fn isolated_storage() -> Option<(PostgresStorage, String)> {
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect test database");
+
+        let schema = format!("app_fed_{}", unique_suffix());
+        let create_schema = format!("CREATE SCHEMA \"{schema}\"");
+        sqlx::query(&create_schema)
+            .execute(&pool)
+            .await
+            .expect("create isolated schema");
+        let set_search_path = format!("SET search_path TO \"{schema}\"");
+        sqlx::query(&set_search_path)
+            .execute(&pool)
+            .await
+            .expect("set search_path");
+        migrate_with_pool(&pool).await.expect("apply migrations");
+
+        Some((PostgresStorage::from_pool(pool), schema))
+    }
+
+    async fn cleanup_schema(storage: &PostgresStorage, schema: &str) {
+        let _ = sqlx::query("SET search_path TO public")
+            .execute(storage.pool())
+            .await;
+        let drop_schema = format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE");
+        let _ = sqlx::query(&drop_schema).execute(storage.pool()).await;
+    }
+
+    fn unique_suffix() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    async fn jwks_kids(state: ApiState) -> Vec<String> {
+        #[derive(serde::Deserialize)]
+        struct JwksPayload {
+            keys: Vec<JwkPayload>,
+        }
+        #[derive(serde::Deserialize)]
+        struct JwkPayload {
+            kid: String,
+        }
+
+        let app = router(state);
+        let request: Request<Body> = Request::builder()
+            .uri("/.well-known/jwks.json")
+            .body(Body::empty())
+            .expect("jwks request");
+        let response = app.oneshot(request).await.expect("jwks response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read jwks body");
+        let parsed: JwksPayload = serde_json::from_slice(&body).expect("decode jwks response");
+        parsed.keys.into_iter().map(|key| key.kid).collect()
     }
 }
