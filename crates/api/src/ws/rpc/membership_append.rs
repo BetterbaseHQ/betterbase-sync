@@ -1,12 +1,13 @@
 use super::super::authz::{self, SpaceAuthzError};
-use super::super::realtime::OutboundSender;
+use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    MembershipAppendParams, MembershipAppendResult, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
-    ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
+    MembershipAppendParams, MembershipAppendResult, WsMembershipData, WsMembershipEntry,
+    ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
+    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
 };
 use less_sync_storage::{MembersLogEntry, StorageError};
 use uuid::Uuid;
@@ -14,6 +15,7 @@ use uuid::Uuid;
 pub(super) async fn handle_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    realtime: Option<&RealtimeSession>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -80,6 +82,27 @@ pub(super) async fn handle_request(
                 },
             )
             .await;
+            if let Some(realtime) = realtime {
+                realtime
+                    .broadcast_membership(
+                        &params.space,
+                        &WsMembershipData {
+                            space: params.space.clone(),
+                            cursor: result.cursor,
+                            entries: vec![WsMembershipEntry {
+                                chain_seq: result.chain_seq,
+                                prev_hash: if entry.prev_hash.is_empty() {
+                                    None
+                                } else {
+                                    Some(entry.prev_hash.clone())
+                                },
+                                entry_hash: entry.entry_hash.clone(),
+                                payload: entry.payload.clone(),
+                            }],
+                        },
+                    )
+                    .await;
+            }
         }
         Err(StorageError::SpaceNotFound) => {
             send_error_response(

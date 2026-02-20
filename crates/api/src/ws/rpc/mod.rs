@@ -125,7 +125,8 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            membership_append::handle_request(outbound, sync_storage, auth, id, payload).await;
+            membership_append::handle_request(outbound, sync_storage, realtime, auth, id, payload)
+                .await;
         }
         "membership.list" => {
             let Some(sync_storage) = sync_storage else {
