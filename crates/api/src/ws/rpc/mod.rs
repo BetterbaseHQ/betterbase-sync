@@ -30,6 +30,7 @@ pub(crate) struct RequestContext<'a> {
     pub presence_registry: Option<&'a PresenceRegistry>,
     pub federation_forwarder: Option<&'a dyn crate::FederationForwarder>,
     pub federation_trusted_domains: &'a [String],
+    pub identity_hash_key: Option<&'a [u8]>,
 }
 
 pub(crate) enum RequestMode<'a> {
@@ -95,6 +96,7 @@ async fn handle_client_request(
         presence_registry,
         federation_forwarder,
         federation_trusted_domains,
+        identity_hash_key,
     } = context;
 
     match method {
@@ -125,8 +127,16 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            membership_append::handle_request(outbound, sync_storage, realtime, auth, id, payload)
-                .await;
+            membership_append::handle_request(
+                outbound,
+                sync_storage,
+                realtime,
+                auth,
+                identity_hash_key,
+                id,
+                payload,
+            )
+            .await;
         }
         "membership.list" => {
             let Some(sync_storage) = sync_storage else {
@@ -170,6 +180,8 @@ async fn handle_client_request(
                 outbound,
                 sync_storage,
                 realtime,
+                auth,
+                identity_hash_key,
                 federation_forwarder,
                 federation_trusted_domains,
                 id,

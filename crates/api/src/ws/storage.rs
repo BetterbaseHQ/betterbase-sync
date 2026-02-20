@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use less_sync_core::protocol::Change;
 use less_sync_core::protocol::Space;
+use std::time::SystemTime;
+
 use less_sync_storage::{
     AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, FileDekRecord, Invitation,
     MembersLogEntry, PullResult, PushResult, Storage, StorageError,
@@ -88,6 +90,15 @@ pub(crate) trait SyncStorage: Send + Sync {
         space_id: Uuid,
         deks: &[FileDekRecord],
     ) -> Result<(), StorageError>;
+
+    async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError>;
+
+    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError>;
 }
 
 #[async_trait]
@@ -211,5 +222,18 @@ where
         deks: &[FileDekRecord],
     ) -> Result<(), StorageError> {
         Storage::rewrap_file_deks(self, space_id, deks).await
+    }
+
+    async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError> {
+        Storage::count_recent_actions(self, action, actor_hash, since).await
+    }
+
+    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError> {
+        Storage::record_action(self, action, actor_hash).await
     }
 }

@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub trusted_issuers: HashMap<String, String>,
     pub audiences: Vec<String>,
     pub file_storage: FileStorageConfig,
+    pub identity_hash_key: Option<Vec<u8>>,
     federation: federation::FederationRuntimeConfig,
 }
 
@@ -85,6 +86,7 @@ impl AppConfig {
             std::env::var("AUDIENCES").ok(),
         )?;
         config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
+        config.identity_hash_key = parse_identity_hash_key(std::env::var("IDENTITY_HASH_KEY").ok())?;
         config.federation =
             federation::parse_federation_runtime_config(federation::FederationEnv::from_env())?;
         Ok(config)
@@ -108,6 +110,7 @@ impl AppConfig {
             trusted_issuers,
             audiences,
             file_storage: FileStorageConfig::Disabled,
+            identity_hash_key: None,
             federation: federation::FederationRuntimeConfig::default(),
         })
     }
@@ -126,6 +129,10 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         .with_websocket(validator)
         .with_realtime_broker(broker)
         .with_sync_storage(storage.clone());
+
+    if let Some(key) = config.identity_hash_key {
+        api_state = api_state.with_identity_hash_key(key);
+    }
 
     if let Some(file_storage) = build_file_object_store(&config.file_storage)? {
         api_state = api_state.with_file_object_store(file_storage);
@@ -265,6 +272,25 @@ fn parse_audiences(value: Option<String>) -> Vec<String> {
         .filter(|entry| !entry.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn parse_identity_hash_key(value: Option<String>) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let key = hex::decode(raw)
+        .map_err(|_| anyhow::anyhow!("IDENTITY_HASH_KEY must be valid hex"))?;
+    if key.len() != 32 {
+        return Err(anyhow::anyhow!(
+            "IDENTITY_HASH_KEY must be 64 hex characters (32 bytes), got {} bytes",
+            key.len()
+        ));
+    }
+    Ok(Some(key))
 }
 
 fn parse_file_storage(env: FileStorageEnv) -> anyhow::Result<FileStorageConfig> {
@@ -584,5 +610,38 @@ mod tests {
         };
         let store = build_file_object_store(&config).expect("build object store");
         assert!(store.is_some());
+    }
+
+    #[test]
+    fn parse_identity_hash_key_accepts_32_byte_hex() {
+        let key = "a".repeat(64);
+        let result = super::parse_identity_hash_key(Some(key)).expect("valid key");
+        assert_eq!(result.unwrap().len(), 32);
+    }
+
+    #[test]
+    fn parse_identity_hash_key_rejects_wrong_length() {
+        let key = "aa".repeat(16); // 16 bytes (32 hex chars)
+        let error = super::parse_identity_hash_key(Some(key)).expect_err("wrong length");
+        assert!(error.to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn parse_identity_hash_key_rejects_non_hex() {
+        let error =
+            super::parse_identity_hash_key(Some("not-hex".to_owned())).expect_err("invalid hex");
+        assert!(error.to_string().contains("IDENTITY_HASH_KEY"));
+    }
+
+    #[test]
+    fn parse_identity_hash_key_returns_none_when_absent() {
+        assert!(super::parse_identity_hash_key(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_identity_hash_key_returns_none_for_empty_string() {
+        assert!(super::parse_identity_hash_key(Some(String::new()))
+            .unwrap()
+            .is_none());
     }
 }

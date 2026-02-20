@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
@@ -19,6 +19,8 @@ use uuid::Uuid;
 const DEFAULT_INVITATION_LIST_LIMIT: usize = 50;
 const MAX_INVITATION_LIST_LIMIT: usize = 200;
 const MAX_INVITATION_PAYLOAD: usize = 128 * 1024;
+const RATE_LIMIT_MAX: i64 = 10;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, serde::Serialize)]
 struct EmptyResult {}
@@ -27,6 +29,8 @@ pub(super) async fn handle_create_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
+    auth: &AuthContext,
+    identity_hash_key: Option<&[u8]>,
     federation_forwarder: Option<&dyn crate::FederationForwarder>,
     federation_trusted_domains: &[String],
     id: &str,
@@ -45,6 +49,37 @@ pub(super) async fn handle_create_request(
             return;
         }
     };
+    // Rate limiting (before validation to prevent free probing).
+    let actor_hash = if let Some(key) = identity_hash_key {
+        let hash = less_sync_storage::rate_limit_hash(key, &auth.issuer, &auth.user_id);
+        let since = SystemTime::now() - RATE_LIMIT_WINDOW;
+        match sync_storage
+            .count_recent_actions("invitation", &hash, since)
+            .await
+        {
+            Ok(count) if count >= RATE_LIMIT_MAX => {
+                send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_RATE_LIMITED,
+                    "rate limit exceeded: max 10 invitations per hour".to_owned(),
+                )
+                .await;
+                return;
+            }
+            Ok(_) => {}
+            Err(_) => {
+                tracing::error!("failed to count recent invitations");
+                send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal error".to_owned())
+                    .await;
+                return;
+            }
+        }
+        Some(hash)
+    } else {
+        None
+    };
+
     if let Some((code, message)) = validate_invitation_params(&params.mailbox_id, &params.payload) {
         send_error_response(outbound, id, code, message).await;
         return;
@@ -97,6 +132,13 @@ pub(super) async fn handle_create_request(
             return;
         }
 
+        // Record rate-limit action after successful forward.
+        if let Some(hash) = &actor_hash {
+            if let Err(err) = sync_storage.record_action("invitation", hash).await {
+                tracing::error!(%err, "failed to record rate limit action");
+            }
+        }
+
         send_result_response(
             outbound,
             id,
@@ -126,6 +168,13 @@ pub(super) async fn handle_create_request(
             return;
         }
     };
+
+    // Record rate-limit action after successful creation.
+    if let Some(hash) = &actor_hash {
+        if let Err(err) = sync_storage.record_action("invitation", hash).await {
+            tracing::error!(%err, "failed to record rate limit action");
+        }
+    }
 
     if let Some(realtime) = realtime {
         realtime.broadcast_invitation(&target_mailbox_id);

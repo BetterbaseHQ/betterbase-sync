@@ -67,6 +67,7 @@ pub struct ApiState {
     file_blob_storage: Option<Arc<dyn files::FileBlobStorage>>,
     realtime_broker: Option<Arc<MultiBroker>>,
     presence_registry: Option<Arc<ws::PresenceRegistry>>,
+    identity_hash_key: Option<Arc<[u8]>>,
 }
 
 #[derive(Clone)]
@@ -94,6 +95,7 @@ impl ApiState {
             file_blob_storage: None,
             realtime_broker: None,
             presence_registry: None,
+            identity_hash_key: None,
         }
     }
 
@@ -256,6 +258,16 @@ impl ApiState {
 
     pub fn presence_registry(&self) -> Option<Arc<ws::PresenceRegistry>> {
         self.presence_registry.clone()
+    }
+
+    #[must_use]
+    pub fn with_identity_hash_key(mut self, key: Vec<u8>) -> Self {
+        self.identity_hash_key = Some(Arc::from(key));
+        self
+    }
+
+    pub(crate) fn identity_hash_key(&self) -> Option<Arc<[u8]>> {
+        self.identity_hash_key.clone()
     }
 }
 

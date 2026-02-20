@@ -52,6 +52,7 @@ struct WebSocketRuntimeContext {
     federation_token_keys: Option<crate::FederationTokenKeys>,
     federation_trusted_domains: Vec<String>,
     federation_quota_tracker: Arc<crate::FederationQuotaTracker>,
+    identity_hash_key: Option<Arc<[u8]>>,
 }
 
 pub(crate) async fn websocket_upgrade(
@@ -102,6 +103,7 @@ pub(crate) async fn federation_websocket_upgrade(
         federation_token_keys: state.federation_token_keys(),
         federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
+        identity_hash_key: state.identity_hash_key(),
     };
     ws.protocols([WS_SUBPROTOCOL])
         .max_frame_size(WS_MAX_MESSAGE_SIZE)
@@ -133,6 +135,7 @@ async fn websocket_upgrade_with_mode(
         federation_token_keys: state.federation_token_keys(),
         federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
+        identity_hash_key: state.identity_hash_key(),
     };
 
     ws.protocols([WS_SUBPROTOCOL])
@@ -374,6 +377,7 @@ async fn serve_websocket(
                             presence_registry: runtime_context.presence_registry.as_deref(),
                             federation_forwarder: runtime_context.federation_forwarder.as_deref(),
                             federation_trusted_domains: &runtime_context.federation_trusted_domains,
+                            identity_hash_key: runtime_context.identity_hash_key.as_deref(),
                         },
                         request_mode,
                         &mut auth_context,

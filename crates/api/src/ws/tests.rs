@@ -20,6 +20,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 use p256::PublicKey;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
@@ -767,6 +768,23 @@ impl SyncStorage for StubSyncStorage {
         if let Some(error) = &self.file_deks_rewrap_error {
             return Err(error.clone());
         }
+        Ok(())
+    }
+
+    async fn count_recent_actions(
+        &self,
+        _action: &str,
+        _actor_hash: &str,
+        _since: std::time::SystemTime,
+    ) -> Result<i64, less_sync_storage::StorageError> {
+        Ok(0)
+    }
+
+    async fn record_action(
+        &self,
+        _action: &str,
+        _actor_hash: &str,
+    ) -> Result<(), less_sync_storage::StorageError> {
         Ok(())
     }
 }
@@ -2017,6 +2035,8 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
+    let test_payload = vec![7, 8, 9];
+    let test_entry_hash = Sha256::digest(&test_payload).to_vec();
     send_rpc_request(
         &mut socket,
         "membership-append-1",
@@ -2026,8 +2046,8 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
             ucan: String::new(),
             expected_version: 1,
             prev_hash: Some(vec![1, 2, 3]),
-            entry_hash: vec![4, 5, 6],
-            payload: vec![7, 8, 9],
+            entry_hash: test_entry_hash,
+            payload: test_payload,
         },
     )
     .await;
@@ -2055,6 +2075,8 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
+    let test_payload = vec![7, 8, 9];
+    let test_entry_hash = Sha256::digest(&test_payload).to_vec();
     send_rpc_request(
         &mut socket,
         "membership-append-2",
@@ -2064,8 +2086,8 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
             ucan: String::new(),
             expected_version: 1,
             prev_hash: None,
-            entry_hash: vec![4, 5, 6],
-            payload: vec![7, 8, 9],
+            entry_hash: test_entry_hash,
+            payload: test_payload,
         },
     )
     .await;
