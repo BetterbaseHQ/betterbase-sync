@@ -34,6 +34,7 @@ mod rpc;
 mod storage;
 
 pub use presence::PresenceRegistry;
+pub(crate) use realtime::broadcast_to_space;
 pub(crate) use storage::SyncStorage;
 
 #[derive(Clone)]

@@ -308,6 +308,8 @@ pub trait Storage: Send + Sync {
     ) -> Result<PushResult, StorageError>;
     async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError>;
 
+    /// Records file metadata and advances the space cursor.
+    /// Returns `Some(cursor)` when a new record is created, `None` when the file already exists (idempotent).
     async fn record_file(
         &self,
         space_id: Uuid,
@@ -315,7 +317,7 @@ pub trait Storage: Send + Sync {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
-    ) -> Result<(), StorageError>;
+    ) -> Result<Option<i64>, StorageError>;
     async fn get_file_metadata(
         &self,
         space_id: Uuid,

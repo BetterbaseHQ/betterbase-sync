@@ -13,7 +13,7 @@ use less_sync_auth::{
     compute_ucan_cid, parse_ucan, validate_chain, AuthContext, Permission, UcanError,
     ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
 };
-use less_sync_core::protocol::{ErrorResponse, Space};
+use less_sync_core::protocol::{ErrorResponse, Space, WsFileData, WsFileEntry};
 use less_sync_storage::{FileMetadata, StorageError};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
@@ -59,7 +59,7 @@ pub(crate) trait FileSyncStorage: Send + Sync {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
-    ) -> Result<(), StorageError>;
+    ) -> Result<Option<i64>, StorageError>;
     async fn get_file_metadata(
         &self,
         space_id: Uuid,
@@ -96,7 +96,7 @@ where
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<Option<i64>, StorageError> {
         less_sync_storage::Storage::record_file(
             self,
             space_id,
@@ -289,13 +289,37 @@ pub(crate) async fn put_file(
         return StatusCode::NO_CONTENT.into_response();
     }
 
-    match sync_storage
+    let cursor = match sync_storage
         .record_file(space_id, file_id, record_id, file_size, &wrapped_dek)
         .await
     {
-        Ok(()) => StatusCode::CREATED.into_response(),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Ok(Some(cursor)) => cursor,
+        Ok(None) => return StatusCode::NO_CONTENT.into_response(),
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    };
+
+    if let Some(broker) = state.realtime_broker() {
+        let space_hex = space_id.as_simple().to_string();
+        crate::ws::broadcast_to_space(
+            &broker,
+            &space_hex,
+            "file",
+            WsFileData {
+                space: space_hex.clone(),
+                cursor,
+                files: vec![WsFileEntry {
+                    id: file_id.to_string(),
+                    record_id: record_id.to_string(),
+                    size: file_size,
+                    wrapped_dek: Some(wrapped_dek),
+                    deleted: false,
+                }],
+            },
+        )
+        .await;
     }
+
+    StatusCode::CREATED.into_response()
 }
 
 pub(crate) async fn get_file(
@@ -774,19 +798,19 @@ mod tests {
             record_id: Uuid,
             size: i64,
             wrapped_dek: &[u8],
-        ) -> Result<(), StorageError> {
+        ) -> Result<Option<i64>, StorageError> {
             let metadata = FileMetadata {
                 id: file_id,
                 record_id,
                 size,
                 wrapped_dek: wrapped_dek.to_vec(),
-                cursor: 0,
+                cursor: 1,
             };
             self.metadata
                 .lock()
                 .expect("metadata lock")
                 .insert((space_id, file_id), metadata);
-            Ok(())
+            Ok(Some(1))
         }
 
         async fn get_file_metadata(

@@ -326,3 +326,23 @@ where
     #[serde(rename = "params")]
     params: T,
 }
+
+/// Broadcast a notification to all watchers of a space from outside a WebSocket session
+/// (e.g., from an HTTP handler). No sender is excluded.
+pub(crate) async fn broadcast_to_space<T: Serialize>(
+    broker: &MultiBroker,
+    space_id: &str,
+    method: &str,
+    params: T,
+) {
+    let frame = RpcNotificationFrame {
+        frame_type: RPC_NOTIFICATION,
+        method,
+        params,
+    };
+    let Ok(encoded) = minicbor_serde::to_vec(&frame) else {
+        tracing::error!(method, "failed to serialize broadcast notification frame");
+        return;
+    };
+    broker.broadcast_space(space_id, "", &encoded).await;
+}

@@ -528,7 +528,7 @@ impl PostgresStorage {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<Option<i64>, StorageError> {
         if wrapped_dek.len() != WRAPPED_DEK_LENGTH {
             return Err(StorageError::InvalidWrappedDek);
         }
@@ -575,13 +575,13 @@ impl PostgresStorage {
             tx.rollback()
                 .await
                 .map_err(|error| StorageError::Database(error.to_string()))?;
-            return Ok(());
+            return Ok(None);
         }
 
         tx.commit()
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
-        Ok(())
+        Ok(Some(new_cursor))
     }
 
     pub async fn get_file_metadata(
@@ -1645,7 +1645,7 @@ impl Storage for PostgresStorage {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<Option<i64>, StorageError> {
         PostgresStorage::record_file(self, space_id, file_id, record_id, size, wrapped_dek).await
     }
 
@@ -2450,10 +2450,12 @@ mod tests {
         let file_id = uuid::Uuid::new_v4();
         let wrapped_dek = wrapped_dek(0xfe);
 
-        storage
+        let cursor = storage
             .record_file(space_id, file_id, record_id, 100, &wrapped_dek)
             .await
-            .expect("record file");
+            .expect("record file")
+            .expect("should return cursor for new file");
+        assert!(cursor > 0);
         let metadata = storage
             .get_file_metadata(space_id, file_id)
             .await
@@ -2462,7 +2464,7 @@ mod tests {
         assert_eq!(metadata.record_id, record_id);
         assert_eq!(metadata.size, 100);
         assert_eq!(metadata.wrapped_dek, wrapped_dek);
-        assert!(metadata.cursor > 0);
+        assert_eq!(metadata.cursor, cursor);
 
         cleanup_space(&storage, space_id).await;
     }
@@ -2478,18 +2480,19 @@ mod tests {
         let file_id = uuid::Uuid::new_v4();
         let wrapped_dek = wrapped_dek(0xfe);
 
-        storage
+        let first_cursor = storage
             .record_file(space_id, file_id, record_id, 100, &wrapped_dek)
             .await
-            .expect("first record file");
-        let first_cursor = storage.get_space(space_id).await.expect("get space").cursor;
+            .expect("first record file")
+            .expect("should return cursor for new file");
 
-        storage
+        let second_result = storage
             .record_file(space_id, file_id, record_id, 100, &wrapped_dek)
             .await
             .expect("second record file");
-        let second_cursor = storage.get_space(space_id).await.expect("get space").cursor;
-        assert_eq!(second_cursor, first_cursor);
+        assert_eq!(second_result, None, "idempotent call should return None");
+        let space_cursor = storage.get_space(space_id).await.expect("get space").cursor;
+        assert_eq!(space_cursor, first_cursor, "cursor should not advance");
 
         cleanup_space(&storage, space_id).await;
     }
