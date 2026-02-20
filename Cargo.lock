@@ -1465,12 +1465,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "criterion",
+ "futures-util",
  "hmac",
  "less-sync-core",
  "sha2",
  "sqlx",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

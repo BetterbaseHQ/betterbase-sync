@@ -586,15 +586,31 @@ impl SyncStorage for StubSyncStorage {
         Ok(self.push_result.clone())
     }
 
-    async fn pull(
+    async fn stream_pull(
         &self,
         space_id: Uuid,
         _since: i64,
-    ) -> Result<less_sync_storage::PullResult, less_sync_storage::StorageError> {
+    ) -> Result<less_sync_storage::PullStream, less_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
             return Err(less_sync_storage::StorageError::Unavailable);
         }
-        Ok(self.pull_result.clone())
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let entries = self.pull_result.entries.clone();
+        tokio::spawn(async move {
+            for entry in entries {
+                if tx.send(Ok(entry)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(less_sync_storage::PullStream::new(
+            less_sync_storage::PullStreamMeta {
+                cursor: self.pull_result.cursor,
+                key_generation: self.create_key_generation,
+                rewrap_epoch: None,
+            },
+            rx,
+        ))
     }
 
     async fn append_member(

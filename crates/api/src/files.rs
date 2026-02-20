@@ -14,7 +14,10 @@ use less_sync_auth::{
     ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
 };
 use less_sync_core::protocol::{ErrorResponse, Space, WsFileData, WsFileEntry};
-use less_sync_storage::{FileMetadata, StorageError};
+use less_sync_storage::{
+    FileMetadata, FileStorage as FileStorageTrait, RecordStorage, RevocationStorage, SpaceStorage,
+    StorageError,
+};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutMode, PutOptions};
@@ -71,10 +74,10 @@ pub(crate) trait FileSyncStorage: Send + Sync {
 #[async_trait]
 impl<T> FileSyncStorage for T
 where
-    T: less_sync_storage::Storage + Send + Sync,
+    T: SpaceStorage + RecordStorage + FileStorageTrait + RevocationStorage + Send + Sync,
 {
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
-        less_sync_storage::Storage::get_space(self, space_id).await
+        SpaceStorage::get_space(self, space_id).await
     }
 
     async fn get_or_create_space(
@@ -82,11 +85,11 @@ where
         space_id: Uuid,
         client_id: &str,
     ) -> Result<Space, StorageError> {
-        less_sync_storage::Storage::get_or_create_space(self, space_id, client_id).await
+        SpaceStorage::get_or_create_space(self, space_id, client_id).await
     }
 
     async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError> {
-        less_sync_storage::Storage::record_exists(self, space_id, record_id).await
+        RecordStorage::record_exists(self, space_id, record_id).await
     }
 
     async fn record_file(
@@ -97,15 +100,7 @@ where
         size: i64,
         wrapped_dek: &[u8],
     ) -> Result<Option<i64>, StorageError> {
-        less_sync_storage::Storage::record_file(
-            self,
-            space_id,
-            file_id,
-            record_id,
-            size,
-            wrapped_dek,
-        )
-        .await
+        FileStorageTrait::record_file(self, space_id, file_id, record_id, size, wrapped_dek).await
     }
 
     async fn get_file_metadata(
@@ -113,11 +108,11 @@ where
         space_id: Uuid,
         file_id: Uuid,
     ) -> Result<FileMetadata, StorageError> {
-        less_sync_storage::Storage::get_file_metadata(self, space_id, file_id).await
+        FileStorageTrait::get_file_metadata(self, space_id, file_id).await
     }
 
     async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
-        less_sync_storage::Storage::is_revoked(self, space_id, ucan_cid).await
+        RevocationStorage::is_revoked(self, space_id, ucan_cid).await
     }
 }
 

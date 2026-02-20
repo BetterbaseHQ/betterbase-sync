@@ -410,7 +410,7 @@ pub(crate) async fn handle_notification(
                 handle_federation_rebroadcast(realtime, method, payload).await;
             }
             _ => {}
-        }
+        },
     }
 }
 

@@ -151,10 +151,7 @@ pub(super) async fn handle_request(
         Ok(result) => {
             // Record the rate-limit action after successful append.
             if let Some(hash) = &actor_hash {
-                if let Err(err) = sync_storage
-                    .record_action("membership_append", hash)
-                    .await
-                {
+                if let Err(err) = sync_storage.record_action("membership_append", hash).await {
                     tracing::error!(%err, "failed to record rate limit action");
                 }
             }

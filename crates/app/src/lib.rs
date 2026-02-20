@@ -11,10 +11,10 @@ use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use less_sync_core::protocol::{WsPresenceLeaveData, RPC_NOTIFICATION};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::{migrate_with_pool, PostgresStorage};
-use serde::Serialize;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
+use serde::Serialize;
 use url::Url;
 
 mod federation;
@@ -86,7 +86,8 @@ impl AppConfig {
             std::env::var("AUDIENCES").ok(),
         )?;
         config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
-        config.identity_hash_key = parse_identity_hash_key(std::env::var("IDENTITY_HASH_KEY").ok())?;
+        config.identity_hash_key =
+            parse_identity_hash_key(std::env::var("IDENTITY_HASH_KEY").ok())?;
         config.federation =
             federation::parse_federation_runtime_config(federation::FederationEnv::from_env())?;
         Ok(config)
@@ -282,8 +283,8 @@ fn parse_identity_hash_key(value: Option<String>) -> anyhow::Result<Option<Vec<u
     if raw.is_empty() {
         return Ok(None);
     }
-    let key = hex::decode(raw)
-        .map_err(|_| anyhow::anyhow!("IDENTITY_HASH_KEY must be valid hex"))?;
+    let key =
+        hex::decode(raw).map_err(|_| anyhow::anyhow!("IDENTITY_HASH_KEY must be valid hex"))?;
     if key.len() != 32 {
         return Err(anyhow::anyhow!(
             "IDENTITY_HASH_KEY must be 64 hex characters (32 bytes), got {} bytes",

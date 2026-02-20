@@ -7,11 +7,14 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+futures-util = "0.3"
 hmac.workspace = true
 less-sync-core = { path = "../core" }
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

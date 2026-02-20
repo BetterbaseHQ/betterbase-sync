@@ -4,7 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use less_sync_core::protocol::Change;
-use less_sync_storage::{migrate_with_pool, PostgresStorage};
+use less_sync_storage::{
+    migrate_with_pool, FileStorage, PostgresStorage, RecordStorage, SpaceStorage,
+};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
@@ -97,9 +99,12 @@ fn bench_postgres_pull_hot(c: &mut Criterion) {
             let storage = storage.clone();
             async move {
                 let result = storage
-                    .pull(space_id, 0)
+                    .stream_pull(space_id, 0)
                     .await
-                    .expect("pull should succeed");
+                    .expect("stream_pull should succeed")
+                    .collect()
+                    .await
+                    .expect("collect should succeed");
                 black_box(result.entries.len());
             }
         });
@@ -185,9 +190,12 @@ fn bench_postgres_pull_hot_file_heavy(c: &mut Criterion) {
             let storage = storage.clone();
             async move {
                 let result = storage
-                    .pull(space_id, 0)
+                    .stream_pull(space_id, 0)
                     .await
-                    .expect("pull should succeed");
+                    .expect("stream_pull should succeed")
+                    .collect()
+                    .await
+                    .expect("collect should succeed");
                 black_box(result.entries.len());
             }
         });

@@ -134,7 +134,7 @@ mod tests {
             CborValue::Null,
             CborValue::Bool(true),
             CborValue::Integer(42),
-            CborValue::Float(3.14),
+            CborValue::Float(1.234),
             CborValue::Text("hello".to_owned()),
             CborValue::Bytes(vec![1, 2, 3]),
         ];

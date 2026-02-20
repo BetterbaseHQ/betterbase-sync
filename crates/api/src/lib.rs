@@ -14,7 +14,7 @@ use axum::{
 use less_sync_auth::{AuthError, TokenValidator};
 use less_sync_core::protocol::ErrorResponse;
 use less_sync_realtime::broker::MultiBroker;
-use less_sync_storage::{Storage, StorageError};
+use less_sync_storage::{SpaceStorage, Storage, StorageError};
 use object_store::ObjectStore;
 use serde::Serialize;
 
@@ -45,10 +45,10 @@ pub trait HealthCheck: Send + Sync {
 #[async_trait]
 impl<T> HealthCheck for T
 where
-    T: Storage + Send + Sync,
+    T: SpaceStorage + Send + Sync,
 {
     async fn ping(&self) -> Result<(), StorageError> {
-        Storage::ping(self).await
+        SpaceStorage::ping(self).await
     }
 }
 

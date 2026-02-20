@@ -32,6 +32,10 @@ pub fn rate_limit_hash(key: &[u8], issuer: &str, user_id: &str) -> String {
     encoded
 }
 
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum StorageError {
     #[error("space not found")]
@@ -40,8 +44,6 @@ pub enum StorageError {
     SpaceExists,
     #[error("file not found")]
     FileNotFound,
-    #[error("UCAN already revoked")]
-    AlreadyRevoked,
     #[error("invitation not found")]
     InvitationNotFound,
     #[error("metadata version conflict")]
@@ -87,6 +89,10 @@ pub enum StorageError {
     #[error("DATABASE_URL is not set")]
     MissingDatabaseUrl,
 }
+
+// ---------------------------------------------------------------------------
+// Domain types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
@@ -176,6 +182,46 @@ pub struct PullStreamMeta {
     pub cursor: i64,
     pub key_generation: i32,
     pub rewrap_epoch: Option<i32>,
+}
+
+/// A streaming pull result. Entries are delivered one at a time via a channel
+/// from a background task that streams rows from the DB cursor — O(1) memory.
+#[derive(Debug)]
+pub struct PullStream {
+    pub meta: PullStreamMeta,
+    entries_rx: tokio::sync::mpsc::Receiver<Result<PullEntry, StorageError>>,
+}
+
+impl PullStream {
+    pub fn new(
+        meta: PullStreamMeta,
+        entries_rx: tokio::sync::mpsc::Receiver<Result<PullEntry, StorageError>>,
+    ) -> Self {
+        Self { meta, entries_rx }
+    }
+
+    /// Receive the next entry from the stream.
+    pub async fn next(&mut self) -> Option<Result<PullEntry, StorageError>> {
+        self.entries_rx.recv().await
+    }
+
+    /// Collect all entries into a `PullResult`. Useful for tests.
+    pub async fn collect(mut self) -> Result<PullResult, StorageError> {
+        let mut entries = Vec::new();
+        let mut record_count = 0;
+        while let Some(entry) = self.entries_rx.recv().await {
+            let entry = entry?;
+            if entry.kind == PullEntryKind::Record {
+                record_count += 1;
+            }
+            entries.push(entry);
+        }
+        Ok(PullResult {
+            entries,
+            record_count,
+            cursor: self.meta.cursor,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,10 +320,13 @@ pub struct DekRecord {
     pub cursor: i64,
 }
 
-#[async_trait]
-pub trait Storage: Send + Sync {
-    async fn ping(&self) -> Result<(), StorageError>;
+// ---------------------------------------------------------------------------
+// Domain-specific storage traits
+// ---------------------------------------------------------------------------
 
+#[async_trait]
+pub trait SpaceStorage: Send + Sync {
+    async fn ping(&self) -> Result<(), StorageError>;
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError>;
     async fn get_spaces(&self, space_ids: &[Uuid]) -> Result<HashMap<Uuid, Space>, StorageError>;
     async fn create_space(
@@ -291,15 +340,13 @@ pub trait Storage: Send + Sync {
         space_id: Uuid,
         client_id: &str,
     ) -> Result<Space, StorageError>;
+}
 
-    async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError>;
-    async fn stream_pull(
-        &self,
-        space_id: Uuid,
-        since: i64,
-        on_meta: &(dyn Fn(PullStreamMeta) -> Result<(), StorageError> + Send + Sync),
-        on_entry: &(dyn Fn(PullEntry) -> Result<(), StorageError> + Send + Sync),
-    ) -> Result<(), StorageError>;
+#[async_trait]
+pub trait RecordStorage: Send + Sync {
+    /// Stream pull entries from the DB cursor. Returns a `PullStream` that yields
+    /// entries one at a time via a channel — O(1) memory regardless of result size.
+    async fn stream_pull(&self, space_id: Uuid, since: i64) -> Result<PullStream, StorageError>;
     async fn push(
         &self,
         space_id: Uuid,
@@ -307,7 +354,10 @@ pub trait Storage: Send + Sync {
         opts: Option<&PushOptions>,
     ) -> Result<PushResult, StorageError>;
     async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError>;
+}
 
+#[async_trait]
+pub trait FileStorage: Send + Sync {
     /// Records file metadata and advances the space cursor.
     /// Returns `Some(cursor)` when a new record is created, `None` when the file already exists (idempotent).
     async fn record_file(
@@ -339,10 +389,17 @@ pub trait Storage: Send + Sync {
         space_id: Uuid,
         record_ids: &[Uuid],
     ) -> Result<Vec<Uuid>, StorageError>;
+}
 
+#[async_trait]
+pub trait RevocationStorage: Send + Sync {
     async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError>;
+    /// Revoke a UCAN by CID. Idempotent — revoking an already-revoked CID is a no-op.
     async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError>;
+}
 
+#[async_trait]
+pub trait InvitationStorage: Send + Sync {
     async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError>;
     async fn list_invitations(
         &self,
@@ -352,17 +409,11 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<Invitation>, StorageError>;
     async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError>;
     async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError>;
-
-    async fn count_recent_actions(
-        &self,
-        action: &str,
-        actor_hash: &str,
-        since: SystemTime,
-    ) -> Result<i64, StorageError>;
-    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError>;
-    async fn cleanup_expired_actions(&self, before: SystemTime) -> Result<i64, StorageError>;
     async fn purge_expired_invitations(&self) -> Result<i64, StorageError>;
+}
 
+#[async_trait]
+pub trait MembershipStorage: Send + Sync {
     async fn append_member(
         &self,
         space_id: Uuid,
@@ -374,7 +425,10 @@ pub trait Storage: Send + Sync {
         space_id: Uuid,
         since_seq: i32,
     ) -> Result<Vec<MembersLogEntry>, StorageError>;
+}
 
+#[async_trait]
+pub trait EpochStorage: Send + Sync {
     async fn advance_epoch(
         &self,
         space_id: Uuid,
@@ -384,14 +438,28 @@ pub trait Storage: Send + Sync {
     async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
     async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError>;
     async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError>;
+}
 
+#[async_trait]
+pub trait RateLimitStorage: Send + Sync {
+    async fn count_recent_actions(
+        &self,
+        action: &str,
+        actor_hash: &str,
+        since: SystemTime,
+    ) -> Result<i64, StorageError>;
+    async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError>;
+    async fn cleanup_expired_actions(&self, before: SystemTime) -> Result<i64, StorageError>;
+}
+
+#[async_trait]
+pub trait FederationStorage: Send + Sync {
     async fn get_space_home_server(&self, space_id: Uuid) -> Result<Option<String>, StorageError>;
     async fn set_space_home_server(
         &self,
         space_id: Uuid,
         home_server: &str,
     ) -> Result<(), StorageError>;
-
     async fn ensure_federation_key(
         &self,
         kid: &str,
@@ -405,9 +473,38 @@ pub trait Storage: Send + Sync {
         &self,
     ) -> Result<Option<FederationSigningKey>, StorageError>;
     async fn list_federation_public_keys(&self) -> Result<Vec<FederationKey>, StorageError>;
-
-    fn close(&self) -> Result<(), StorageError>;
 }
+
+/// Unified supertrait for code that needs access to all storage domains.
+pub trait Storage:
+    SpaceStorage
+    + RecordStorage
+    + FileStorage
+    + RevocationStorage
+    + InvitationStorage
+    + MembershipStorage
+    + EpochStorage
+    + RateLimitStorage
+    + FederationStorage
+{
+}
+
+impl<T> Storage for T where
+    T: SpaceStorage
+        + RecordStorage
+        + FileStorage
+        + RevocationStorage
+        + InvitationStorage
+        + MembershipStorage
+        + EpochStorage
+        + RateLimitStorage
+        + FederationStorage
+{
+}
+
+// ---------------------------------------------------------------------------
+// Migration helpers
+// ---------------------------------------------------------------------------
 
 pub async fn migrate() -> Result<(), StorageError> {
     let database_url =

@@ -477,8 +477,8 @@ pub(super) async fn handle_pull_request(
             continue;
         }
 
-        let pull_result = match sync_storage.pull(space_id, requested.since).await {
-            Ok(pull_result) => pull_result,
+        let mut pull_stream = match sync_storage.stream_pull(space_id, requested.since).await {
+            Ok(stream) => stream,
             Err(StorageError::SpaceNotFound) => continue,
             Err(_) => continue,
         };
@@ -490,19 +490,34 @@ pub(super) async fn handle_pull_request(
             &WsPullBeginData {
                 space: requested.id.clone(),
                 prev: requested.since,
-                cursor: pull_result.cursor,
-                key_generation: space_state.key_generation,
-                rewrap_epoch: space_state.rewrap_epoch,
+                cursor: pull_stream.meta.cursor,
+                key_generation: pull_stream.meta.key_generation,
+                rewrap_epoch: pull_stream.meta.rewrap_epoch,
             },
         )
         .await;
         chunk_count += 1;
 
-        for entry in &pull_result.entries {
-            if super::pull_send::send_pull_entry(outbound, id, &requested.id, entry).await {
-                chunk_count += 1;
-                entry_count += 1;
+        let mut stream_error = false;
+        while let Some(entry) = pull_stream.next().await {
+            match entry {
+                Ok(entry) => {
+                    if super::pull_send::send_pull_entry(outbound, id, &requested.id, &entry).await
+                    {
+                        chunk_count += 1;
+                        entry_count += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, space = %requested.id, "pull stream error");
+                    stream_error = true;
+                    break;
+                }
             }
+        }
+
+        if stream_error {
+            continue;
         }
 
         send_chunk_response(
@@ -512,7 +527,7 @@ pub(super) async fn handle_pull_request(
             &WsPullCommitData {
                 space: requested.id.clone(),
                 prev: requested.since,
-                cursor: pull_result.cursor,
+                cursor: pull_stream.meta.cursor,
                 count: entry_count,
             },
         )

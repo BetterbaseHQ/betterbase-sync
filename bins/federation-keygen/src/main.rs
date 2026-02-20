@@ -7,7 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use less_sync_auth::canonicalize_domain;
-use less_sync_storage::PostgresStorage;
+use less_sync_storage::{FederationStorage, PostgresStorage};
 use rand_core::OsRng;
 
 #[tokio::main]
@@ -153,7 +153,7 @@ mod tests {
 
     use super::{parse_args, run, KeygenConfig};
     use ed25519_dalek::SigningKey;
-    use less_sync_storage::{migrate_with_pool, PostgresStorage};
+    use less_sync_storage::{migrate_with_pool, FederationStorage, PostgresStorage};
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
     #[test]

@@ -4,8 +4,10 @@ use less_sync_core::protocol::Space;
 use std::time::SystemTime;
 
 use less_sync_storage::{
-    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, FileDekRecord, Invitation,
-    MembersLogEntry, PullResult, PushResult, Storage, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochStorage,
+    FileDekRecord, FileStorage as FileStorageTrait, Invitation, InvitationStorage, MembersLogEntry,
+    MembershipStorage, PullStream, PushResult, RateLimitStorage, RecordStorage, RevocationStorage,
+    SpaceStorage, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -35,7 +37,7 @@ pub(crate) trait SyncStorage: Send + Sync {
 
     async fn push(&self, space_id: Uuid, changes: &[Change]) -> Result<PushResult, StorageError>;
 
-    async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError>;
+    async fn stream_pull(&self, space_id: Uuid, since: i64) -> Result<PullStream, StorageError>;
 
     async fn append_member(
         &self,
@@ -107,7 +109,7 @@ where
     T: Storage + Send + Sync,
 {
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
-        Storage::get_space(self, space_id).await
+        SpaceStorage::get_space(self, space_id).await
     }
 
     async fn create_space(
@@ -116,7 +118,7 @@ where
         client_id: &str,
         root_public_key: Option<&[u8]>,
     ) -> Result<Space, StorageError> {
-        Storage::create_space(self, space_id, client_id, root_public_key).await
+        SpaceStorage::create_space(self, space_id, client_id, root_public_key).await
     }
 
     async fn get_or_create_space(
@@ -124,7 +126,7 @@ where
         space_id: Uuid,
         client_id: &str,
     ) -> Result<SubscribedSpaceState, StorageError> {
-        let space = Storage::get_or_create_space(self, space_id, client_id).await?;
+        let space = SpaceStorage::get_or_create_space(self, space_id, client_id).await?;
         Ok(SubscribedSpaceState {
             cursor: space.cursor,
             key_generation: space.key_generation,
@@ -134,11 +136,11 @@ where
     }
 
     async fn push(&self, space_id: Uuid, changes: &[Change]) -> Result<PushResult, StorageError> {
-        Storage::push(self, space_id, changes, None).await
+        RecordStorage::push(self, space_id, changes, None).await
     }
 
-    async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError> {
-        Storage::pull(self, space_id, since).await
+    async fn stream_pull(&self, space_id: Uuid, since: i64) -> Result<PullStream, StorageError> {
+        RecordStorage::stream_pull(self, space_id, since).await
     }
 
     async fn append_member(
@@ -147,7 +149,7 @@ where
         expected_version: i32,
         entry: &MembersLogEntry,
     ) -> Result<AppendLogResult, StorageError> {
-        Storage::append_member(self, space_id, expected_version, entry).await
+        MembershipStorage::append_member(self, space_id, expected_version, entry).await
     }
 
     async fn get_members(
@@ -155,19 +157,19 @@ where
         space_id: Uuid,
         since_seq: i32,
     ) -> Result<Vec<MembersLogEntry>, StorageError> {
-        Storage::get_members(self, space_id, since_seq).await
+        MembershipStorage::get_members(self, space_id, since_seq).await
     }
 
     async fn revoke_ucan(&self, space_id: Uuid, ucan_cid: &str) -> Result<(), StorageError> {
-        Storage::revoke_ucan(self, space_id, ucan_cid).await
+        RevocationStorage::revoke_ucan(self, space_id, ucan_cid).await
     }
 
     async fn is_revoked(&self, space_id: Uuid, ucan_cid: &str) -> Result<bool, StorageError> {
-        Storage::is_revoked(self, space_id, ucan_cid).await
+        RevocationStorage::is_revoked(self, space_id, ucan_cid).await
     }
 
     async fn create_invitation(&self, invitation: &Invitation) -> Result<Invitation, StorageError> {
-        Storage::create_invitation(self, invitation).await
+        InvitationStorage::create_invitation(self, invitation).await
     }
 
     async fn list_invitations(
@@ -176,15 +178,15 @@ where
         limit: usize,
         after: Option<Uuid>,
     ) -> Result<Vec<Invitation>, StorageError> {
-        Storage::list_invitations(self, mailbox_id, limit, after).await
+        InvitationStorage::list_invitations(self, mailbox_id, limit, after).await
     }
 
     async fn get_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<Invitation, StorageError> {
-        Storage::get_invitation(self, id, mailbox_id).await
+        InvitationStorage::get_invitation(self, id, mailbox_id).await
     }
 
     async fn delete_invitation(&self, id: Uuid, mailbox_id: &str) -> Result<(), StorageError> {
-        Storage::delete_invitation(self, id, mailbox_id).await
+        InvitationStorage::delete_invitation(self, id, mailbox_id).await
     }
 
     async fn advance_epoch(
@@ -193,19 +195,19 @@ where
         requested_epoch: i32,
         opts: Option<&AdvanceEpochOptions>,
     ) -> Result<AdvanceEpochResult, StorageError> {
-        Storage::advance_epoch(self, space_id, requested_epoch, opts).await
+        EpochStorage::advance_epoch(self, space_id, requested_epoch, opts).await
     }
 
     async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
-        Storage::complete_rewrap(self, space_id, epoch).await
+        EpochStorage::complete_rewrap(self, space_id, epoch).await
     }
 
     async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError> {
-        Storage::get_deks(self, space_id, since).await
+        EpochStorage::get_deks(self, space_id, since).await
     }
 
     async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError> {
-        Storage::rewrap_deks(self, space_id, deks).await
+        EpochStorage::rewrap_deks(self, space_id, deks).await
     }
 
     async fn get_file_deks(
@@ -213,7 +215,7 @@ where
         space_id: Uuid,
         since: i64,
     ) -> Result<Vec<FileDekRecord>, StorageError> {
-        Storage::get_file_deks(self, space_id, since).await
+        FileStorageTrait::get_file_deks(self, space_id, since).await
     }
 
     async fn rewrap_file_deks(
@@ -221,7 +223,7 @@ where
         space_id: Uuid,
         deks: &[FileDekRecord],
     ) -> Result<(), StorageError> {
-        Storage::rewrap_file_deks(self, space_id, deks).await
+        FileStorageTrait::rewrap_file_deks(self, space_id, deks).await
     }
 
     async fn count_recent_actions(
@@ -230,10 +232,10 @@ where
         actor_hash: &str,
         since: SystemTime,
     ) -> Result<i64, StorageError> {
-        Storage::count_recent_actions(self, action, actor_hash, since).await
+        RateLimitStorage::count_recent_actions(self, action, actor_hash, since).await
     }
 
     async fn record_action(&self, action: &str, actor_hash: &str) -> Result<(), StorageError> {
-        Storage::record_action(self, action, actor_hash).await
+        RateLimitStorage::record_action(self, action, actor_hash).await
     }
 }

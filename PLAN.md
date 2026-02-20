@@ -1,302 +1,241 @@
-# less-sync-rs Port Plan
+# less-sync-rs Improvement Plan
 
-## Scope
-- Port `less-sync` (Go) to Rust with Tokio as the runtime for all async/server paths.
-- Use the existing `less-sync` code and its local test suite as the primary compatibility oracle.
-- Focus exclusively on local tests in this plan (external e2e exists but is intentionally out of scope here).
+The port is complete. This plan is about making the codebase excellent.
 
-## Success Criteria
-1. Rust server is behaviorally compatible with the Go server for all locally tested features.
-2. Rust codebase is clear, modular, and maintainable enough to serve as the template for future Rust services.
-3. Test rigor is at least as strong as today, with explicit coverage gates and no merge without tests.
-4. Tokio concurrency model is used consistently across networking, background tasks, and async I/O.
+## 1. Split the Storage Trait
 
-## Current Snapshot (2026-02-19)
-- Latest commit: `9d609d3` (`Add storage-backed federation runtime and keygen integration coverage`).
-- Workspace shape: `6` crates (`core`, `auth`, `storage`, `realtime`, `api`, `app`) and `3` bins (`server`, `migrate`, `federation-keygen`).
-- Rust local test totals (all features): `342` tests passing.
-1. `less-sync-api`: `143`
-2. `less-sync-app`: `24`
-3. `less-sync-auth`: `78`
-4. `less-sync-core`: `29`
-5. `less-sync-realtime`: `17`
-6. `less-sync-storage`: `45`
-7. `less-sync-federation-keygen`: `6`
-- Federation progress in working tree:
-1. Federation quotas landed for connection/session, subscribe-space limits, and push record/byte rolling windows.
-2. Federation HTTP surfaces landed for `/.well-known/jwks.json`, `/api/v1/federation/trusted`, and `/api/v1/federation/status/{domain}`.
-  - Includes JWKS cache headers and trusted-peer gating on status route when allowlists are configured.
-3. App runtime now parses federation env config and wires authenticator/FST keys/JWKS metadata into `ApiState`.
-4. `federation-keygen` now generates Ed25519 keys, emits trust entries, and can persist key material to Postgres.
-5. Outbound federation peer manager now exists as a dedicated `federation_client` module with signed WS dialing, chunk-aware `pull`, per-peer token tracking, reconnect retry-once handling, and subscription restore support.
-6. Runtime forwarding is now wired for client `push` on remote-home spaces and `invitation.create` with `server` targeting trusted federation peers.
-7. Federation client tests now cover pull chunk collection, reconnect retry behavior, and restore-subscriptions token replay in addition to existing forwarding and token persistence coverage.
-8. Federation signing keys now support explicit lifecycle state (active/primary), key promotion, and deactivation, with runtime loading the active primary key and keygen supporting `--no-promote` for staged rollover.
-9. Client websocket flows now federate remote-home `subscribe` calls, and remote-home `push` now attempts subscription restoration plus a retry after transient forwarding failure.
-10. App runtime federation wiring now has storage-backed integration coverage for empty key state, active-primary selection with JWKS publication, and mismatched keypair rejection.
-11. Federation keygen now has storage-backed operator workflow tests for promote-by-default rotation and staged `--no-promote` rollout behavior.
-12. Client websocket `pull` now forwards remote-home spaces through the federation forwarder and streams returned chunk frames back to clients.
-13. Websocket tests now cover remote-home `subscribe` forward failure isolation (local spaces continue) and remote-home `pull` forwarding/failure behavior.
-- Quality gate status: green for `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
-- Detailed implementation inventory is tracked in `STATUS.md`.
+The `Storage` trait has 40+ methods spanning every domain. Split into focused, composable traits so handlers bound only on what they need.
 
-## Phase Status
-1. Phase 0 (foundation/tooling): complete.
-2. Phase 1 (core protocol/ids/validation): complete.
-3. Phase 2 (auth/crypto primitives): complete.
-4. Phase 3 (storage + Postgres): complete for current local parity scope.
-5. Phase 4 (WebSocket transport + broker): complete.
-6. Phase 5 (core server features, non-federation): complete for currently ported local-test scope.
-7. Phase 6 (federation): complete for current local parity scope.
-8. Phase 7 (bench/perf/polish): partial (binaries exist; benchmark parity not ported).
+### Target traits
 
-## Baseline Inventory (Current Go Project)
-- Test surface: `53` local test files, `467` tests, `20` benchmarks.
-- Test distribution:
-1. `server/*_test.go`: `235` tests (WebSocket/RPC/API/federation behavior).
-2. `server/auth/*_test.go`: `94` tests (JWT, UCAN, did:key, sessions, HTTP signatures, federation tokens/JWKS).
-3. `storage/*_test.go` + `storage/files/*_test.go`: `113` tests (Postgres semantics, file metadata/storage).
-4. `protocol/*_test.go`: `20` tests (CBOR/JSON protocol roundtrips).
-5. `spaceid/*_test.go`: `5` tests (deterministic ID vectors).
-- Storage schema: `12` SQL migrations in `storage/migrations/`.
-- Current local harness patterns:
-1. Postgres via testcontainers (`postgres:18-alpine`), shared container per package via `TestMain`.
-2. Real JWT/JWKS and UCAN test helpers in `internal/testutil`.
-3. No DB mocks for core storage behavior.
-
-## Architecture Audit (Do Not Inherit)
-1. Avoid large mixed-responsibility modules:
-- Current Go has very large files (`server/events.go`, `server/rpcconn.go`, `storage/postgres.go`).
-- Rust target: small focused modules with clear ownership boundaries.
-2. Avoid mutable process globals for runtime behavior:
-- Current Go mutates package globals (for example max sizes).
-- Rust target: immutable typed `Config` passed through dependency graph.
-3. Avoid untyped context bags for auth/connection state:
-- Current Go relies heavily on `context.WithValue`.
-- Rust target: typed extractors and typed per-connection state objects.
-4. Avoid panic-based internal control in runtime paths:
-- Current Go has several panic guards in reusable components.
-- Rust target: return typed errors; panic only for unrecoverable startup invariants.
-5. Avoid generic map payloads in protocol internals:
-- Current Go uses `map[string]any` in several frame/result paths.
-- Rust target: strongly typed frame/result structs and enums.
-6. Avoid hard coupling of federation and core sync paths:
-- Rust target: federation module isolated behind explicit interfaces and feature flags.
-
-## Non-Negotiable Behavioral Contracts To Preserve
-1. WebSocket protocol:
-- Subprotocol `less-rpc-v1`.
-- First frame must be `auth` notification within timeout.
-- Close-code behavior for auth/protocol/rate/slow-consumer paths.
-- Keepalive and bounded buffering/backpressure semantics.
-2. Authorization model:
-- JWT validation via per-issuer JWKS.
-- Personal-space deterministic IDs and auto-create semantics.
-- Shared-space UCAN chain validation and revocation checks.
-3. Data model and cursor semantics:
-- Unified cursor ordering across records/members/files.
-- Push conflict behavior and tombstone/file cleanup semantics.
-- Epoch/rewrap invariants and DEK handling rules.
-4. API contracts:
-- RPC method names, frame shapes, and error codes.
-- HTTP file endpoint header contracts (`X-Wrapped-DEK`, `X-Record-ID`, scopes).
-
-## Target Rust Architecture
-
-### Workspace layout
-```text
-less-sync-rs/
-  Cargo.toml                    # workspace + shared lint/tool config
-  crates/
-    core/                       # protocol types, ids, validation, shared errors
-    auth/                       # JWT/JWKS, UCAN, did:key, session/FST, HTTPSig
-    storage/                    # storage traits + sqlx Postgres adapter + migrations
-    realtime/                   # WS transport, RPC conn state machine, broker/presence
-    api/                        # HTTP middleware/routes + handler adapters
-    app/                        # composition root, config loading, task supervision
-  bins/
-    server/                     # runtime bootstrap + graceful shutdown
-    migrate/                    # migration CLI
-    federation-keygen/          # federation key bootstrap CLI
+```
+SpaceStorage       — get_space, create_space, get_or_create_space, update_space_metadata
+RecordStorage      — push, pull, stream_pull, record_exists, delete_records
+FileStorage        — record_file, get_file_metadata, file_exists, get_file_deks, rewrap_file_deks, delete_files_for_records
+MembershipStorage  — append_member, list_members, get_membership_since
+InvitationStorage  — create_invitation, get_invitation, list_invitations, delete_invitation
+EpochStorage       — advance_epoch, complete_rewrap, get_epoch_state
+RevocationStorage  — revoke_ucan, is_revoked
+RateLimitStorage   — count_recent_actions, record_action
+FederationStorage  — federation key lifecycle methods
 ```
 
-### Organization rules (ideal-state guardrails)
-1. Do not mirror Go package boundaries 1:1.
-2. Keep core crates runtime-agnostic where possible (`core`, most of `auth` parsing/validation logic).
-3. Keep Tokio and networking details confined to `realtime`/`api`/`app`.
-4. Keep file size targets strict:
-- target <= 300 lines per source file
-- hard review threshold at 500 lines
-5. Define one boundary module per direction:
-- inbound mapping (HTTP/WS -> domain commands)
-- outbound mapping (domain results/errors -> protocol responses)
-6. Keep federation in separate modules and behind `federation` feature flags until parity is complete.
+### Unified supertrait for convenience
 
-### Tokio-first stack (recommended)
-1. `tokio` for runtime, tasks, channels, timers.
-2. `axum`/`hyper` for HTTP routes and middleware.
-3. `tokio-tungstenite` (or equivalent low-level WS control) for strict WS frame handling.
-4. `sqlx` for Postgres (`query!`/typed row mapping).
-5. `tracing` + `tracing-subscriber` for structured logs.
-6. `thiserror` for domain errors and `anyhow` only at binary boundaries.
-7. `minicbor` (or equally strict CBOR crate) with explicit decode limits.
+```rust
+pub trait Storage:
+    SpaceStorage + RecordStorage + FileStorage + MembershipStorage +
+    InvitationStorage + EpochStorage + RevocationStorage +
+    RateLimitStorage + FederationStorage {}
 
-## Layered Port Roadmap
+impl<T> Storage for T where T:
+    SpaceStorage + RecordStorage + FileStorage + MembershipStorage +
+    InvitationStorage + EpochStorage + RevocationStorage +
+    RateLimitStorage + FederationStorage {}
+```
 
-### Phase 0: Foundation and quality gates
-1. Create Cargo workspace and crate skeleton above.
-2. Add CI/local gates:
-- `cargo fmt --all --check`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --all-features`
-3. Add baseline lint policy:
-- `#![forbid(unsafe_code)]` by default.
-- deny `unwrap`/`expect` outside tests.
-- explicit `Send + Sync` constraints on shared async state.
-4. Build `test-support` utilities (Postgres container manager, JWT/JWKS helpers, WS test helpers).
-5. Add architecture conformance checks:
-- deny use of `std::sync::Mutex` in async request paths (prefer Tokio primitives or lock-free patterns where needed)
-- deny direct `panic!` in non-test library code via lint policy/review gate
-- enforce crate visibility discipline (`pub(crate)` by default)
+`PostgresStorage` implements all sub-traits. The blanket impl means it automatically satisfies `Storage`. Code that needs everything can still bound on `Storage`.
 
-Exit criteria:
-- Workspace compiles, tooling is green, empty scaffolds testable.
+## 2. Split postgres.rs into Modules
 
-### Phase 1: Pure protocol and deterministic primitives
-1. Port `spaceid` logic and vectors first.
-2. Port `protocol` types/constants/error codes and CBOR/JSON roundtrip behavior.
-3. Port validation helpers (record IDs, file IDs, size limits).
+Currently one 4000+ line file. Mirror the trait split:
 
-Exit criteria:
-- Rust equivalents of `spaceid/*_test.go` and `protocol/*_test.go` pass.
+```
+storage/
+├── lib.rs                # Trait definitions, error types, common types
+├── postgres/
+│   ├── mod.rs            # PostgresStorage struct, pool, migration runner
+│   ├── spaces.rs         # SpaceStorage impl
+│   ├── records.rs        # RecordStorage impl
+│   ├── files.rs          # FileStorage impl
+│   ├── membership.rs     # MembershipStorage impl
+│   ├── invitations.rs    # InvitationStorage impl
+│   ├── epochs.rs         # EpochStorage impl
+│   ├── revocation.rs     # RevocationStorage impl
+│   ├── rate_limit.rs     # RateLimitStorage impl
+│   └── federation.rs     # FederationStorage impl
+```
 
-### Phase 2: Auth and crypto domain
-1. JWT multi-issuer validator + JWKS caching semantics.
-2. UCAN parse/chain validation with depth/attenuation/revocation logic.
-3. did:key encode/decode and compressed P-256 handling.
-4. Session token and federation token/HTTP signature primitives.
+Each file: 200-400 lines. Tests live next to the impl they cover.
 
-Exit criteria:
-- Rust equivalents of `server/auth/*_test.go` pass.
+## 3. Split ws/tests.rs and Extract Test Helpers
 
-### Phase 3: Storage contract and Postgres implementation
-1. Define Rust `Storage` trait mirroring current contract.
-2. Reuse existing SQL migration files and preserve schema compatibility.
-3. Implement Postgres storage methods with transaction isolation matching Go behavior.
-4. Implement file metadata, invitations, rate limits, revocations, epoch/DEK, federation key persistence.
-5. Port storage race/concurrency tests.
+6,385 lines in one test file. Split by feature area and extract shared infrastructure.
 
-Exit criteria:
-- Rust equivalents of `storage/*_test.go` and `storage/files/*_test.go` pass.
+### Test helper module
 
-### Phase 4: Transport core (RPC + WebSocket + broker)
-1. Implement RPC frame parsing/dispatch, chunk streaming, pending-call tracking.
-2. Implement WebSocket connection lifecycle:
-- auth-first handshake
-- keepalive
-- read limits
-- slow-consumer handling
-3. Implement broker fanout, connection limits, presence/events, cleanup loops.
+```
+api/src/ws/
+├── test_support/
+│   ├── mod.rs            # Re-exports
+│   ├── server.rs         # spawn_server, ServerHandle
+│   ├── stubs.rs          # StubSyncStorage, StubValidator, StubHealth
+│   ├── frames.rs         # send_rpc_request, read_result_response, etc.
+│   └── builders.rs       # base_state, with_federation_auth, etc.
+```
 
-Exit criteria:
-- Rust equivalents of `server/rpcconn_test.go`, `server/wsconn_test.go`, `server/ws_protocol_test.go`, and broker-related tests pass.
+### Split tests by domain
 
-### Phase 5: Core server features (non-federation)
-1. Route wiring and middleware.
-2. RPC handlers:
-- `subscribe`, `push`, `pull`, `token.refresh`
-- `space.create`
-- `membership.*`
-- `invitation.*`
-- `epoch.*`
-- `deks.*`
-- `presence.*`, `event.send`
-3. HTTP file handlers (`PUT/GET/HEAD`) with exact scope/header behavior.
-4. Background jobs (`StartPurge`, presence cleanup), graceful shutdown.
+```
+api/src/ws/tests/
+├── auth.rs               # Auth handshake, token refresh, expiry
+├── push_pull.rs          # Push, pull, subscribe, cursor semantics
+├── membership.rs         # Membership append, list, revoke
+├── invitation.rs         # Invitation CRUD
+├── epoch.rs              # Epoch begin, complete, DEK rewrap
+├── files.rs              # File DEK get/rewrap via WS
+├── federation.rs         # Federation subscribe, push, pull, quotas
+├── presence.rs           # Presence join, leave, events
+└── protocol.rs           # Frame parsing, keepalive, close codes
+```
 
-Exit criteria:
-- Rust equivalents of non-federation server tests pass (`server/ws_test.go`, `server/rpc_*_test.go`, `server/files_test.go`, `server/server_test.go`, `server/middleware_test.go`).
+When `StubSyncStorage` is split along the trait boundaries (phase 1), each stub becomes 3-5 fields instead of 20+.
 
-### Phase 6: Federation feature set
-1. Federation WS auth (HTTP signatures + peer key lookup).
-2. Federation RPC handlers and forwarding paths.
-3. Peer manager, trust store, quotas, federation HTTP endpoints.
-4. Federation key bootstrapping and JWKS publication.
+## 4. Automated PostgreSQL for Tests
 
-Exit criteria:
-- Rust equivalents of federation tests pass (`server/federation*_test.go`).
+Storage tests currently skip when `DATABASE_URL` isn't set. Fix this so `cargo test` works on any machine with Docker.
 
-### Phase 7: Binaries, performance, and polish
-1. Implement binaries matching Go commands:
-- `server`
-- `migrate`
-- `federation-keygen`
-- perf entrypoints (if retained)
-2. Port/replace benchmark coverage for key hot paths.
-3. Final API/documentation cleanup.
+### Approach: testcontainers-rs
 
-Exit criteria:
-- Rust binary behavior and benchmark harnesses are functional locally.
+Add a dev-dependency on `testcontainers` with the Postgres module. Create a shared test harness:
 
-## Test Strategy and Gates
+```rust
+// crates/storage/src/test_support.rs
+pub async fn test_database() -> (PostgresStorage, Container) {
+    // If DATABASE_URL is set, use it (CI with a service container)
+    // Otherwise, start postgres:18-alpine via testcontainers
+    // Run migrations
+    // Return storage + container handle (container drops when test ends)
+}
+```
 
-### Porting strategy
-1. Treat existing Go tests as executable specs; port them module by module.
-2. Preserve test names and scenario intent where practical for traceability.
-3. Prefer integration tests for behavior and small unit tests for pure logic.
+### Container reuse
 
-### Coverage gates
-1. Use `cargo llvm-cov` in CI.
-2. Suggested minimums:
-- `protocol`, `spaceid`, `auth`: >= `90%`
-- `storage`, `app/rpc/broker`: >= `85%`
-- federation modules: >= `80%`
-3. No new public behavior without at least one failing-then-passing test.
+Use `testcontainers`' `reuse` feature so the container persists across test runs during local development. First run: ~2s startup. Subsequent runs: instant.
 
-### Runtime test requirements
-1. Postgres container required for storage/server integration tests.
-2. MinIO-based S3 integration tests are optional and can be added as a targeted smoke suite.
-3. Test helpers should keep same ergonomics as current Go `internal/testutil`.
+### Per-test isolation
 
-## Immediate Execution Plan
-1. Start Phase 7 by defining benchmark parity targets for pull/push hot paths and broker fanout.
-2. Add optional MinIO-backed S3 smoke tests to validate end-to-end object-store behavior beyond config/builder coverage.
-3. Tighten operational docs for federation key rotation/deactivation rollout and recovery playbooks.
+Each test gets its own schema (already the pattern in existing tests). No test pollution, full parallelism.
 
-## Rust Best-Practice Standards (Template for Future Projects)
-1. Clear crate boundaries with narrow public APIs.
-2. Strong typing for IDs and protocol enums (avoid stringly-typed internals).
-3. Structured error enums per crate; avoid opaque error strings in core logic.
-4. Zero shared mutable state without synchronization strategy and ownership clarity.
-5. Bounded channels and explicit backpressure/cancellation in every long-lived async path.
-6. `tracing` spans on request, connection, and storage transaction boundaries.
-7. Keep migrations and storage queries explicit and reviewable.
-8. Keep unsafe forbidden unless a documented, benchmarked justification exists.
+### Benefits
 
-## Delivery Plan
-1. Land in small, reviewable PRs by phase.
-2. Each phase must be independently green on lint + tests before continuing.
-3. Federation is intentionally later-phase to avoid blocking core sync correctness.
-4. Final cutover requires all local Rust parity tests passing and Go parity checks complete.
+- `cargo test` works anywhere Docker runs — no manual Postgres setup
+- CI never skips storage tests
+- Tests use real SQL, real constraints, real query plans
+- No in-memory fakes that drift from real Postgres behavior
 
-## Commit Discipline
-1. Commit as we go:
-- Do not batch large multi-phase changes into one commit.
-- Make small, coherent commits that each leave the tree in a valid state.
-2. No milestone cruft in commit subjects:
-- Do not include labels like `Phase 1`, `Milestone`, `Step N`, `WIP`, or `checkpoint`.
-- Subject lines must describe the concrete behavior or code change.
-3. Subject line rules:
-- Imperative mood (`Add`, `Refactor`, `Fix`, `Enforce`, `Port`).
-- Clean and descriptive, scoped to what changed.
-4. Message body rules:
-- Brief bullets for what changed and why when context is useful.
-- Avoid implementation noise and progress narration.
-5. Preferred examples:
-- `Port UCAN chain validation with depth and attenuation checks`
-- `Add websocket auth-first handshake timeout and close-code tests`
-- `Refactor broker presence cleanup into bounded async tasks`
-6. Avoid examples:
-- `Phase 2 milestone progress`
-- `Milestone checkpoint`
-- `WIP port work`
+## 5. Preserve Error Context
+
+Replace `.map_err(|e| StorageError::Database(e.to_string()))` with proper error chains.
+
+### Use thiserror with #[source]
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("space not found")]
+    SpaceNotFound,
+    #[error("database error")]
+    Database(#[source] sqlx::Error),
+    #[error("invalid wrapped DEK")]
+    InvalidWrappedDek,
+    // ...
+}
+```
+
+`tracing::error!(%err)` gives the full chain. Pattern matching still works at the domain level. Debugging a constraint violation at 3am becomes possible.
+
+### Add structured tracing spans to RPC handlers
+
+```rust
+async fn handle_push(/* ... */) {
+    let _span = tracing::info_span!("rpc", method = "push", %space_id).entered();
+    // ...
+}
+```
+
+Correlate a slow push with its storage query. See which space is hot. Trace a request end-to-end.
+
+## 6. Property-Based Tests
+
+Add `proptest` for protocol invariants that are hard to cover exhaustively by hand.
+
+### Candidates
+
+- **CBOR round-trips**: Arbitrary RPC frames encode then decode to the same value
+- **Cursor ordering**: Push N records in any order, pull returns monotonically increasing cursors
+- **Push idempotency**: Push the same changes twice, second push doesn't advance cursor
+- **UCAN chain validation**: Arbitrary valid chains pass; chains with any single invalid link fail
+- **Membership hash chain**: Arbitrary append sequence produces valid chain; any mutation breaks it
+
+### Where they live
+
+Property tests go alongside unit tests in the same modules. They're just another way to exercise the same code — but they find the edge cases you don't think to write by hand.
+
+## 7. Observability
+
+### Metrics
+
+```
+rpc.requests{method}           — counter per RPC method
+rpc.duration_ms{method}        — histogram per RPC method
+ws.connections                 — gauge of active WebSocket connections
+broker.spaces_watched          — gauge of spaces with subscribers
+storage.push.records           — counter of records pushed
+storage.pull.records           — counter of records pulled
+federation.connections{peer}   — gauge per federation peer
+```
+
+### Health check
+
+Expand beyond "can I reach Postgres" to include:
+- Database pool utilization
+- Broker subscriber count
+- Federation peer connection status
+
+When a client reports "sync is slow," you want to see: is it push latency? Pull latency? Broker fanout? Connection churn?
+
+## 8. Split Federation into Its Own Crate
+
+`crates/api` currently contains three different network boundaries: inbound WS, inbound HTTP, and outbound WS (federation client). The federation client initiates connections to peers — it's fundamentally different from request handling.
+
+### Target structure
+
+```
+crates/
+├── core/          # Protocol types (unchanged)
+├── auth/          # Identity & authz (unchanged)
+├── storage/       # Persistence (split per phase 2)
+├── realtime/      # Pub/sub broker (unchanged)
+├── api/           # Inbound: WS handlers + HTTP file handlers
+├── federation/    # Outbound: peer manager, forwarding, quota, HTTP metadata
+└── app/           # Wiring & config (unchanged)
+```
+
+Lower priority — do when federation is actively being worked on.
+
+## 9. Graceful Shutdown
+
+1. Stop accepting new connections
+2. Stop accepting new WebSocket upgrades
+3. Wait for in-flight RPC requests to complete (with timeout)
+4. Send close frames to all connected clients
+5. Drain the broker
+6. Close the database pool
+
+Axum supports this via `axum::serve(...).with_graceful_shutdown(signal)`. The broker needs a `drain()` method. This is the difference between "works" and "safe to deploy with zero-downtime rolling updates."
+
+---
+
+## Execution Order
+
+| Phase | Work | Why this order |
+|-------|------|----------------|
+| **1** | Split Storage trait + postgres.rs | Structural foundation — everything else gets easier |
+| **2** | Split ws/tests.rs + extract test helpers | Tests are documentation — make them findable |
+| **3** | Automated Postgres via testcontainers | `cargo test` works everywhere, no tests skipped |
+| **4** | Error context (thiserror + tracing spans) | Debug-ability is a feature |
+| **5** | Property-based tests | Find the bugs you didn't think to look for |
+| **6** | Observability (metrics + health) | Can't improve what you can't measure |
+| **7** | Split federation into its own crate | Cleaner boundaries, do when touching federation |
+| **8** | Graceful shutdown | Last mile to production-grade |
