@@ -228,8 +228,6 @@ mod tests {
             .await
             .expect_err("missing space set should fail");
         assert_eq!(missing_set, StorageError::SpaceNotFound);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]

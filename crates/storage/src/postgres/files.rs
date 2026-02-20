@@ -266,8 +266,6 @@ mod tests {
         assert_eq!(metadata.size, 100);
         assert_eq!(metadata.wrapped_dek, dek);
         assert_eq!(metadata.cursor, cursor);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -294,8 +292,6 @@ mod tests {
         assert_eq!(second_result, None, "idempotent call should return None");
         let space_cursor = storage.get_space(space_id).await.expect("get space").cursor;
         assert_eq!(space_cursor, first_cursor, "cursor should not advance");
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -324,8 +320,6 @@ mod tests {
             .await
             .expect_err("negative file size should fail");
         assert_eq!(invalid_size, StorageError::InvalidFileSize);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -341,8 +335,6 @@ mod tests {
             .await
             .expect_err("missing file should fail");
         assert_eq!(error, StorageError::FileNotFound);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -379,9 +371,6 @@ mod tests {
             .expect("exists in space b");
         assert!(exists_a);
         assert!(!exists_b);
-
-        cleanup_space(&storage, space_a).await;
-        cleanup_space(&storage, space_b).await;
     }
 
     #[tokio::test]
@@ -416,8 +405,6 @@ mod tests {
             .expect("get since");
         assert_eq!(since.len(), 1);
         assert_eq!(since[0].id, file_b);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -459,8 +446,6 @@ mod tests {
             .await
             .expect("get metadata");
         assert_eq!(metadata.wrapped_dek, new_dek);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -502,8 +487,6 @@ mod tests {
             .await
             .expect_err("epoch mismatch should fail");
         assert_eq!(error, StorageError::DekEpochMismatch);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -526,8 +509,6 @@ mod tests {
             .await
             .expect_err("missing file should fail");
         assert_eq!(error, StorageError::FileDekNotFound);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -542,8 +523,6 @@ mod tests {
             .rewrap_file_deks(space_id, &[])
             .await
             .expect("empty rewrap should succeed");
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -585,8 +564,6 @@ mod tests {
             .expect("exists b");
         assert!(!exists_a);
         assert!(!exists_b);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -602,7 +579,5 @@ mod tests {
             .await
             .expect("empty delete");
         assert!(deleted.is_empty());
-
-        cleanup_space(&storage, space_id).await;
     }
 }

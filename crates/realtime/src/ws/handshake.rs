@@ -130,7 +130,7 @@ mod tests {
                 scope: "sync".to_owned(),
             }),
         };
-        let frame = minicbor_serde::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(serde_json::json!({
             "type": RPC_NOTIFICATION,
             "method": "auth",
             "params": { "token": "valid-token" }
@@ -168,7 +168,7 @@ mod tests {
                 scope: "sync".to_owned(),
             }),
         };
-        let frame = minicbor_serde::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(serde_json::json!({
             "type": 0,
             "method": "subscribe",
             "id": "req-1",
@@ -198,7 +198,7 @@ mod tests {
                 scope: "files".to_owned(),
             }),
         };
-        let frame = minicbor_serde::to_vec(&serde_json::json!({
+        let frame = minicbor_serde::to_vec(serde_json::json!({
             "type": RPC_NOTIFICATION,
             "method": "auth",
             "params": { "token": "valid-token" }

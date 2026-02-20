@@ -1569,7 +1569,7 @@ async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
     let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
-    let frame = minicbor_serde::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(serde_json::json!({
         "type": less_sync_core::protocol::RPC_REQUEST,
         "method": "subscribe",
         "id": "req-1",
@@ -5427,7 +5427,7 @@ async fn send_auth(socket: &mut TestSocket) {
 }
 
 async fn send_auth_with_token(socket: &mut TestSocket, token: &str) {
-    let frame = minicbor_serde::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(serde_json::json!({
         "type": less_sync_core::protocol::RPC_NOTIFICATION,
         "method": "auth",
         "params": { "token": token }

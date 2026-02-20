@@ -149,12 +149,9 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::{parse_args, run, KeygenConfig};
     use ed25519_dalek::SigningKey;
     use less_sync_storage::{migrate_with_pool, FederationStorage, PostgresStorage};
-    use sqlx::postgres::{PgPool, PgPoolOptions};
 
     #[test]
     fn parse_args_requires_domain() {
@@ -258,8 +255,6 @@ mod tests {
             .await
             .expect("list active keys");
         assert_eq!(keys.len(), 2);
-
-        cleanup_database(test_db).await;
     }
 
     #[tokio::test]
@@ -304,14 +299,10 @@ mod tests {
             .await
             .expect("list active keys");
         assert_eq!(keys.len(), 2);
-
-        cleanup_database(test_db).await;
     }
 
     struct TestDatabase {
         storage: PostgresStorage,
-        admin_pool: PgPool,
-        schema: String,
         scoped_url: String,
     }
 
@@ -321,53 +312,32 @@ mod tests {
             Err(_) => return None,
         };
 
-        let admin_pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&base_database_url)
-            .await
-            .expect("connect admin pool");
+        // Each test gets its own schema for isolation.
         let schema = format!("keygen_test_{}", unique_suffix());
-        let create_schema = format!("CREATE SCHEMA \"{schema}\"");
-        sqlx::query(&create_schema)
-            .execute(&admin_pool)
-            .await
-            .expect("create test schema");
-
-        let scoped_url = scoped_database_url(&base_database_url, &schema);
+        let separator = if base_database_url.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
+        let scoped_url = format!("{base_database_url}{separator}options=-csearch_path={schema}");
         let storage = PostgresStorage::connect(&scoped_url)
             .await
             .expect("connect scoped storage");
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+            .execute(storage.pool())
+            .await
+            .expect("create test schema");
         migrate_with_pool(storage.pool())
             .await
             .expect("apply migrations");
 
         Some(TestDatabase {
             storage,
-            admin_pool,
-            schema,
             scoped_url,
         })
     }
 
-    async fn cleanup_database(test_db: TestDatabase) {
-        test_db.storage.close().await;
-        let drop_schema = format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", test_db.schema);
-        let _ = sqlx::query(&drop_schema).execute(&test_db.admin_pool).await;
-    }
-
-    fn scoped_database_url(base_database_url: &str, schema: &str) -> String {
-        let separator = if base_database_url.contains('?') {
-            '&'
-        } else {
-            '?'
-        };
-        format!("{base_database_url}{separator}options=-csearch_path={schema}")
-    }
-
-    fn unique_suffix() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+    fn unique_suffix() -> String {
+        uuid::Uuid::new_v4().simple().to_string()
     }
 }

@@ -192,8 +192,6 @@ mod tests {
         assert_eq!(fetched.id, created.id);
         assert_eq!(fetched.client_id, created.client_id);
         assert_eq!(fetched.cursor, 0);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -218,7 +216,6 @@ mod tests {
             .expect("first create");
         let duplicate = storage.create_space(space_id, "client-2", None).await;
         assert_eq!(duplicate.unwrap_err(), crate::StorageError::SpaceExists,);
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -238,8 +235,6 @@ mod tests {
             .expect("second get_or_create");
         assert_eq!(first.id, second.id);
         assert_eq!(first.client_id, second.client_id);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -268,8 +263,5 @@ mod tests {
         assert!(result.contains_key(&space_a));
         assert!(result.contains_key(&space_b));
         assert!(!result.contains_key(&missing));
-
-        cleanup_space(&storage, space_a).await;
-        cleanup_space(&storage, space_b).await;
     }
 }

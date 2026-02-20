@@ -25,6 +25,7 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(3600);
 #[derive(Debug, serde::Serialize)]
 struct EmptyResult {}
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_create_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,

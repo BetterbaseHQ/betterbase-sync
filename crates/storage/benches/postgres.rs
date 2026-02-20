@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use less_sync_core::protocol::Change;
@@ -270,10 +269,7 @@ fn scoped_database_url(base_database_url: &str, schema: &str) -> String {
 }
 
 fn unique_suffix() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after epoch");
-    format!("{}{}", now.as_secs(), now.subsec_nanos())
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 criterion_group!(

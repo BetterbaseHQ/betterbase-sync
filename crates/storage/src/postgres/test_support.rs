@@ -19,22 +19,26 @@ pub(super) async fn test_storage() -> Option<PostgresStorage> {
         Ok(value) => value,
         Err(_) => return None,
     };
+
+    // Each test gets its own schema for full isolation when running in parallel.
+    let schema = format!("test_{}", uuid::Uuid::new_v4().simple());
+    let mut opts: sqlx::postgres::PgConnectOptions =
+        database_url.parse().expect("parse DATABASE_URL");
+    opts = opts.options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(2)
-        .connect(&database_url)
+        .connect_with(opts)
         .await
         .expect("connect test database");
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&pool)
+        .await
+        .expect("create test schema");
+
     crate::migrate_with_pool(&pool)
         .await
         .expect("apply migrations");
     Some(PostgresStorage::from_pool(pool))
-}
-
-pub(super) async fn cleanup_space(storage: &PostgresStorage, space_id: uuid::Uuid) {
-    let _ = sqlx::query("DELETE FROM spaces WHERE id = $1")
-        .bind(space_id)
-        .execute(storage.pool())
-        .await;
 }
 
 pub(super) async fn create_space(storage: &PostgresStorage, space_id: uuid::Uuid) {

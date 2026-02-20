@@ -298,7 +298,6 @@ async fn load_primary_signing_key(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         apply_federation_runtime_config, load_primary_signing_key, parse_federation_runtime_config,
@@ -405,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_federation_runtime_config_handles_empty_key_state() {
-        let Some((storage, schema)) = isolated_storage().await else {
+        let Some(storage) = isolated_storage().await else {
             return;
         };
         let api_state = ApiState::new(Arc::new(storage.clone()));
@@ -424,13 +423,11 @@ mod tests {
 
         let kids = jwks_kids(configured).await;
         assert!(kids.is_empty());
-
-        cleanup_schema(&storage, &schema).await;
     }
 
     #[tokio::test]
     async fn apply_federation_runtime_config_uses_primary_key_and_publishes_active_jwks() {
-        let Some((storage, schema)) = isolated_storage().await else {
+        let Some(storage) = isolated_storage().await else {
             return;
         };
 
@@ -485,13 +482,11 @@ mod tests {
         .await
         .expect("re-apply federation config");
         assert_eq!(jwks_kids(configured).await, vec![kid_b.to_owned()]);
-
-        cleanup_schema(&storage, &schema).await;
     }
 
     #[tokio::test]
     async fn apply_federation_runtime_config_rejects_mismatched_primary_keypair() {
-        let Some((storage, schema)) = isolated_storage().await else {
+        let Some(storage) = isolated_storage().await else {
             return;
         };
 
@@ -522,50 +517,35 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("mismatch"));
-
-        cleanup_schema(&storage, &schema).await;
     }
 
-    async fn isolated_storage() -> Option<(PostgresStorage, String)> {
+    async fn isolated_storage() -> Option<PostgresStorage> {
         let database_url = match std::env::var("DATABASE_URL") {
             Ok(value) => value,
             Err(_) => return None,
         };
+
+        // Create pool with search_path set to isolated schema.
+        let schema = format!("app_fed_{}", unique_suffix());
+        let mut opts: sqlx::postgres::PgConnectOptions =
+            database_url.parse().expect("parse DATABASE_URL");
+        opts = opts.options([("search_path", schema.as_str())]);
         let pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect(&database_url)
+            .connect_with(opts)
             .await
             .expect("connect test database");
-
-        let schema = format!("app_fed_{}", unique_suffix());
-        let create_schema = format!("CREATE SCHEMA \"{schema}\"");
-        sqlx::query(&create_schema)
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
             .execute(&pool)
             .await
             .expect("create isolated schema");
-        let set_search_path = format!("SET search_path TO \"{schema}\"");
-        sqlx::query(&set_search_path)
-            .execute(&pool)
-            .await
-            .expect("set search_path");
         migrate_with_pool(&pool).await.expect("apply migrations");
 
-        Some((PostgresStorage::from_pool(pool), schema))
+        Some(PostgresStorage::from_pool(pool))
     }
 
-    async fn cleanup_schema(storage: &PostgresStorage, schema: &str) {
-        let _ = sqlx::query("SET search_path TO public")
-            .execute(storage.pool())
-            .await;
-        let drop_schema = format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE");
-        let _ = sqlx::query(&drop_schema).execute(storage.pool()).await;
-    }
-
-    fn unique_suffix() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
+    fn unique_suffix() -> String {
+        uuid::Uuid::new_v4().simple().to_string()
     }
 
     async fn jwks_kids(state: ApiState) -> Vec<String> {

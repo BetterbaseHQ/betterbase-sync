@@ -207,7 +207,8 @@ pub(super) async fn handle_pull_request(
             Err(_) => continue,
         };
 
-        let auth = match authorize_federation_ucan(
+        // Auth check for side-effectful rejection only; pull is space-level.
+        let _auth = match authorize_federation_ucan(
             sync_storage,
             space_id,
             &requested.ucan,

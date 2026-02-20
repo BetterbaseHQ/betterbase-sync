@@ -193,8 +193,6 @@ mod tests {
         assert_eq!(members[0].chain_seq, 1);
         assert_eq!(members[1].chain_seq, 2);
         assert_eq!(members[1].prev_hash, hash1);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -238,8 +236,6 @@ mod tests {
             .await
             .expect_err("chained entry with wrong prev_hash should fail");
         assert_eq!(chained_error, StorageError::HashChainBroken);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -292,8 +288,6 @@ mod tests {
             .expect("get members with since");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].chain_seq, 3);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -309,7 +303,5 @@ mod tests {
             .await
             .expect("get members empty");
         assert!(entries.is_empty());
-
-        cleanup_space(&storage, space_id).await;
     }
 }

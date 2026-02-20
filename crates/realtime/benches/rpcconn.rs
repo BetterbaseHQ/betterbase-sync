@@ -3,7 +3,7 @@ use less_sync_core::protocol::{RPC_NOTIFICATION, RPC_REQUEST};
 use less_sync_realtime::ws::parse_client_binary_frame;
 
 fn bench_handle_message_request(c: &mut Criterion) {
-    let frame = minicbor_serde::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(serde_json::json!({
         "type": RPC_REQUEST,
         "id": "req-1",
         "method": "subscribe",
@@ -22,7 +22,7 @@ fn bench_handle_message_request(c: &mut Criterion) {
 }
 
 fn bench_handle_message_notification(c: &mut Criterion) {
-    let frame = minicbor_serde::to_vec(&serde_json::json!({
+    let frame = minicbor_serde::to_vec(serde_json::json!({
         "type": RPC_NOTIFICATION,
         "method": "presence.set",
         "params": {

@@ -25,6 +25,12 @@ pub struct PresenceRegistry {
     spaces: RwLock<HashMap<String, HashMap<String, PresenceEntry>>>,
 }
 
+impl Default for PresenceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PresenceRegistry {
     pub fn new() -> Self {
         use rand_core::{OsRng, RngCore};

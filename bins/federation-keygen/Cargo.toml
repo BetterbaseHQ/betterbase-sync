@@ -16,3 +16,4 @@ tokio.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true
+uuid.workspace = true

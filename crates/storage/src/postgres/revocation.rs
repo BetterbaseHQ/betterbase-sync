@@ -81,8 +81,5 @@ mod tests {
             .is_revoked(space_a, cid)
             .await
             .expect("still revoked"));
-
-        cleanup_space(&storage, space_a).await;
-        cleanup_space(&storage, space_b).await;
     }
 }

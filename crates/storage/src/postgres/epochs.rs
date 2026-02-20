@@ -215,8 +215,6 @@ mod tests {
             .advance_epoch(space_id, 3, None)
             .await
             .expect("advance to epoch 3");
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -254,8 +252,6 @@ mod tests {
             .expect("advance with set_min_key_generation");
         let space = storage.get_space(space_id).await.expect("get space");
         assert_eq!(space.min_key_generation, 2);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -294,8 +290,6 @@ mod tests {
             .await
             .expect_err("missing space should fail");
         assert_eq!(missing_error, StorageError::SpaceNotFound);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -376,8 +370,6 @@ mod tests {
             .await
             .expect_err("missing record should fail");
         assert_eq!(missing_record, StorageError::DekRecordNotFound);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]

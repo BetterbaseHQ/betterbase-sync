@@ -443,8 +443,6 @@ mod tests {
             .expect("collect");
         assert!(result.records().is_empty());
         assert_eq!(result.cursor, 0);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -478,8 +476,6 @@ mod tests {
 
         let space = storage.get_space(space_id).await.expect("get space");
         assert_eq!(space.cursor, 1);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -510,8 +506,6 @@ mod tests {
             .await
             .expect("second push");
         assert!(!result.ok);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -547,8 +541,6 @@ mod tests {
             .expect("collect");
         assert_eq!(pulled.records().len(), 1);
         assert_eq!(pulled.records()[0].blob, Some(b"v2".to_vec()));
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -591,8 +583,6 @@ mod tests {
             .await
             .expect("collect");
         assert!(initial.records().is_empty());
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -621,8 +611,6 @@ mod tests {
             .await
             .expect("exists query");
         assert!(exists);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -658,8 +646,6 @@ mod tests {
             .await
             .expect_err("invalid record ID should fail");
         assert_eq!(error, StorageError::InvalidRecordId);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -687,8 +673,6 @@ mod tests {
             .await
             .expect_err("oversized blob should fail");
         assert_eq!(error, StorageError::BlobTooLarge);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -711,8 +695,6 @@ mod tests {
             .await
             .expect_err("duplicate record ID should fail");
         assert_eq!(error, StorageError::DuplicateRecordId);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -729,8 +711,6 @@ mod tests {
             .expect("empty push should succeed");
         assert!(result.ok);
         assert_eq!(result.cursor, 0);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -761,8 +741,6 @@ mod tests {
             .await
             .expect("conflict push");
         assert!(!result.ok);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -787,8 +765,6 @@ mod tests {
             .await
             .expect("conflict push");
         assert!(!result.ok);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -819,8 +795,6 @@ mod tests {
             .await
             .expect("conflict push");
         assert!(!result.ok);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -872,8 +846,6 @@ mod tests {
             pull_result.records()[0].id,
             "019400e8-7b5d-7000-8000-000000000001"
         );
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -910,8 +882,6 @@ mod tests {
         for record in pull_result.records() {
             assert_eq!(record.cursor, 1);
         }
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -974,8 +944,6 @@ mod tests {
             .await
             .expect("file exists");
         assert!(!exists);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -1032,9 +1000,6 @@ mod tests {
         assert_eq!(pull_b.records().len(), 1);
         assert_eq!(pull_a.records()[0].blob, Some(b"space a data".to_vec()));
         assert_eq!(pull_b.records()[0].blob, Some(b"space b data".to_vec()));
-
-        cleanup_space(&storage, space_a).await;
-        cleanup_space(&storage, space_b).await;
     }
 
     #[tokio::test]
@@ -1076,8 +1041,6 @@ mod tests {
                 "019400e8-7b5d-7000-8000-000000000003",
             ]
         );
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -1124,8 +1087,6 @@ mod tests {
         assert_eq!(entries[2].kind, PullEntryKind::File);
         assert!(entries[0].cursor < entries[1].cursor);
         assert!(entries[1].cursor < entries[2].cursor);
-
-        cleanup_space(&storage, space_id).await;
     }
 
     #[tokio::test]
@@ -1143,7 +1104,5 @@ mod tests {
         let fetched = backend.get_space(space_id).await.expect("get via trait");
         assert_eq!(fetched.id, space_id.to_string());
         assert_eq!(fetched.client_id, "client-trait");
-
-        cleanup_space(&storage, space_id).await;
     }
 }
