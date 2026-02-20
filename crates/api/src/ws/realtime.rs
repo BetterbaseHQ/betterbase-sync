@@ -162,11 +162,11 @@ impl RealtimeSession {
         let mailbox_id = mailbox_id.to_owned();
         tokio::spawn(async move {
             // Random delay 1-5 seconds to mitigate timing correlation
-            let delay_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| 1 + (d.subsec_nanos() as u64 % 5))
-                .unwrap_or(3);
-            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            let delay_ms = {
+                use rand_core::{OsRng, RngCore};
+                1000 + (OsRng.next_u32() % 4000) // 1000-4999ms
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
 
             let frame = RpcNotificationFrame {
                 frame_type: RPC_NOTIFICATION,
@@ -211,8 +211,7 @@ impl RealtimeSession {
             Ok(encoded) => encoded,
             Err(_) => return,
         };
-        let _ = self
-            .broker
+        self.broker
             .broadcast_space(space_id, &self.exclude_id, &encoded)
             .await;
     }

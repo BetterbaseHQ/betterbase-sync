@@ -2523,7 +2523,7 @@ async fn websocket_invitation_create_storage_failure_returns_internal_error() {
 }
 
 #[tokio::test]
-async fn websocket_invitation_create_forbidden_for_other_mailbox() {
+async fn websocket_invitation_create_for_other_mailbox_succeeds() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
         "sync",
@@ -2548,12 +2548,11 @@ async fn websocket_invitation_create_forbidden_for_other_mailbox() {
     )
     .await;
 
-    let response = read_error_response(&mut socket).await;
+    // Invitations can be sent to any mailbox (like a message inbox).
+    // No ownership check — matches Go server behavior.
+    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+        read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-create-2");
-    assert_eq!(
-        response.error.code,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
-    );
 
     server.handle.abort();
 }

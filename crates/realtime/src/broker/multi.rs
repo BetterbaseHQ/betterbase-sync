@@ -182,12 +182,62 @@ impl MultiBroker {
         let mut delivered_count = 0;
         let mut stale_subscribers = Vec::new();
 
-        for (subscriber_id, subscriber) in recipients {
+        for (subscriber_id, subscriber) in &recipients {
             if subscriber.is_closed() {
-                stale_subscribers.push(subscriber_id);
+                stale_subscribers.push(*subscriber_id);
                 continue;
             }
             if subscriber.exclude_id() == exclude_id {
+                continue;
+            }
+            if subscriber.send(Arc::clone(&shared_payload)) {
+                delivered_count += 1;
+            } else {
+                stale_subscribers.push(*subscriber_id);
+            }
+        }
+
+        if !stale_subscribers.is_empty() {
+            let mut state = self.state.write().await;
+            for subscriber_id in stale_subscribers {
+                let _ = state.remove_subscriber(subscriber_id);
+            }
+        }
+
+        delivered_count
+    }
+
+    pub async fn broadcast_mailbox(&self, mailbox_id: &str, payload: &[u8]) -> usize {
+        let recipients = {
+            let state = self.state.read().await;
+            state
+                .mailbox_index
+                .get(mailbox_id)
+                .map(|subscribers| {
+                    subscribers
+                        .iter()
+                        .filter_map(|subscriber_id| {
+                            state
+                                .subscribers
+                                .get(subscriber_id)
+                                .map(|subscriber| (*subscriber_id, Arc::clone(subscriber)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        if recipients.is_empty() {
+            return 0;
+        }
+
+        let shared_payload = Arc::<[u8]>::from(payload.to_vec());
+        let mut delivered_count = 0;
+        let mut stale_subscribers = Vec::new();
+
+        for (subscriber_id, subscriber) in recipients {
+            if subscriber.is_closed() {
+                stale_subscribers.push(subscriber_id);
                 continue;
             }
             if subscriber.send(Arc::clone(&shared_payload)) {

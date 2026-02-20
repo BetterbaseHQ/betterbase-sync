@@ -17,6 +17,7 @@ less-sync-core = { path = "../core" }
 less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
 object_store.workspace = true
+rand_core.workspace = true
 serde.workspace = true
 minicbor-serde.workspace = true
 thiserror.workspace = true

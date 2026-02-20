@@ -147,7 +147,8 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            membership_revoke::handle_request(outbound, sync_storage, auth, id, payload).await;
+            membership_revoke::handle_request(outbound, sync_storage, realtime, auth, id, payload)
+                .await;
         }
         "invitation.create" => {
             let Some(sync_storage) = sync_storage else {
@@ -163,6 +164,7 @@ async fn handle_client_request(
             invitation::handle_create_request(
                 outbound,
                 sync_storage,
+                realtime,
                 federation_forwarder,
                 federation_trusted_domains,
                 auth,

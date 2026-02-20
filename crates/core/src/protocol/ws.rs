@@ -20,8 +20,8 @@ pub(crate) mod option_bytes {
     where
         D: Deserializer<'de>,
     {
-        Option::<serde_bytes::ByteBuf>::deserialize(deserializer)
-            .map(|opt| opt.map(|buf| buf.into_vec()))
+        let opt: Option<serde_bytes::ByteBuf> = Option::deserialize(deserializer)?;
+        Ok(opt.map(|b| b.into_vec()))
     }
 }
 

@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use super::super::realtime::OutboundSender;
+use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
@@ -8,7 +8,7 @@ use less_sync_auth::{canonicalize_domain, AuthContext};
 use less_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, InvitationCreateParams,
     InvitationCreateResult, InvitationDeleteParams, InvitationGetParams, InvitationListParams,
-    InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
+    InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_INTERNAL,
     ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
 use less_sync_storage::{Invitation, StorageError};
@@ -26,9 +26,10 @@ struct EmptyResult {}
 pub(super) async fn handle_create_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    realtime: Option<&RealtimeSession>,
     federation_forwarder: Option<&dyn crate::FederationForwarder>,
     federation_trusted_domains: &[String],
-    auth: &AuthContext,
+    _auth: &AuthContext,
     id: &str,
     payload: &[u8],
 ) {
@@ -47,10 +48,6 @@ pub(super) async fn handle_create_request(
     };
     if let Some((code, message)) = validate_invitation_params(&params.mailbox_id, &params.payload) {
         send_error_response(outbound, id, code, message).await;
-        return;
-    }
-    if params.mailbox_id != mailbox_id_for_auth(auth) {
-        send_error_response(outbound, id, ERR_CODE_FORBIDDEN, "forbidden".to_owned()).await;
         return;
     }
 
@@ -122,6 +119,7 @@ pub(super) async fn handle_create_request(
         created_at: SystemTime::now(),
         expires_at: SystemTime::now(),
     };
+    let target_mailbox_id = invitation.mailbox_id.clone();
     let created = match sync_storage.create_invitation(&invitation).await {
         Ok(created) => created,
         Err(_) => {
@@ -129,6 +127,10 @@ pub(super) async fn handle_create_request(
             return;
         }
     };
+
+    if let Some(realtime) = realtime {
+        realtime.broadcast_invitation(&target_mailbox_id);
+    }
 
     match invitation_to_result(created) {
         Ok(result) => send_result_response(outbound, id, &result).await,
@@ -139,6 +141,7 @@ pub(super) async fn handle_create_request(
 pub(super) async fn handle_federation_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    realtime: Option<&RealtimeSession>,
     id: &str,
     payload: &[u8],
     peer_domain: &str,
@@ -176,6 +179,7 @@ pub(super) async fn handle_federation_request(
         }
     }
 
+    let target_mailbox_id = params.mailbox_id.clone();
     let invitation = Invitation {
         id: Uuid::nil(),
         mailbox_id: params.mailbox_id,
@@ -186,6 +190,10 @@ pub(super) async fn handle_federation_request(
     if sync_storage.create_invitation(&invitation).await.is_err() {
         send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal error".to_owned()).await;
         return;
+    }
+
+    if let Some(realtime) = realtime {
+        realtime.broadcast_invitation(&target_mailbox_id);
     }
 
     send_result_response(outbound, id, &FederationInvitationResult { ok: true }).await;

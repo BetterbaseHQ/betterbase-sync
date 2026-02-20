@@ -1332,6 +1332,7 @@ dependencies = [
  "minicbor-serde",
  "object_store",
  "p256",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "thiserror",

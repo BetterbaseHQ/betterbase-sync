@@ -1,5 +1,3 @@
--- +goose Up
-
 -- A space is a sync namespace. Personal spaces have root_public_key = NULL
 -- and are authenticated via JWT only. Shared spaces have a root_public_key
 -- and require JWT + UCAN for authorization.
@@ -57,7 +55,6 @@ CREATE TABLE members (
     PRIMARY KEY (space_id, seq)
 );
 
--- +goose StatementBegin
 CREATE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -65,19 +62,7 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
--- +goose StatementEnd
 
 -- Triggers for updated_at
 CREATE TRIGGER spaces_updated_at BEFORE UPDATE ON spaces
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- +goose Down
-DROP TRIGGER IF EXISTS spaces_updated_at ON spaces;
-DROP FUNCTION IF EXISTS update_updated_at_column();
-DROP TABLE IF EXISTS members;
-DROP INDEX IF EXISTS idx_files_space_dek;
-DROP INDEX IF EXISTS idx_files_created_at;
-DROP INDEX IF EXISTS idx_files_space_id;
-DROP TABLE IF EXISTS files;
-DROP TABLE IF EXISTS records;
-DROP TABLE IF EXISTS spaces;

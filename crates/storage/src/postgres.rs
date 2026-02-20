@@ -184,19 +184,61 @@ impl PostgresStorage {
                 _ => StorageError::Database(error.to_string()),
             })?;
 
-        let rows = sqlx::query_as::<_, RecordPullRow>(
+        let rows = sqlx::query_as::<_, StreamPullRow>(
             r#"
             SELECT
+                'r' AS kind,
                 id,
                 cursor,
                 blob,
                 wrapped_dek,
-                deleted
+                NULL::uuid AS record_id,
+                NULL::bigint AS size,
+                deleted,
+                NULL::int AS chain_seq,
+                NULL::bytea AS prev_hash,
+                NULL::bytea AS entry_hash,
+                NULL::bytea AS payload
             FROM records
             WHERE space_id = $1
               AND cursor > $2
               AND ($2 <> 0 OR deleted = FALSE)
-            ORDER BY cursor ASC, id ASC
+            UNION ALL
+            SELECT
+                'm' AS kind,
+                NULL::uuid AS id,
+                cursor,
+                NULL::bytea AS blob,
+                NULL::bytea AS wrapped_dek,
+                NULL::uuid AS record_id,
+                NULL::bigint AS size,
+                FALSE AS deleted,
+                chain_seq,
+                prev_hash,
+                entry_hash,
+                payload
+            FROM members
+            WHERE space_id = $1
+              AND cursor > $2
+            UNION ALL
+            SELECT
+                'f' AS kind,
+                id,
+                cursor,
+                NULL::bytea AS blob,
+                wrapped_dek,
+                record_id,
+                size,
+                deleted,
+                NULL::int AS chain_seq,
+                NULL::bytea AS prev_hash,
+                NULL::bytea AS entry_hash,
+                NULL::bytea AS payload
+            FROM files
+            WHERE space_id = $1
+              AND cursor > $2
+              AND ($2 <> 0 OR deleted = FALSE)
+            ORDER BY cursor ASC
             "#,
         )
         .bind(space_id)
@@ -205,23 +247,74 @@ impl PostgresStorage {
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        let entries = rows
-            .into_iter()
-            .map(|row| PullEntry {
-                kind: PullEntryKind::Record,
-                cursor: row.cursor,
-                record: Some(Change {
-                    id: row.id.to_string(),
-                    blob: row.blob,
-                    cursor: row.cursor,
-                    wrapped_dek: row.wrapped_dek,
-                    deleted: row.deleted,
-                }),
-                member: None,
-                file: None,
-            })
-            .collect::<Vec<_>>();
-        let record_count = entries.len();
+        let mut entries = Vec::with_capacity(rows.len());
+        let mut record_count = 0_usize;
+        for row in rows {
+            match row.kind.as_str() {
+                "r" => {
+                    let id = row.id.ok_or_else(|| {
+                        StorageError::Database("pull record missing id".to_owned())
+                    })?;
+                    record_count += 1;
+                    entries.push(PullEntry {
+                        kind: PullEntryKind::Record,
+                        cursor: row.cursor,
+                        record: Some(Change {
+                            id: id.to_string(),
+                            blob: row.blob,
+                            cursor: row.cursor,
+                            wrapped_dek: row.wrapped_dek,
+                            deleted: row.deleted,
+                        }),
+                        member: None,
+                        file: None,
+                    });
+                }
+                "m" => {
+                    entries.push(PullEntry {
+                        kind: PullEntryKind::Membership,
+                        cursor: row.cursor,
+                        record: None,
+                        member: Some(MembersLogEntry {
+                            space_id,
+                            chain_seq: row.chain_seq.ok_or_else(|| {
+                                StorageError::Database(
+                                    "pull member missing chain_seq".to_owned(),
+                                )
+                            })?,
+                            cursor: row.cursor,
+                            prev_hash: row.prev_hash.unwrap_or_default(),
+                            entry_hash: row.entry_hash.unwrap_or_default(),
+                            payload: row.payload.unwrap_or_default(),
+                        }),
+                        file: None,
+                    });
+                }
+                "f" => {
+                    let id = row.id.ok_or_else(|| {
+                        StorageError::Database("pull file missing id".to_owned())
+                    })?;
+                    let record_id = row.record_id.ok_or_else(|| {
+                        StorageError::Database("pull file missing record_id".to_owned())
+                    })?;
+                    entries.push(PullEntry {
+                        kind: PullEntryKind::File,
+                        cursor: row.cursor,
+                        record: None,
+                        member: None,
+                        file: Some(crate::FileEntry {
+                            id,
+                            record_id,
+                            size: row.size.unwrap_or_default(),
+                            deleted: row.deleted,
+                            wrapped_dek: row.wrapped_dek.unwrap_or_default(),
+                            cursor: row.cursor,
+                        }),
+                    });
+                }
+                _ => {}
+            }
+        }
 
         Ok(PullResult {
             entries,
@@ -1759,14 +1852,6 @@ struct ExistingRecordRow {
     cursor: i64,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct RecordPullRow {
-    id: Uuid,
-    cursor: i64,
-    blob: Option<Vec<u8>>,
-    wrapped_dek: Option<Vec<u8>>,
-    deleted: bool,
-}
 
 #[derive(Debug, sqlx::FromRow)]
 struct PullMetaRow {

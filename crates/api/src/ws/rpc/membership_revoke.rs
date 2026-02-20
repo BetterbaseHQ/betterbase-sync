@@ -1,5 +1,5 @@
 use super::super::authz::{self, SpaceAuthzError};
-use super::super::realtime::OutboundSender;
+use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
@@ -16,6 +16,7 @@ struct EmptyResult {}
 pub(super) async fn handle_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
+    realtime: Option<&RealtimeSession>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -76,6 +77,12 @@ pub(super) async fn handle_request(
     {
         send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal".to_owned()).await;
         return;
+    }
+
+    if let Some(realtime) = realtime {
+        realtime
+            .broadcast_revocation(&params.space, "ucan_revoked")
+            .await;
     }
 
     send_result_response(outbound, id, &EmptyResult {}).await;

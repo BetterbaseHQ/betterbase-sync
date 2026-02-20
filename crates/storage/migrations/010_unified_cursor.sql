@@ -1,4 +1,3 @@
--- +goose Up
 -- Unified cursor schema migration.
 --
 -- Unifies the sequence tracking across records, members, and files into a
@@ -39,31 +38,3 @@ DROP INDEX IF EXISTS idx_files_space_id;
 DROP INDEX IF EXISTS idx_files_created_at;
 CREATE INDEX idx_files_space_cursor ON files(space_id, cursor);
 -- idx_files_record_id already exists from migration 005
-
--- +goose Down
-
--- files: restore file_seq, drop cursor and deleted
-DROP INDEX IF EXISTS idx_files_space_cursor;
-ALTER TABLE files DROP CONSTRAINT IF EXISTS files_not_deleted_check;
-ALTER TABLE files DROP COLUMN IF EXISTS deleted;
-ALTER TABLE files DROP COLUMN IF EXISTS cursor;
-ALTER TABLE files ADD COLUMN file_seq BIGSERIAL;
-ALTER TABLE files ADD CONSTRAINT files_size_positive CHECK (size >= 0);
-ALTER TABLE files ADD CONSTRAINT files_wrapped_dek_length CHECK (length(wrapped_dek) = 44);
-CREATE INDEX idx_files_space_id ON files(space_id);
-CREATE INDEX idx_files_created_at ON files(created_at);
-CREATE INDEX idx_files_space_dek ON files(space_id, file_seq);
-
--- members: restore seq, drop cursor
-DROP INDEX IF EXISTS idx_members_cursor;
-ALTER TABLE members DROP COLUMN IF EXISTS cursor;
-ALTER TABLE members RENAME COLUMN chain_seq TO seq;
-
--- records: restore sequence, drop deleted
-DROP INDEX IF EXISTS idx_records_sync;
-ALTER TABLE records DROP COLUMN IF EXISTS deleted;
-ALTER TABLE records RENAME COLUMN cursor TO sequence;
-CREATE INDEX idx_records_sync ON records(space_id, sequence, id);
-
--- spaces: restore sequence
-ALTER TABLE spaces RENAME COLUMN cursor TO sequence;

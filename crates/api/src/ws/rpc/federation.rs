@@ -74,6 +74,7 @@ pub(super) async fn handle_request(
             super::invitation::handle_federation_request(
                 outbound,
                 sync_storage,
+                realtime,
                 id,
                 payload,
                 peer_domain,

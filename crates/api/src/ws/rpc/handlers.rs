@@ -275,7 +275,6 @@ pub(super) async fn handle_push_request(
             return;
         }
     };
-
     let space_id = match Uuid::parse_str(&params.space) {
         Ok(space_id) => space_id,
         Err(_) => {
@@ -367,18 +366,6 @@ pub(super) async fn handle_push_request(
             deleted: change.blob.is_none(),
         })
         .collect::<Vec<_>>();
-    let sync_records = params
-        .changes
-        .iter()
-        .map(|change| WsSyncRecord {
-            id: change.id.clone(),
-            blob: change.blob.clone(),
-            cursor: change.expected_cursor,
-            wrapped_dek: change.wrapped_dek.clone(),
-            deleted: change.blob.is_none(),
-        })
-        .collect::<Vec<_>>();
-
     let mut sync_cursor = None;
     let response = match sync_storage.push(space_id, &changes).await {
         Ok(result) if result.ok => {
@@ -428,6 +415,17 @@ pub(super) async fn handle_push_request(
     send_result_response(outbound, id, &response).await;
 
     if let (Some(realtime), Some(cursor)) = (realtime, sync_cursor) {
+        let sync_records: Vec<WsSyncRecord> = params
+            .changes
+            .iter()
+            .map(|change| WsSyncRecord {
+                id: change.id.clone(),
+                blob: change.blob.clone(),
+                cursor,
+                wrapped_dek: change.wrapped_dek.clone(),
+                deleted: change.blob.is_none(),
+            })
+            .collect();
         realtime
             .broadcast_sync(&params.space, cursor, &sync_records)
             .await;
@@ -455,7 +453,6 @@ pub(super) async fn handle_pull_request(
             return;
         }
     };
-
     let mut chunk_count = 0_usize;
     for requested in &params.spaces {
         let space_id = match Uuid::parse_str(&requested.id) {
@@ -499,7 +496,6 @@ pub(super) async fn handle_pull_request(
             Err(StorageError::SpaceNotFound) => continue,
             Err(_) => continue,
         };
-
         let mut entry_count = 0_i32;
         send_chunk_response(
             outbound,
