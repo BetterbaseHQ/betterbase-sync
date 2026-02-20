@@ -25,7 +25,8 @@ mod tests {
             payload: "ciphertext".to_owned(),
         };
         let encoded = minicbor_serde::to_vec(&params).expect("encode");
-        let decoded: FederationInvitationParams = minicbor_serde::from_slice(&encoded).expect("decode");
+        let decoded: FederationInvitationParams =
+            minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded, params);
     }
 
@@ -33,7 +34,8 @@ mod tests {
     fn federation_invitation_result_cbor_roundtrip() {
         let result = FederationInvitationResult { ok: true };
         let encoded = minicbor_serde::to_vec(&result).expect("encode");
-        let decoded: FederationInvitationResult = minicbor_serde::from_slice(&encoded).expect("decode");
+        let decoded: FederationInvitationResult =
+            minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded, result);
     }
 }

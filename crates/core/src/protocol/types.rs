@@ -10,7 +10,12 @@ pub struct Space {
     pub id: String,
     #[serde(rename = "client_id")]
     pub client_id: String,
-    #[serde(rename = "root_public_key", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "root_public_key",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub root_public_key: Option<Vec<u8>>,
     #[serde(rename = "key_generation")]
     pub key_generation: i32,
@@ -35,7 +40,12 @@ pub struct Change {
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(skip)]
     pub deleted: bool, // storage-only; not part of wire format

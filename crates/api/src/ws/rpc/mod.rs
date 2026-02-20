@@ -17,6 +17,8 @@ mod invitation;
 mod membership_append;
 mod membership_list;
 mod membership_revoke;
+mod pull_send;
+mod push_helpers;
 mod space_create;
 mod token_refresh;
 
@@ -167,7 +169,6 @@ async fn handle_client_request(
                 realtime,
                 federation_forwarder,
                 federation_trusted_domains,
-                auth,
                 id,
                 payload,
             )
@@ -419,7 +420,9 @@ async fn handle_client_notification(
     }
 }
 
-pub(super) fn decode_frame_params<T>(payload: &[u8]) -> Result<T, minicbor_serde::error::DecodeError>
+pub(super) fn decode_frame_params<T>(
+    payload: &[u8],
+) -> Result<T, minicbor_serde::error::DecodeError>
 where
     T: DeserializeOwned,
 {

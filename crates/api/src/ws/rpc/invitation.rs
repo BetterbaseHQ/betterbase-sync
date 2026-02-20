@@ -8,8 +8,8 @@ use less_sync_auth::{canonicalize_domain, AuthContext};
 use less_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, InvitationCreateParams,
     InvitationCreateResult, InvitationDeleteParams, InvitationGetParams, InvitationListParams,
-    InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_INTERNAL,
-    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
+    InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
+    ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
 use less_sync_storage::{Invitation, StorageError};
 use time::format_description::well_known::Rfc3339;
@@ -29,7 +29,6 @@ pub(super) async fn handle_create_request(
     realtime: Option<&RealtimeSession>,
     federation_forwarder: Option<&dyn crate::FederationForwarder>,
     federation_trusted_domains: &[String],
-    _auth: &AuthContext,
     id: &str,
     payload: &[u8],
 ) {

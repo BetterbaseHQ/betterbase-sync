@@ -263,7 +263,13 @@ impl FederationPeerManager {
         peer: &peer::PeerConnection,
         method: &str,
         params: &P,
-    ) -> Result<(less_sync_core::protocol::CborValue, Vec<peer::ReceivedChunk>), FederationPeerError>
+    ) -> Result<
+        (
+            less_sync_core::protocol::CborValue,
+            Vec<peer::ReceivedChunk>,
+        ),
+        FederationPeerError,
+    >
     where
         P: serde::Serialize,
     {
@@ -281,7 +287,13 @@ impl FederationPeerManager {
         request_id: &str,
         method: &str,
         params: &P,
-    ) -> Result<(less_sync_core::protocol::CborValue, Vec<peer::ReceivedChunk>), FederationPeerError>
+    ) -> Result<
+        (
+            less_sync_core::protocol::CborValue,
+            Vec<peer::ReceivedChunk>,
+        ),
+        FederationPeerError,
+    >
     where
         P: serde::Serialize,
     {
@@ -398,11 +410,14 @@ fn should_retry(error: &FederationPeerError) -> bool {
     )
 }
 
-fn decode_cbor_value<T>(value: less_sync_core::protocol::CborValue) -> Result<T, FederationPeerError>
+fn decode_cbor_value<T>(
+    value: less_sync_core::protocol::CborValue,
+) -> Result<T, FederationPeerError>
 where
     T: DeserializeOwned,
 {
     let encoded = minicbor_serde::to_vec(&value)
         .map_err(|error| FederationPeerError::Decode(error.to_string()))?;
-    minicbor_serde::from_slice(&encoded).map_err(|error| FederationPeerError::Decode(error.to_string()))
+    minicbor_serde::from_slice(&encoded)
+        .map_err(|error| FederationPeerError::Decode(error.to_string()))
 }

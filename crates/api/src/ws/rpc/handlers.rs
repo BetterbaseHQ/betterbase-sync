@@ -6,14 +6,13 @@ use super::decode_frame_params;
 use super::frames::{send_chunk_response, send_error_response, send_result_response};
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    Change, PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult,
-    UnsubscribeParams, WsEventSendParams, WsMembershipData, WsMembershipEntry,
-    WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData, WsPullCommitData, WsPullFileData,
-    WsPullRecordData, WsSpaceError, WsSubscribedSpace, WsSyncRecord, ERR_CODE_BAD_REQUEST,
-    ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
-    ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
+    PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
+    WsEventSendParams, WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData,
+    WsPullCommitData, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
+    ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE,
+    ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
 };
-use less_sync_storage::{PullEntryKind, StorageError};
+use less_sync_storage::StorageError;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -355,17 +354,7 @@ pub(super) async fn handle_push_request(
         }
     }
 
-    let changes = params
-        .changes
-        .iter()
-        .map(|change| Change {
-            id: change.id.clone(),
-            blob: change.blob.clone(),
-            cursor: change.expected_cursor,
-            wrapped_dek: change.wrapped_dek.clone(),
-            deleted: change.blob.is_none(),
-        })
-        .collect::<Vec<_>>();
+    let changes = super::push_helpers::map_push_changes(&params);
     let mut sync_cursor = None;
     let response = match sync_storage.push(space_id, &changes).await {
         Ok(result) if result.ok => {
@@ -413,23 +402,7 @@ pub(super) async fn handle_push_request(
     };
 
     send_result_response(outbound, id, &response).await;
-
-    if let (Some(realtime), Some(cursor)) = (realtime, sync_cursor) {
-        let sync_records: Vec<WsSyncRecord> = params
-            .changes
-            .iter()
-            .map(|change| WsSyncRecord {
-                id: change.id.clone(),
-                blob: change.blob.clone(),
-                cursor,
-                wrapped_dek: change.wrapped_dek.clone(),
-                deleted: change.blob.is_none(),
-            })
-            .collect();
-        realtime
-            .broadcast_sync(&params.space, cursor, &sync_records)
-            .await;
-    }
+    super::push_helpers::broadcast_push_sync(realtime, &params, sync_cursor).await;
 }
 
 pub(super) async fn handle_pull_request(
@@ -513,74 +486,9 @@ pub(super) async fn handle_pull_request(
         chunk_count += 1;
 
         for entry in &pull_result.entries {
-            match entry.kind {
-                PullEntryKind::Record => {
-                    if let Some(record) = &entry.record {
-                        send_chunk_response(
-                            outbound,
-                            id,
-                            "pull.record",
-                            &WsPullRecordData {
-                                space: requested.id.clone(),
-                                id: record.id.clone(),
-                                blob: record.blob.clone(),
-                                cursor: record.cursor,
-                                wrapped_dek: record.wrapped_dek.clone(),
-                                deleted: record.is_deleted(),
-                            },
-                        )
-                        .await;
-                        chunk_count += 1;
-                        entry_count += 1;
-                    }
-                }
-                PullEntryKind::Membership => {
-                    if let Some(member) = &entry.member {
-                        send_chunk_response(
-                            outbound,
-                            id,
-                            "pull.membership",
-                            &WsMembershipData {
-                                space: requested.id.clone(),
-                                cursor: member.cursor,
-                                entries: vec![WsMembershipEntry {
-                                    chain_seq: member.chain_seq,
-                                    prev_hash: if member.prev_hash.is_empty() {
-                                        None
-                                    } else {
-                                        Some(member.prev_hash.clone())
-                                    },
-                                    entry_hash: member.entry_hash.clone(),
-                                    payload: member.payload.clone(),
-                                }],
-                            },
-                        )
-                        .await;
-                        chunk_count += 1;
-                        entry_count += 1;
-                    }
-                }
-                PullEntryKind::File => {
-                    if let Some(file) = &entry.file {
-                        send_chunk_response(
-                            outbound,
-                            id,
-                            "pull.file",
-                            &WsPullFileData {
-                                space: requested.id.clone(),
-                                id: file.id.to_string(),
-                                record_id: file.record_id.to_string(),
-                                size: file.size,
-                                wrapped_dek: Some(file.wrapped_dek.clone()),
-                                cursor: file.cursor,
-                                deleted: file.deleted,
-                            },
-                        )
-                        .await;
-                        chunk_count += 1;
-                        entry_count += 1;
-                    }
-                }
+            if super::pull_send::send_pull_entry(outbound, id, &requested.id, entry).await {
+                chunk_count += 1;
+                entry_count += 1;
             }
         }
 

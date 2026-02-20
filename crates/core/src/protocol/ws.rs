@@ -172,11 +172,21 @@ pub struct WsSyncData {
 pub struct WsSyncRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "blob",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -196,7 +206,12 @@ pub struct WsMembershipData {
 pub struct WsMembershipEntry {
     #[serde(rename = "chain_seq")]
     pub chain_seq: i32,
-    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "prev_hash",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub prev_hash: Option<Vec<u8>>,
     #[serde(rename = "entry_hash", with = "serde_bytes")]
     pub entry_hash: Vec<u8>,
@@ -222,7 +237,12 @@ pub struct WsFileEntry {
     pub record_id: String,
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -240,11 +260,21 @@ pub struct WsRevokedData {
 pub struct WsPushChange {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "blob",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "expected_cursor")]
     pub expected_cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
 }
 
@@ -278,11 +308,21 @@ pub struct WsPullRecordData {
     pub space: String,
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "blob", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "blob",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub blob: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "deleted", skip_serializing_if = "is_false", default)]
     pub deleted: bool,
@@ -310,7 +350,12 @@ pub struct WsPullFileData {
     pub record_id: String,
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
-    #[serde(rename = "dek", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "dek",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub wrapped_dek: Option<Vec<u8>>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
@@ -390,7 +435,12 @@ pub struct MembershipAppendParams {
     pub ucan: String,
     #[serde(rename = "expected_version")]
     pub expected_version: i32,
-    #[serde(rename = "prev_hash", skip_serializing_if = "Option::is_none", with = "option_bytes", default)]
+    #[serde(
+        rename = "prev_hash",
+        skip_serializing_if = "Option::is_none",
+        with = "option_bytes",
+        default
+    )]
     pub prev_hash: Option<Vec<u8>>,
     #[serde(rename = "entry_hash", with = "serde_bytes")]
     pub entry_hash: Vec<u8>,
@@ -955,8 +1005,7 @@ mod tests {
             payload: vec![7, 8, 9],
         };
         let encoded = minicbor_serde::to_vec(&params).expect("encode");
-        let decoded: MembershipAppendParams =
-            minicbor_serde::from_slice(&encoded).expect("decode");
+        let decoded: MembershipAppendParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.space, "space-uuid");
         assert_eq!(decoded.prev_hash, None);
         assert_eq!(decoded.entry_hash, vec![4, 5, 6]);

@@ -273,9 +273,9 @@ async fn federation_peer_manager_forward_push_forwards_and_decodes() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
     let peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::FederationInvitationResult {
-            ok: false,
-        })
+        result: less_sync_core::protocol::CborValue::from_serializable(
+            &less_sync_core::protocol::FederationInvitationResult { ok: false },
+        )
         .expect("encode invitation result"),
         chunks: Vec::new(),
     })
@@ -301,9 +301,9 @@ async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_forwards_params() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(&less_sync_core::protocol::FederationInvitationResult {
-            ok: true,
-        })
+        result: less_sync_core::protocol::CborValue::from_serializable(
+            &less_sync_core::protocol::FederationInvitationResult { ok: true },
+        )
         .expect("encode invitation result"),
         chunks: Vec::new(),
     })
@@ -334,7 +334,10 @@ async fn federation_peer_manager_pull_collects_chunk_frames() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
         result: less_sync_core::protocol::CborValue::Null,
         chunks: vec![
-            ("pull.begin".to_owned(), less_sync_core::protocol::CborValue::Integer(1)),
+            (
+                "pull.begin".to_owned(),
+                less_sync_core::protocol::CborValue::Integer(1),
+            ),
             (
                 "pull.record".to_owned(),
                 less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]),
@@ -356,9 +359,15 @@ async fn federation_peer_manager_pull_collects_chunk_frames() {
         .expect("pull");
     assert_eq!(chunks.len(), 2);
     assert_eq!(chunks[0].name, "pull.begin");
-    assert_eq!(chunks[0].data, less_sync_core::protocol::CborValue::Integer(1));
+    assert_eq!(
+        chunks[0].data,
+        less_sync_core::protocol::CborValue::Integer(1)
+    );
     assert_eq!(chunks[1].name, "pull.record");
-    assert_eq!(chunks[1].data, less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]));
+    assert_eq!(
+        chunks[1].data,
+        less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3])
+    );
 
     let req = peer.require_request().await;
     assert_eq!(req.method, "pull");

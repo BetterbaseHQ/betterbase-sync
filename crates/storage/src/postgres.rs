@@ -175,9 +175,22 @@ impl PostgresStorage {
     }
 
     pub async fn pull(&self, space_id: Uuid, since: i64) -> Result<PullResult, StorageError> {
+        // REPEATABLE READ ensures snapshot consistency across the cursor fetch
+        // and the UNION ALL — prevents phantom entries from concurrent writes.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
         let cursor: i64 = sqlx::query_scalar("SELECT cursor FROM spaces WHERE id = $1")
             .bind(space_id)
-            .fetch_one(&self.pool)
+            .fetch_one(tx.as_mut())
             .await
             .map_err(|error| match error {
                 sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
@@ -243,7 +256,7 @@ impl PostgresStorage {
         )
         .bind(space_id)
         .bind(since)
-        .fetch_all(&self.pool)
+        .fetch_all(tx.as_mut())
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
 
@@ -278,9 +291,7 @@ impl PostgresStorage {
                         member: Some(MembersLogEntry {
                             space_id,
                             chain_seq: row.chain_seq.ok_or_else(|| {
-                                StorageError::Database(
-                                    "pull member missing chain_seq".to_owned(),
-                                )
+                                StorageError::Database("pull member missing chain_seq".to_owned())
                             })?,
                             cursor: row.cursor,
                             prev_hash: row.prev_hash.unwrap_or_default(),
@@ -291,9 +302,9 @@ impl PostgresStorage {
                     });
                 }
                 "f" => {
-                    let id = row.id.ok_or_else(|| {
-                        StorageError::Database("pull file missing id".to_owned())
-                    })?;
+                    let id = row
+                        .id
+                        .ok_or_else(|| StorageError::Database("pull file missing id".to_owned()))?;
                     let record_id = row.record_id.ok_or_else(|| {
                         StorageError::Database("pull file missing record_id".to_owned())
                     })?;
@@ -1851,7 +1862,6 @@ struct ExistingRecordRow {
     id: Uuid,
     cursor: i64,
 }
-
 
 #[derive(Debug, sqlx::FromRow)]
 struct PullMetaRow {

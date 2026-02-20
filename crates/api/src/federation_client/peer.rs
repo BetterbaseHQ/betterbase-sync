@@ -207,7 +207,12 @@ async fn read_response_for_request(
                         if let Some(error) = response.error {
                             return Err(FederationPeerError::Rpc(error));
                         }
-                        return Ok((response.result.unwrap_or(less_sync_core::protocol::CborValue::Null), chunks));
+                        return Ok((
+                            response
+                                .result
+                                .unwrap_or(less_sync_core::protocol::CborValue::Null),
+                            chunks,
+                        ));
                     }
                     InboundFrame::Chunk(chunk) => {
                         if chunk.frame_type != less_sync_core::protocol::RPC_CHUNK {
