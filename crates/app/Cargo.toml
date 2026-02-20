@@ -12,9 +12,12 @@ base64.workspace = true
 ed25519-dalek.workspace = true
 less-sync-auth = { path = "../auth" }
 less-sync-api = { path = "../api" }
+less-sync-core = { path = "../core" }
 less-sync-realtime = { path = "../realtime" }
 less-sync-storage = { path = "../storage" }
+minicbor-serde.workspace = true
 object_store = { workspace = true, features = ["aws"] }
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true

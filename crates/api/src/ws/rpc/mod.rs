@@ -2,7 +2,9 @@ use super::realtime::{OutboundSender, RealtimeSession};
 use super::PresenceRegistry;
 use super::SyncStorage;
 use less_sync_auth::{AuthContext, TokenValidator};
-use less_sync_core::protocol::{ERR_CODE_INTERNAL, RPC_RESPONSE};
+use less_sync_core::protocol::{
+    WsFileData, WsMembershipData, WsRevokedData, WsSyncData, ERR_CODE_INTERNAL, RPC_RESPONSE,
+};
 use serde::de::DeserializeOwned;
 
 mod deks;
@@ -380,8 +382,8 @@ pub(crate) async fn handle_notification(
             peer_domain,
             quota_tracker,
             ..
-        } => {
-            if method == "unsubscribe" {
+        } => match method {
+            "unsubscribe" => {
                 let removed =
                     handlers::handle_unsubscribe_notification(realtime, presence_registry, payload)
                         .await;
@@ -391,6 +393,10 @@ pub(crate) async fn handle_notification(
                     }
                 }
             }
+            "sync" | "membership" | "file" | "revoked" => {
+                handle_federation_rebroadcast(realtime, method, payload).await;
+            }
+            _ => {}
         }
     }
 }
@@ -415,6 +421,53 @@ async fn handle_client_notification(
         }
         "event.send" => {
             handlers::handle_event_send_notification(realtime, presence_registry, payload).await;
+        }
+        _ => {}
+    }
+}
+
+/// Re-broadcast notifications received from a federation peer to local space subscribers.
+async fn handle_federation_rebroadcast(
+    realtime: Option<&RealtimeSession>,
+    method: &str,
+    payload: &[u8],
+) {
+    let Some(realtime) = realtime else {
+        return;
+    };
+
+    match method {
+        "sync" => {
+            let Ok(params) = decode_frame_params::<WsSyncData>(payload) else {
+                return;
+            };
+            if params.records.is_empty() {
+                return;
+            }
+            // Broadcast the full struct to preserve key_generation and rewrap_epoch.
+            realtime
+                .broadcast_notification(&params.space, "sync", &params)
+                .await;
+        }
+        "membership" => {
+            let Ok(params) = decode_frame_params::<WsMembershipData>(payload) else {
+                return;
+            };
+            realtime.broadcast_membership(&params.space, &params).await;
+        }
+        "file" => {
+            let Ok(params) = decode_frame_params::<WsFileData>(payload) else {
+                return;
+            };
+            realtime.broadcast_file(&params.space, &params).await;
+        }
+        "revoked" => {
+            let Ok(params) = decode_frame_params::<WsRevokedData>(payload) else {
+                return;
+            };
+            realtime
+                .broadcast_revocation(&params.space, &params.reason)
+                .await;
         }
         _ => {}
     }

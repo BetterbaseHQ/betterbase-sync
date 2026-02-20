@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use less_sync_auth::AuthContext;
 use less_sync_core::protocol::{
-    WsEventData, WsPresenceData, WsPresenceLeaveData, WsRevokedData, WsSyncData, WsSyncRecord,
-    CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
+    WsEventData, WsFileData, WsMembershipData, WsPresenceData, WsPresenceLeaveData, WsRevokedData,
+    WsSyncData, WsSyncRecord, CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
 };
 use less_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, SubscriberId};
 use less_sync_realtime::ws::CloseDirective;
@@ -181,6 +181,15 @@ impl RealtimeSession {
         });
     }
 
+    pub(crate) async fn broadcast_membership(&self, space_id: &str, data: &WsMembershipData) {
+        self.broadcast_notification(space_id, "membership", data)
+            .await;
+    }
+
+    pub(crate) async fn broadcast_file(&self, space_id: &str, data: &WsFileData) {
+        self.broadcast_notification(space_id, "file", data).await;
+    }
+
     /// Broadcast a revocation notification to all watchers of a space.
     pub(crate) async fn broadcast_revocation(&self, space_id: &str, reason: &str) {
         self.broadcast_notification(
@@ -198,7 +207,7 @@ impl RealtimeSession {
         let _ = self.broker.unregister_subscriber(self.subscriber_id).await;
     }
 
-    async fn broadcast_notification<T>(&self, space_id: &str, method: &str, params: T)
+    pub(crate) async fn broadcast_notification<T>(&self, space_id: &str, method: &str, params: T)
     where
         T: Serialize,
     {

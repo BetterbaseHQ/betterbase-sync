@@ -12,8 +12,7 @@ pub(crate) const MAX_EVENT_DATA_BYTES: usize = 4096;
 const MAX_PRESENCE_PER_SPACE: usize = 100;
 /// How long before a presence entry is considered stale.
 const PRESENCE_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
-/// How often the cleanup loop should run (app-level scheduling).
-/// TODO: Wire up a background task in crates/app to call cleanup_stale_entries() on this interval.
+/// How often the cleanup loop should run (scheduled by crates/app).
 const _PRESENCE_CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 struct PresenceEntry {

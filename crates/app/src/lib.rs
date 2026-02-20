@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 use less_sync_api::ApiState;
 use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
+use less_sync_core::protocol::{WsPresenceLeaveData, RPC_NOTIFICATION};
 use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use less_sync_storage::{migrate_with_pool, PostgresStorage};
+use serde::Serialize;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
@@ -131,10 +133,62 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     api_state =
         federation::apply_federation_runtime_config(api_state, storage, &config.federation).await?;
 
+    if let (Some(presence_registry), Some(broker)) =
+        (api_state.presence_registry(), api_state.realtime_broker())
+    {
+        tokio::spawn(presence_cleanup_loop(presence_registry, broker));
+    }
+
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "server listening");
     axum::serve(listener, less_sync_api::router(api_state)).await?;
     Ok(())
+}
+
+/// Periodically remove stale presence entries and broadcast leave notifications.
+async fn presence_cleanup_loop(
+    registry: Arc<less_sync_api::PresenceRegistry>,
+    broker: Arc<MultiBroker>,
+) {
+    const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+    let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+    interval.tick().await; // first tick fires immediately, skip it
+    loop {
+        interval.tick().await;
+        let stale: Vec<(String, String)> = registry.cleanup_stale_entries().await;
+        for (space_id, pseudonym) in &stale {
+            broadcast_presence_leave(&broker, space_id, pseudonym).await;
+        }
+        if !stale.is_empty() {
+            tracing::debug!(count = stale.len(), "cleaned up stale presence entries");
+        }
+    }
+}
+
+async fn broadcast_presence_leave(broker: &MultiBroker, space_id: &str, pseudonym: &str) {
+    #[derive(Serialize)]
+    struct NotificationFrame<'a, T: Serialize> {
+        #[serde(rename = "type")]
+        frame_type: i32,
+        #[serde(rename = "method")]
+        method: &'a str,
+        #[serde(rename = "params")]
+        params: T,
+    }
+
+    let frame = NotificationFrame {
+        frame_type: RPC_NOTIFICATION,
+        method: "presence.leave",
+        params: WsPresenceLeaveData {
+            space: space_id.to_owned(),
+            peer: pseudonym.to_owned(),
+        },
+    };
+    let Ok(encoded) = minicbor_serde::to_vec(&frame) else {
+        return;
+    };
+    // Empty exclude_id: cleanup timer has no connection identity.
+    broker.broadcast_space(space_id, "", &encoded).await;
 }
 
 fn build_file_object_store(

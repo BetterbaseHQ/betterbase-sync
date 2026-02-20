@@ -35,6 +35,7 @@ pub use federation::{
 pub use federation_client::{FederationForwarder, FederationPeerError, FederationPeerManager};
 pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
 pub use files::ObjectStoreFileBlobStorage;
+pub use ws::PresenceRegistry;
 
 #[async_trait]
 pub trait HealthCheck: Send + Sync {
@@ -249,7 +250,7 @@ impl ApiState {
         self
     }
 
-    pub(crate) fn realtime_broker(&self) -> Option<Arc<MultiBroker>> {
+    pub fn realtime_broker(&self) -> Option<Arc<MultiBroker>> {
         self.realtime_broker.clone()
     }
 
