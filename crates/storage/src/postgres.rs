@@ -3601,4 +3601,512 @@ mod tests {
 
         cleanup_space(&storage, space_id).await;
     }
+
+    // =========================================================================
+    // Push validation tests (ported from Go)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn push_space_not_found() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let error = storage
+            .push(
+                uuid::Uuid::new_v4(),
+                &[change(
+                    "019400e8-7b5d-7000-8000-000000000001",
+                    Some(b"hello"),
+                    0,
+                )],
+                None,
+            )
+            .await
+            .expect_err("push to missing space should fail");
+        assert_eq!(error, StorageError::SpaceNotFound);
+    }
+
+    #[tokio::test]
+    async fn push_invalid_record_id() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let error = storage
+            .push(space_id, &[change("invalid-id", Some(b"data"), 0)], None)
+            .await
+            .expect_err("invalid record ID should fail");
+        assert_eq!(error, StorageError::InvalidRecordId);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_blob_too_large() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let large_blob =
+            vec![0u8; (less_sync_core::validation::DEFAULT_MAX_BLOB_SIZE + 1) as usize];
+        let error = storage
+            .push(
+                space_id,
+                &[Change {
+                    id: "019400e8-7b5d-7000-8000-000000000001".to_owned(),
+                    blob: Some(large_blob),
+                    cursor: 0,
+                    wrapped_dek: None,
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect_err("oversized blob should fail");
+        assert_eq!(error, StorageError::BlobTooLarge);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_duplicate_record_id() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let error = storage
+            .push(
+                space_id,
+                &[
+                    change("019400e8-7b5d-7000-8000-000000000001", Some(b"first"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000001", Some(b"second"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect_err("duplicate record ID should fail");
+        assert_eq!(error, StorageError::DuplicateRecordId);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_empty_changes() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let result = storage
+            .push(space_id, &[], None)
+            .await
+            .expect("empty push should succeed");
+        assert!(result.ok);
+        assert_eq!(result.cursor, 0);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    // =========================================================================
+    // Push conflict tests (ported from Go)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn push_conflict_record_modified() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let id = "019400e8-7b5d-7000-8000-000000000001";
+
+        // Create record
+        storage
+            .push(space_id, &[change(id, Some(b"v1"), 0)], None)
+            .await
+            .expect("create");
+
+        // Update record
+        storage
+            .push(space_id, &[change(id, Some(b"v2"), 1)], None)
+            .await
+            .expect("update");
+
+        // Try to update with old cursor
+        let result = storage
+            .push(space_id, &[change(id, Some(b"v3"), 1)], None)
+            .await
+            .expect("conflict push");
+        assert!(!result.ok);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_conflict_record_not_found() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        // Try to update a record that doesn't exist (cursor > 0 implies update)
+        let result = storage
+            .push(
+                space_id,
+                &[change(
+                    "019400e8-7b5d-7000-8000-000000000001",
+                    Some(b"v1"),
+                    5,
+                )],
+                None,
+            )
+            .await
+            .expect("conflict push");
+        assert!(!result.ok);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_conflict_with_tombstone() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let id = "019400e8-7b5d-7000-8000-000000000001";
+
+        // Create record
+        storage
+            .push(space_id, &[change(id, Some(b"data"), 0)], None)
+            .await
+            .expect("create");
+
+        // Delete record (tombstone)
+        storage
+            .push(space_id, &[change(id, None, 1)], None)
+            .await
+            .expect("tombstone");
+
+        // Try to create "new" record with same ID (cursor=0) — should conflict
+        let result = storage
+            .push(space_id, &[change(id, Some(b"new data"), 0)], None)
+            .await
+            .expect("conflict push");
+        assert!(!result.ok);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_all_or_nothing() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        // Create a record
+        storage
+            .push(
+                space_id,
+                &[change(
+                    "019400e8-7b5d-7000-8000-000000000001",
+                    Some(b"v1"),
+                    0,
+                )],
+                None,
+            )
+            .await
+            .expect("create first record");
+
+        // Try to push: one valid new record + one conflicting
+        let result = storage
+            .push(
+                space_id,
+                &[
+                    change("019400e8-7b5d-7000-8000-000000000002", Some(b"new"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000001", Some(b"bad"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect("conflict push");
+        assert!(!result.ok);
+
+        // Verify the new record was NOT created (all-or-nothing)
+        let pull_result = storage.pull(space_id, 0).await.expect("pull");
+        assert_eq!(pull_result.records().len(), 1);
+        assert_eq!(
+            pull_result.records()[0].id,
+            "019400e8-7b5d-7000-8000-000000000001"
+        );
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_multiple_records_same_sequence() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let result = storage
+            .push(
+                space_id,
+                &[
+                    change("019400e8-7b5d-7000-8000-000000000001", Some(b"a"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000002", Some(b"b"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000003", Some(b"c"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect("push multiple");
+        assert!(result.ok);
+        assert_eq!(result.cursor, 1);
+
+        let pull_result = storage.pull(space_id, 0).await.expect("pull");
+        assert_eq!(pull_result.records().len(), 3);
+        for record in pull_result.records() {
+            assert_eq!(record.cursor, 1);
+        }
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn push_tombstone_deletes_files() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        // Push a live record with a wrapped DEK
+        let record_id = uuid::Uuid::new_v4();
+        let record_id_str = record_id.to_string();
+        let dek = wrapped_dek(0xdd);
+        storage
+            .push(
+                space_id,
+                &[Change {
+                    id: record_id_str.clone(),
+                    blob: Some(b"data".to_vec()),
+                    cursor: 0,
+                    wrapped_dek: Some(dek.clone()),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("push live record");
+
+        // Upload a file for the record
+        let file_id = uuid::Uuid::new_v4();
+        let file_dek = wrapped_dek(0xfe);
+        storage
+            .record_file(space_id, file_id, record_id, 100, &file_dek)
+            .await
+            .expect("record file");
+
+        // Push tombstone
+        let result = storage
+            .push(
+                space_id,
+                &[Change {
+                    id: record_id_str,
+                    blob: None,
+                    cursor: 1,
+                    wrapped_dek: Some(dek),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("push tombstone");
+        assert!(result.ok);
+        assert_eq!(result.deleted_file_ids.len(), 1);
+        assert_eq!(result.deleted_file_ids[0], file_id);
+
+        // Verify file is gone
+        let exists = storage
+            .file_exists(space_id, file_id)
+            .await
+            .expect("file exists");
+        assert!(!exists);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    // =========================================================================
+    // Space isolation and pull ordering tests (ported from Go)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn space_isolation() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_a = uuid::Uuid::new_v4();
+        let space_b = uuid::Uuid::new_v4();
+        create_space(&storage, space_a).await;
+        create_space(&storage, space_b).await;
+
+        storage
+            .push(
+                space_a,
+                &[change(
+                    "019400e8-7b5d-7000-8000-000000000001",
+                    Some(b"space a data"),
+                    0,
+                )],
+                None,
+            )
+            .await
+            .expect("push to space a");
+        storage
+            .push(
+                space_b,
+                &[change(
+                    "019400e8-7b5d-7000-8000-000000000002",
+                    Some(b"space b data"),
+                    0,
+                )],
+                None,
+            )
+            .await
+            .expect("push to space b");
+
+        let pull_a = storage.pull(space_a, 0).await.expect("pull space a");
+        let pull_b = storage.pull(space_b, 0).await.expect("pull space b");
+
+        assert_eq!(pull_a.records().len(), 1);
+        assert_eq!(pull_b.records().len(), 1);
+        assert_eq!(pull_a.records()[0].blob, Some(b"space a data".to_vec()));
+        assert_eq!(pull_b.records()[0].blob, Some(b"space b data".to_vec()));
+
+        cleanup_space(&storage, space_a).await;
+        cleanup_space(&storage, space_b).await;
+    }
+
+    #[tokio::test]
+    async fn pull_order_by_sequence_then_id() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        // Push records with IDs in non-sorted order; all at cursor=0 (same sequence)
+        storage
+            .push(
+                space_id,
+                &[
+                    change("019400e8-7b5d-7000-8000-000000000003", Some(b"z"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000001", Some(b"a"), 0),
+                    change("019400e8-7b5d-7000-8000-000000000002", Some(b"m"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect("push");
+
+        let result = storage.pull(space_id, 0).await.expect("pull");
+        let records = result.records();
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "019400e8-7b5d-7000-8000-000000000001",
+                "019400e8-7b5d-7000-8000-000000000002",
+                "019400e8-7b5d-7000-8000-000000000003",
+            ]
+        );
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    // =========================================================================
+    // Members tests (ported from Go)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn get_members_with_since() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        // Append 3 entries
+        let mut prev_hash: Vec<u8> = vec![];
+        for i in 1..=3 {
+            let hash = vec![i as u8; 32];
+            storage
+                .append_member(
+                    space_id,
+                    i - 1,
+                    &member_entry(&prev_hash, &hash, format!("entry {i}").as_bytes()),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("append {i} failed"));
+            prev_hash = hash;
+        }
+
+        // Get entries since seq 2 — should only return entry 3
+        let entries = storage
+            .get_members(space_id, 2)
+            .await
+            .expect("get members with since");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].chain_seq, 3);
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    #[tokio::test]
+    async fn get_members_empty() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let entries = storage
+            .get_members(space_id, 0)
+            .await
+            .expect("get members empty");
+        assert!(entries.is_empty());
+
+        cleanup_space(&storage, space_id).await;
+    }
+
+    // =========================================================================
+    // Epoch tests (ported from Go)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn advance_epoch_space_not_found() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let error = storage
+            .advance_epoch(uuid::Uuid::new_v4(), 2, None)
+            .await
+            .expect_err("advance on missing space should fail");
+        assert_eq!(error, StorageError::SpaceNotFound);
+    }
 }

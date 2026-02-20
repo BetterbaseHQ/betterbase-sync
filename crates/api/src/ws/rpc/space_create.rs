@@ -10,6 +10,11 @@ use less_sync_core::protocol::{
 use less_sync_storage::StorageError;
 use uuid::Uuid;
 
+/// A compressed SEC1 public key is exactly 33 bytes with a 0x02 or 0x03 prefix.
+fn is_valid_compressed_public_key(key: &[u8]) -> bool {
+    key.len() == 33 && (key[0] == 0x02 || key[0] == 0x03)
+}
+
 pub(super) async fn handle_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
@@ -44,7 +49,7 @@ pub(super) async fn handle_request(
             return;
         }
     };
-    if params.root_public_key.is_empty() {
+    if !is_valid_compressed_public_key(&params.root_public_key) {
         send_error_response(
             outbound,
             id,

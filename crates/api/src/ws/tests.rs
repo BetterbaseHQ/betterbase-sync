@@ -1862,7 +1862,7 @@ async fn websocket_space_create_returns_id_and_key_generation() {
         "space.create",
         &less_sync_core::protocol::SpaceCreateParams {
             id: space_id.clone(),
-            root_public_key: vec![1, 2, 3],
+            root_public_key: vec![0x02; 33],
         },
     )
     .await;
@@ -1962,7 +1962,7 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
         "space.create",
         &less_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
-            root_public_key: vec![1, 2, 3],
+            root_public_key: vec![0x03; 33],
         },
     )
     .await;
@@ -5609,4 +5609,755 @@ where
         WsMessage::Binary(data) => minicbor_serde::from_slice(&data).expect("decode notification"),
         other => panic!("expected binary notification frame, got {other:?}"),
     }
+}
+
+// ============================================================
+// Missing RPC handler tests ported from Go (less-sync)
+// ============================================================
+
+// --- DEKs: invalid params and invalid space ID ---
+
+#[tokio::test]
+async fn websocket_deks_get_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    // Send a string instead of a map — invalid params
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-bad-params",
+            "method": "deks.get",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_rewrap_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "deks-rewrap-bad",
+            "method": "deks.rewrap",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-rewrap-bad");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_get_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "deks-badspace",
+        "deks.get",
+        &serde_json::json!({"space": "not-a-uuid"}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_deks_rewrap_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "deks-rewrap-badspace",
+        "deks.rewrap",
+        &serde_json::json!({"space": "not-a-uuid", "deks": []}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-rewrap-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+// --- Epoch: invalid params, invalid space, invalid epoch value ---
+
+#[tokio::test]
+async fn websocket_epoch_begin_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-bad-params",
+            "method": "epoch.begin",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_complete_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-complete-bad",
+            "method": "epoch.complete",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-complete-bad");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_begin_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "epoch-badspace",
+        "epoch.begin",
+        &serde_json::json!({"space": "not-a-uuid", "epoch": 2}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_complete_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "epoch-complete-badspace",
+        "epoch.complete",
+        &serde_json::json!({"space": "not-a-uuid", "epoch": 2}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-complete-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+// --- Membership: invalid params, invalid space ---
+
+#[tokio::test]
+async fn websocket_membership_append_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "mem-append-bad",
+            "method": "membership.append",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-append-bad");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_list_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "mem-list-bad",
+            "method": "membership.list",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-list-bad");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "mem-revoke-bad",
+            "method": "membership.revoke",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-revoke-bad");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_append_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "mem-append-badspace",
+        "membership.append",
+        &less_sync_core::protocol::MembershipAppendParams {
+            space: "not-a-uuid".to_owned(),
+            ucan: String::new(),
+            expected_version: 0,
+            prev_hash: None,
+            entry_hash: vec![0; 32],
+            payload: vec![1, 2, 3],
+        },
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-append-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_list_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "mem-list-badspace",
+        "membership.list",
+        &serde_json::json!({"space": "not-a-uuid"}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-list-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_invalid_space_id_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "mem-revoke-badspace",
+        "membership.revoke",
+        &serde_json::json!({
+            "space": "not-a-uuid",
+            "ucan_cid": "test-cid",
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "mem-revoke-badspace");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+// --- Space create: invalid params ---
+
+#[tokio::test]
+async fn websocket_space_create_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sc-bad-params",
+            "method": "space.create",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sc-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_invalid_public_key_wrong_size_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    // 32 bytes instead of 33
+    send_rpc_request(
+        &mut socket,
+        "sc-badkey1",
+        "space.create",
+        &less_sync_core::protocol::SpaceCreateParams {
+            id: Uuid::new_v4().to_string(),
+            root_public_key: vec![0x02; 32],
+        },
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sc-badkey1");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_space_create_invalid_public_key_not_compressed_returns_bad_request() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    // 33 bytes but 0x04 prefix (uncompressed)
+    send_rpc_request(
+        &mut socket,
+        "sc-badkey2",
+        "space.create",
+        &less_sync_core::protocol::SpaceCreateParams {
+            id: Uuid::new_v4().to_string(),
+            root_public_key: vec![0x04; 33],
+        },
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sc-badkey2");
+    assert_eq!(response.error.code, "bad_request");
+    server.handle.abort();
+}
+
+// --- Invitation: invalid params, get not found, list wrong mailbox ---
+
+#[tokio::test]
+async fn websocket_invitation_create_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "inv-bad-params",
+            "method": "invitation.create",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "inv-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_get_not_found_returns_not_found_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    let nonexistent_id = Uuid::new_v4().to_string();
+    send_rpc_request(
+        &mut socket,
+        "inv-get-notfound",
+        "invitation.get",
+        &serde_json::json!({"id": nonexistent_id}),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "inv-get-notfound");
+    assert_eq!(response.error.code, "not_found");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_invitation_list_wrong_mailbox_returns_empty_list() {
+    // The stub has invitations for TEST_MAILBOX_ID. A connection with a
+    // different mailbox should see an empty list.
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let mut auth_ctx = test_auth_context("sync");
+    auth_ctx.mailbox_id = TEST_OTHER_MAILBOX_ID.to_owned();
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator {
+        tokens: HashMap::from([("other-token".to_owned(), auth_ctx)]),
+    });
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth_with_token(&mut socket, "other-token").await;
+
+    send_rpc_request(
+        &mut socket,
+        "inv-list-other",
+        "invitation.list",
+        &serde_json::json!({}),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::InvitationListResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "inv-list-other");
+    assert!(
+        response.result.invitations.is_empty(),
+        "wrong mailbox should see 0 invitations, got {}",
+        response.result.invitations.len()
+    );
+    server.handle.abort();
+}
+
+// --- Push: invalid params, conflict ---
+
+#[tokio::test]
+async fn websocket_push_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "push-bad-params",
+            "method": "push",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "push-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_push_conflict_returns_conflict_result() {
+    // Configure stub to return ok=false (conflict)
+    let storage = Arc::new(StubSyncStorage {
+        push_result: less_sync_storage::PushResult {
+            ok: false,
+            cursor: 0,
+            deleted_file_ids: Vec::new(),
+        },
+        ..StubSyncStorage::healthy()
+    });
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "push-conflict",
+        "push",
+        &less_sync_core::protocol::PushParams {
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            changes: vec![less_sync_core::protocol::WsPushChange {
+                id: Uuid::new_v4().to_string(),
+                blob: Some(vec![1, 2, 3]),
+                expected_cursor: 99,
+                wrapped_dek: Some(vec![0xAA; 44]),
+            }],
+        },
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "push-conflict");
+    assert!(!response.result.ok);
+    assert_eq!(response.result.error, "conflict");
+    server.handle.abort();
+}
+
+// --- Subscribe: invalid params, empty space list ---
+
+#[tokio::test]
+async fn websocket_subscribe_invalid_params_returns_invalid_params_error() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": less_sync_core::protocol::RPC_REQUEST,
+            "id": "sub-bad-params",
+            "method": "subscribe",
+            "params": "not-a-map"
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "sub-bad-params");
+    assert_eq!(response.error.code, "invalid_params");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_subscribe_empty_space_list_returns_empty_result() {
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage,
+    ))
+    .await;
+    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "sub-empty",
+        "subscribe",
+        &serde_json::json!({"spaces": []}),
+    )
+    .await;
+
+    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "sub-empty");
+    assert!(response.result.spaces.is_empty());
+    assert!(response.result.errors.is_empty());
+    server.handle.abort();
 }
