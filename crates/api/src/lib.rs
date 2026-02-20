@@ -245,7 +245,7 @@ impl ApiState {
     #[must_use]
     pub fn with_realtime_broker(mut self, broker: Arc<MultiBroker>) -> Self {
         self.realtime_broker = Some(broker);
-        self.presence_registry = Some(Arc::new(ws::PresenceRegistry::default()));
+        self.presence_registry = Some(Arc::new(ws::PresenceRegistry::new()));
         self
     }
 
@@ -253,7 +253,7 @@ impl ApiState {
         self.realtime_broker.clone()
     }
 
-    pub(crate) fn presence_registry(&self) -> Option<Arc<ws::PresenceRegistry>> {
+    pub fn presence_registry(&self) -> Option<Arc<ws::PresenceRegistry>> {
         self.presence_registry.clone()
     }
 }

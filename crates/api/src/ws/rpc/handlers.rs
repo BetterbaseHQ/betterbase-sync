@@ -39,10 +39,13 @@ pub(super) async fn handle_unsubscribe_notification(
         return removed;
     };
 
-    let peer = realtime.peer_id().to_owned();
+    let conn_id = realtime.peer_id().to_owned();
     for space_id in &params.spaces {
-        if presence_registry.clear(space_id, &peer).await {
-            realtime.broadcast_presence_leave(space_id, &peer).await;
+        if presence_registry.clear(space_id, &conn_id).await {
+            let pseudonym = presence_registry.peer_pseudonym(&conn_id, space_id);
+            realtime
+                .broadcast_presence_leave(space_id, &pseudonym)
+                .await;
         }
     }
     removed
@@ -69,13 +72,16 @@ pub(super) async fn handle_presence_set_notification(
         return;
     }
 
-    let peer = realtime.peer_id().to_owned();
-    presence_registry
-        .set(&params.space, &peer, params.data.clone())
-        .await;
-    realtime
-        .broadcast_presence(&params.space, &peer, params.data)
-        .await;
+    let conn_id = realtime.peer_id().to_owned();
+    let pseudonym = presence_registry.peer_pseudonym(&conn_id, &params.space);
+    if presence_registry
+        .set(&params.space, &conn_id, params.data.clone())
+        .await
+    {
+        realtime
+            .broadcast_presence(&params.space, &pseudonym, params.data)
+            .await;
+    }
 }
 
 pub(super) async fn handle_presence_clear_notification(
@@ -99,16 +105,18 @@ pub(super) async fn handle_presence_clear_notification(
         return;
     }
 
-    let peer = realtime.peer_id().to_owned();
-    if presence_registry.clear(&params.space, &peer).await {
+    let conn_id = realtime.peer_id().to_owned();
+    if presence_registry.clear(&params.space, &conn_id).await {
+        let pseudonym = presence_registry.peer_pseudonym(&conn_id, &params.space);
         realtime
-            .broadcast_presence_leave(&params.space, &peer)
+            .broadcast_presence_leave(&params.space, &pseudonym)
             .await;
     }
 }
 
 pub(super) async fn handle_event_send_notification(
     realtime: Option<&RealtimeSession>,
+    presence_registry: Option<&PresenceRegistry>,
     payload: &[u8],
 ) {
     let Some(realtime) = realtime else {
@@ -127,9 +135,14 @@ pub(super) async fn handle_event_send_notification(
         return;
     }
 
-    let peer = realtime.peer_id().to_owned();
+    let conn_id = realtime.peer_id().to_owned();
+    let pseudonym = if let Some(presence_registry) = presence_registry {
+        presence_registry.peer_pseudonym(&conn_id, &params.space)
+    } else {
+        conn_id
+    };
     realtime
-        .broadcast_event(&params.space, &peer, params.data)
+        .broadcast_event(&params.space, &pseudonym, params.data)
         .await;
 }
 

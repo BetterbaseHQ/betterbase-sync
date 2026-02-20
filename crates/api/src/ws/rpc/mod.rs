@@ -414,7 +414,7 @@ async fn handle_client_notification(
                 .await;
         }
         "event.send" => {
-            handlers::handle_event_send_notification(realtime, payload).await;
+            handlers::handle_event_send_notification(realtime, presence_registry, payload).await;
         }
         _ => {}
     }

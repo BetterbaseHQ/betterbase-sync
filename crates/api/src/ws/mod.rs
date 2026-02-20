@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{OriginalUri, State};
@@ -17,13 +18,22 @@ use uuid::Uuid;
 
 use crate::ApiState;
 
+/// Maximum duration of a WebSocket connection.
+const WS_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60); // 1 hour
+/// Interval between keepalive frames (CBOR null).
+const WS_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// CBOR null (0xF6), used as keepalive.
+const CBOR_NULL: &[u8] = &[0xF6];
+/// Maximum size of a single inbound WebSocket message (4 MiB).
+const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 mod authz;
 mod presence;
 mod realtime;
 mod rpc;
 mod storage;
 
-pub(crate) use presence::PresenceRegistry;
+pub use presence::PresenceRegistry;
 pub(crate) use storage::SyncStorage;
 
 #[derive(Clone)]
@@ -94,6 +104,8 @@ pub(crate) async fn federation_websocket_upgrade(
         federation_quota_tracker: state.federation_quota_tracker(),
     };
     ws.protocols([WS_SUBPROTOCOL])
+        .max_frame_size(WS_MAX_MESSAGE_SIZE)
+        .max_message_size(WS_MAX_MESSAGE_SIZE)
         .on_upgrade(move |socket| {
             serve_websocket(socket, config, Some(auth_context), runtime_context)
         })
@@ -124,6 +136,8 @@ async fn websocket_upgrade_with_mode(
     };
 
     ws.protocols([WS_SUBPROTOCOL])
+        .max_frame_size(WS_MAX_MESSAGE_SIZE)
+        .max_message_size(WS_MAX_MESSAGE_SIZE)
         .on_upgrade(move |socket| serve_websocket(socket, config, None, runtime_context))
         .into_response()
 }
@@ -192,24 +206,40 @@ async fn serve_websocket(
     let writer_closed = Arc::clone(&closed);
 
     let writer = tokio::spawn(async move {
-        while let Some(frame) = outbound_rx.recv().await {
-            match frame {
-                realtime::OutboundFrame::Binary(payload) => {
+        let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
+        keepalive.tick().await; // first tick fires immediately, skip it
+        loop {
+            tokio::select! {
+                frame = outbound_rx.recv() => {
+                    let Some(frame) = frame else { break };
+                    match frame {
+                        realtime::OutboundFrame::Binary(payload) => {
+                            if socket_sender
+                                .send(Message::Binary(payload.to_vec().into()))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        realtime::OutboundFrame::Close(close) => {
+                            let frame = CloseFrame {
+                                code: close.code as u16,
+                                reason: close.reason.into(),
+                            };
+                            let _ = socket_sender.send(Message::Close(Some(frame))).await;
+                            break;
+                        }
+                    }
+                }
+                _ = keepalive.tick() => {
                     if socket_sender
-                        .send(Message::Binary(payload.to_vec().into()))
+                        .send(Message::Binary(CBOR_NULL.to_vec().into()))
                         .await
                         .is_err()
                     {
                         break;
                     }
-                }
-                realtime::OutboundFrame::Close(close) => {
-                    let frame = CloseFrame {
-                        code: close.code as u16,
-                        reason: close.reason.into(),
-                    };
-                    let _ = socket_sender.send(Message::Close(Some(frame))).await;
-                    break;
                 }
             }
         }
@@ -296,10 +326,29 @@ async fn serve_websocket(
         }
     };
 
-    while let Some(message) = socket_receiver.next().await {
-        let message = match message {
-            Ok(message) => message,
-            Err(_) => break,
+    let lifetime = jittered_lifetime(WS_MAX_LIFETIME);
+    let deadline = tokio::time::sleep(lifetime);
+    tokio::pin!(deadline);
+
+    loop {
+        let message = tokio::select! {
+            msg = socket_receiver.next() => {
+                match msg {
+                    Some(Ok(message)) => message,
+                    Some(Err(_)) | None => break,
+                }
+            }
+            _ = &mut deadline => {
+                realtime::send_close(
+                    &outbound,
+                    CloseDirective {
+                        code: less_sync_core::protocol::CLOSE_TOKEN_EXPIRED,
+                        reason: "connection timeout",
+                    },
+                )
+                .await;
+                break;
+            }
         };
 
         match message {
@@ -385,11 +434,11 @@ async fn serve_websocket(
 
     if let Some(session) = realtime_session.as_ref() {
         if let Some(presence_registry) = runtime_context.presence_registry.as_deref() {
-            let cleared_spaces = presence_registry.clear_peer(session.peer_id()).await;
+            let conn_id = session.peer_id();
+            let cleared_spaces = presence_registry.clear_peer(conn_id).await;
             for space_id in &cleared_spaces {
-                session
-                    .broadcast_presence_leave(space_id, session.peer_id())
-                    .await;
+                let pseudonym = presence_registry.peer_pseudonym(conn_id, space_id);
+                session.broadcast_presence_leave(space_id, &pseudonym).await;
             }
         }
         session.unregister().await;
@@ -422,6 +471,15 @@ async fn release_federation_quotas(
         .federation_quota_tracker
         .remove_connection(peer_domain)
         .await;
+}
+
+/// Returns base ± 10% to prevent thundering herd on reconnect.
+fn jittered_lifetime(base: Duration) -> Duration {
+    use rand_core::{OsRng, RngCore};
+    // ±10%: multiply base by [0.9, 1.1)
+    let random = (OsRng.next_u32() as f64) / (u32::MAX as f64); // [0, 1)
+    let jitter = 0.9 + random * 0.2;
+    Duration::from_secs_f64(base.as_secs_f64() * jitter)
 }
 
 fn to_first_message(message: Message) -> FirstMessage {
