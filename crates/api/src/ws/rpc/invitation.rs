@@ -4,14 +4,14 @@ use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::{canonicalize_domain, AuthContext};
-use less_sync_core::protocol::{
+use betterbase_sync_auth::{canonicalize_domain, AuthContext};
+use betterbase_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, InvitationCreateParams,
     InvitationCreateResult, InvitationDeleteParams, InvitationGetParams, InvitationListParams,
     InvitationListResult, ERR_CODE_BAD_REQUEST, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
     ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
-use less_sync_storage::{Invitation, StorageError};
+use betterbase_sync_storage::{Invitation, StorageError};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -52,7 +52,7 @@ pub(super) async fn handle_create_request(
     };
     // Rate limiting (before validation to prevent free probing).
     let actor_hash = if let Some(key) = identity_hash_key {
-        let hash = less_sync_storage::rate_limit_hash(key, &auth.issuer, &auth.user_id);
+        let hash = betterbase_sync_storage::rate_limit_hash(key, &auth.issuer, &auth.user_id);
         let since = SystemTime::now() - RATE_LIMIT_WINDOW;
         match sync_storage
             .count_recent_actions("invitation", &hash, since)

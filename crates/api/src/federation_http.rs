@@ -3,7 +3,7 @@ use axum::http::header::CACHE_CONTROL;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
-use less_sync_auth::canonicalize_domain;
+use betterbase_sync_auth::canonicalize_domain;
 use serde::Serialize;
 
 use crate::{ApiState, FederationPeerStatus};

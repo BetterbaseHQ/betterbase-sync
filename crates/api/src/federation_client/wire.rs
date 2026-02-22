@@ -1,4 +1,4 @@
-use less_sync_core::protocol::{RpcError, RPC_CHUNK, RPC_RESPONSE};
+use betterbase_sync_core::protocol::{RpcError, RPC_CHUNK, RPC_RESPONSE};
 
 use super::FederationPeerError;
 
@@ -27,7 +27,7 @@ pub(super) struct InboundResponseFrame {
     pub(super) frame_type: i32,
     pub(super) id: String,
     #[serde(default)]
-    pub(super) result: Option<less_sync_core::protocol::CborValue>,
+    pub(super) result: Option<betterbase_sync_core::protocol::CborValue>,
     #[serde(default)]
     pub(super) error: Option<RpcError>,
 }
@@ -38,7 +38,7 @@ pub(super) struct InboundChunkFrame {
     pub(super) frame_type: i32,
     pub(super) id: String,
     pub(super) name: String,
-    pub(super) data: less_sync_core::protocol::CborValue,
+    pub(super) data: betterbase_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -56,7 +56,7 @@ where
     T: serde::Serialize,
 {
     minicbor_serde::to_vec(&OutboundRequestFrame {
-        frame_type: less_sync_core::protocol::RPC_REQUEST,
+        frame_type: betterbase_sync_core::protocol::RPC_REQUEST,
         id: request_id,
         method,
         params,

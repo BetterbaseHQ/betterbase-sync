@@ -8,9 +8,9 @@ use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS;
-use less_sync_realtime::ws::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS;
+use betterbase_sync_realtime::ws::{
     authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
     FirstMessage, WS_SUBPROTOCOL,
 };
@@ -46,7 +46,7 @@ enum ConnectionMode {
 #[derive(Clone)]
 struct WebSocketRuntimeContext {
     sync_storage: Option<Arc<dyn SyncStorage>>,
-    realtime_broker: Option<Arc<less_sync_realtime::broker::MultiBroker>>,
+    realtime_broker: Option<Arc<betterbase_sync_realtime::broker::MultiBroker>>,
     presence_registry: Option<Arc<PresenceRegistry>>,
     connection_mode: ConnectionMode,
     federation_forwarder: Option<Arc<dyn crate::FederationForwarder>>,
@@ -346,7 +346,7 @@ async fn serve_websocket(
                 realtime::send_close(
                     &outbound,
                     CloseDirective {
-                        code: less_sync_core::protocol::CLOSE_TOKEN_EXPIRED,
+                        code: betterbase_sync_core::protocol::CLOSE_TOKEN_EXPIRED,
                         reason: "connection timeout",
                     },
                 )

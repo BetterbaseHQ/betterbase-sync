@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use less_sync_core::protocol::Space;
+use betterbase_sync_core::protocol::Space;
 use uuid::Uuid;
 
 use super::{is_unique_violation, PostgresStorage};

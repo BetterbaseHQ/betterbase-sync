@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use less_sync_core::protocol::{Change, RPC_NOTIFICATION};
-use less_sync_realtime::broker::{BrokerConfig, MultiBroker, Subscriber};
+use betterbase_sync_core::protocol::{Change, RPC_NOTIFICATION};
+use betterbase_sync_realtime::broker::{BrokerConfig, MultiBroker, Subscriber};
 
 const SPACE_ID: &str = "11111111-1111-1111-1111-111111111111";
 

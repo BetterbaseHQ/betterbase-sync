@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
-use less_sync_auth::Permission;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::Permission;
+use betterbase_sync_core::protocol::{
     SubscribeParams, SubscribeResult, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST,
     ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
     ERR_CODE_RATE_LIMITED,

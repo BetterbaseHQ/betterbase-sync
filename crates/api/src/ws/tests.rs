@@ -10,11 +10,11 @@ use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, StatusCode};
 use jsonwebtoken::{Algorithm, Header};
-use less_sync_auth::{
+use betterbase_sync_auth::{
     compress_public_key, compute_ucan_cid, derive_fst_key, encode_did_key, sign_http_request,
     AudienceClaim, AuthContext, AuthError, Permission, TokenValidator, UcanClaims,
 };
-use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
+use betterbase_sync_realtime::broker::{BrokerConfig, MultiBroker};
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
@@ -47,7 +47,7 @@ struct StubHealth;
 
 #[async_trait]
 impl HealthCheck for StubHealth {
-    async fn ping(&self) -> Result<(), less_sync_storage::StorageError> {
+    async fn ping(&self) -> Result<(), betterbase_sync_storage::StorageError> {
         Ok(())
     }
 }
@@ -84,14 +84,14 @@ impl TokenValidator for StubValidator {
 struct ForwardedPushCall {
     peer_domain: String,
     peer_ws_url: String,
-    params: less_sync_core::protocol::PushParams,
+    params: betterbase_sync_core::protocol::PushParams,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ForwardedSubscribeCall {
     peer_domain: String,
     peer_ws_url: String,
-    spaces: Vec<less_sync_core::protocol::WsSubscribeSpace>,
+    spaces: Vec<betterbase_sync_core::protocol::WsSubscribeSpace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,18 +104,18 @@ struct ForwardedRestoreCall {
 struct ForwardedPullCall {
     peer_domain: String,
     peer_ws_url: String,
-    spaces: Vec<less_sync_core::protocol::WsPullSpace>,
+    spaces: Vec<betterbase_sync_core::protocol::WsPullSpace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ForwardedInvitationCall {
     peer_domain: String,
     peer_ws_url: String,
-    params: less_sync_core::protocol::FederationInvitationParams,
+    params: betterbase_sync_core::protocol::FederationInvitationParams,
 }
 
 struct StubFederationForwarder {
-    push_result: less_sync_core::protocol::PushRpcResult,
+    push_result: betterbase_sync_core::protocol::PushRpcResult,
     pull_chunks: Vec<crate::federation_client::FederationPullChunk>,
     fail_push_once: TokioMutex<bool>,
     fail_subscribe: bool,
@@ -131,7 +131,7 @@ struct StubFederationForwarder {
 impl StubFederationForwarder {
     fn healthy() -> Self {
         Self {
-            push_result: less_sync_core::protocol::PushRpcResult {
+            push_result: betterbase_sync_core::protocol::PushRpcResult {
                 ok: true,
                 cursor: 901,
                 error: String::new(),
@@ -191,7 +191,7 @@ impl FederationForwarder for StubFederationForwarder {
         &self,
         peer_domain: &str,
         peer_ws_url: &str,
-        spaces: &[less_sync_core::protocol::WsSubscribeSpace],
+        spaces: &[betterbase_sync_core::protocol::WsSubscribeSpace],
     ) -> Result<(), FederationPeerError> {
         self.subscribe_calls
             .lock()
@@ -212,8 +212,8 @@ impl FederationForwarder for StubFederationForwarder {
         &self,
         peer_domain: &str,
         peer_ws_url: &str,
-        params: &less_sync_core::protocol::PushParams,
-    ) -> Result<less_sync_core::protocol::PushRpcResult, FederationPeerError> {
+        params: &betterbase_sync_core::protocol::PushParams,
+    ) -> Result<betterbase_sync_core::protocol::PushRpcResult, FederationPeerError> {
         self.push_calls.lock().await.push(ForwardedPushCall {
             peer_domain: peer_domain.to_owned(),
             peer_ws_url: peer_ws_url.to_owned(),
@@ -233,7 +233,7 @@ impl FederationForwarder for StubFederationForwarder {
         &self,
         peer_domain: &str,
         peer_ws_url: &str,
-        spaces: &[less_sync_core::protocol::WsPullSpace],
+        spaces: &[betterbase_sync_core::protocol::WsPullSpace],
     ) -> Result<Vec<crate::federation_client::FederationPullChunk>, FederationPeerError> {
         self.pull_calls.lock().await.push(ForwardedPullCall {
             peer_domain: peer_domain.to_owned(),
@@ -265,7 +265,7 @@ impl FederationForwarder for StubFederationForwarder {
         &self,
         peer_domain: &str,
         peer_ws_url: &str,
-        params: &less_sync_core::protocol::FederationInvitationParams,
+        params: &betterbase_sync_core::protocol::FederationInvitationParams,
     ) -> Result<(), FederationPeerError> {
         self.invitation_calls
             .lock()
@@ -286,28 +286,28 @@ impl FederationForwarder for StubFederationForwarder {
 
 struct StubSyncStorage {
     fail_for: HashSet<Uuid>,
-    create_error: Option<less_sync_storage::StorageError>,
+    create_error: Option<betterbase_sync_storage::StorageError>,
     create_key_generation: i32,
-    append_error: Option<less_sync_storage::StorageError>,
-    append_result: less_sync_storage::AppendLogResult,
-    members_result: Vec<less_sync_storage::MembersLogEntry>,
+    append_error: Option<betterbase_sync_storage::StorageError>,
+    append_result: betterbase_sync_storage::AppendLogResult,
+    members_result: Vec<betterbase_sync_storage::MembersLogEntry>,
     metadata_version: i32,
-    revoke_error: Option<less_sync_storage::StorageError>,
-    invitation_create_error: Option<less_sync_storage::StorageError>,
-    invitation_delete_error: Option<less_sync_storage::StorageError>,
-    invitations: Vec<less_sync_storage::Invitation>,
-    epoch_begin_error: Option<less_sync_storage::StorageError>,
-    epoch_begin_result: less_sync_storage::AdvanceEpochResult,
-    epoch_complete_error: Option<less_sync_storage::StorageError>,
-    deks_result: Vec<less_sync_storage::DekRecord>,
-    file_deks_result: Vec<less_sync_storage::FileDekRecord>,
-    deks_rewrap_error: Option<less_sync_storage::StorageError>,
-    file_deks_rewrap_error: Option<less_sync_storage::StorageError>,
+    revoke_error: Option<betterbase_sync_storage::StorageError>,
+    invitation_create_error: Option<betterbase_sync_storage::StorageError>,
+    invitation_delete_error: Option<betterbase_sync_storage::StorageError>,
+    invitations: Vec<betterbase_sync_storage::Invitation>,
+    epoch_begin_error: Option<betterbase_sync_storage::StorageError>,
+    epoch_begin_result: betterbase_sync_storage::AdvanceEpochResult,
+    epoch_complete_error: Option<betterbase_sync_storage::StorageError>,
+    deks_result: Vec<betterbase_sync_storage::DekRecord>,
+    file_deks_result: Vec<betterbase_sync_storage::FileDekRecord>,
+    deks_rewrap_error: Option<betterbase_sync_storage::StorageError>,
+    file_deks_rewrap_error: Option<betterbase_sync_storage::StorageError>,
     shared_spaces: HashMap<Uuid, Vec<u8>>,
     revoked_ucans: HashMap<Uuid, HashSet<String>>,
     space_home_servers: HashMap<Uuid, String>,
-    push_result: less_sync_storage::PushResult,
-    pull_result: less_sync_storage::PullResult,
+    push_result: betterbase_sync_storage::PushResult,
+    pull_result: betterbase_sync_storage::PullResult,
 }
 
 impl StubSyncStorage {
@@ -317,12 +317,12 @@ impl StubSyncStorage {
             create_error: None,
             create_key_generation: 1,
             append_error: None,
-            append_result: less_sync_storage::AppendLogResult {
+            append_result: betterbase_sync_storage::AppendLogResult {
                 chain_seq: 11,
                 cursor: 0,
                 metadata_version: 9,
             },
-            members_result: vec![less_sync_storage::MembersLogEntry {
+            members_result: vec![betterbase_sync_storage::MembersLogEntry {
                 space_id: test_personal_space_uuid(),
                 chain_seq: 11,
                 cursor: 101,
@@ -341,14 +341,14 @@ impl StubSyncStorage {
                 "ciphertext-1",
             )],
             epoch_begin_error: None,
-            epoch_begin_result: less_sync_storage::AdvanceEpochResult { epoch: 2 },
+            epoch_begin_result: betterbase_sync_storage::AdvanceEpochResult { epoch: 2 },
             epoch_complete_error: None,
-            deks_result: vec![less_sync_storage::DekRecord {
+            deks_result: vec![betterbase_sync_storage::DekRecord {
                 id: Uuid::new_v4().to_string(),
                 wrapped_dek: vec![0xAA; 44],
                 cursor: 6,
             }],
-            file_deks_result: vec![less_sync_storage::FileDekRecord {
+            file_deks_result: vec![betterbase_sync_storage::FileDekRecord {
                 id: Uuid::new_v4(),
                 wrapped_dek: vec![0xBB; 44],
                 cursor: 8,
@@ -358,16 +358,16 @@ impl StubSyncStorage {
             shared_spaces: HashMap::new(),
             revoked_ucans: HashMap::new(),
             space_home_servers: HashMap::new(),
-            push_result: less_sync_storage::PushResult {
+            push_result: betterbase_sync_storage::PushResult {
                 ok: true,
                 cursor: 77,
                 deleted_file_ids: Vec::new(),
             },
-            pull_result: less_sync_storage::PullResult {
-                entries: vec![less_sync_storage::PullEntry {
-                    kind: less_sync_storage::PullEntryKind::Record,
+            pull_result: betterbase_sync_storage::PullResult {
+                entries: vec![betterbase_sync_storage::PullEntry {
+                    kind: betterbase_sync_storage::PullEntryKind::Record,
                     cursor: 101,
-                    record: Some(less_sync_core::protocol::Change {
+                    record: Some(betterbase_sync_core::protocol::Change {
                         id: Uuid::new_v4().to_string(),
                         blob: Some(b"record-blob".to_vec()),
                         cursor: 101,
@@ -383,63 +383,63 @@ impl StubSyncStorage {
         }
     }
 
-    fn with_create_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_create_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             create_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_append_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_append_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             append_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_revoke_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_revoke_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             revoke_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_invitation_create_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_invitation_create_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             invitation_create_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_invitation_delete_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_invitation_delete_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             invitation_delete_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_epoch_begin_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_epoch_begin_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             epoch_begin_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_epoch_complete_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_epoch_complete_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             epoch_complete_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_deks_rewrap_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_deks_rewrap_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             deks_rewrap_error: Some(error),
             ..Self::healthy()
         }
     }
 
-    fn with_file_deks_rewrap_error(error: less_sync_storage::StorageError) -> Self {
+    fn with_file_deks_rewrap_error(error: betterbase_sync_storage::StorageError) -> Self {
         Self {
             file_deks_rewrap_error: Some(error),
             ..Self::healthy()
@@ -497,13 +497,13 @@ impl SyncStorage for StubSyncStorage {
     async fn get_space(
         &self,
         space_id: Uuid,
-    ) -> Result<less_sync_core::protocol::Space, less_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_core::protocol::Space, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
 
         if space_id == test_personal_space_uuid() {
-            return Ok(less_sync_core::protocol::Space {
+            return Ok(betterbase_sync_core::protocol::Space {
                 id: space_id.to_string(),
                 client_id: "client-1".to_owned(),
                 root_public_key: None,
@@ -516,7 +516,7 @@ impl SyncStorage for StubSyncStorage {
             });
         }
         if let Some(root_public_key) = self.shared_spaces.get(&space_id) {
-            return Ok(less_sync_core::protocol::Space {
+            return Ok(betterbase_sync_core::protocol::Space {
                 id: space_id.to_string(),
                 client_id: "client-1".to_owned(),
                 root_public_key: Some(root_public_key.clone()),
@@ -529,7 +529,7 @@ impl SyncStorage for StubSyncStorage {
             });
         }
 
-        Err(less_sync_storage::StorageError::SpaceNotFound)
+        Err(betterbase_sync_storage::StorageError::SpaceNotFound)
     }
 
     async fn create_space(
@@ -537,15 +537,15 @@ impl SyncStorage for StubSyncStorage {
         space_id: Uuid,
         client_id: &str,
         root_public_key: Option<&[u8]>,
-    ) -> Result<less_sync_core::protocol::Space, less_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_core::protocol::Space, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         if let Some(error) = &self.create_error {
             return Err(error.clone());
         }
 
-        Ok(less_sync_core::protocol::Space {
+        Ok(betterbase_sync_core::protocol::Space {
             id: space_id.to_string(),
             client_id: client_id.to_owned(),
             root_public_key: root_public_key.map(ToOwned::to_owned),
@@ -562,9 +562,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _client_id: &str,
-    ) -> Result<SubscribedSpaceState, less_sync_storage::StorageError> {
+    ) -> Result<SubscribedSpaceState, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
 
         Ok(SubscribedSpaceState {
@@ -578,10 +578,10 @@ impl SyncStorage for StubSyncStorage {
     async fn push(
         &self,
         space_id: Uuid,
-        _changes: &[less_sync_core::protocol::Change],
-    ) -> Result<less_sync_storage::PushResult, less_sync_storage::StorageError> {
+        _changes: &[betterbase_sync_core::protocol::Change],
+    ) -> Result<betterbase_sync_storage::PushResult, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         Ok(self.push_result.clone())
     }
@@ -590,9 +590,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _since: i64,
-    ) -> Result<less_sync_storage::PullStream, less_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_storage::PullStream, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let entries = self.pull_result.entries.clone();
@@ -603,8 +603,8 @@ impl SyncStorage for StubSyncStorage {
                 }
             }
         });
-        Ok(less_sync_storage::PullStream::new(
-            less_sync_storage::PullStreamMeta {
+        Ok(betterbase_sync_storage::PullStream::new(
+            betterbase_sync_storage::PullStreamMeta {
                 cursor: self.pull_result.cursor,
                 key_generation: self.create_key_generation,
                 rewrap_epoch: None,
@@ -617,10 +617,10 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _expected_version: i32,
-        _entry: &less_sync_storage::MembersLogEntry,
-    ) -> Result<less_sync_storage::AppendLogResult, less_sync_storage::StorageError> {
+        _entry: &betterbase_sync_storage::MembersLogEntry,
+    ) -> Result<betterbase_sync_storage::AppendLogResult, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         if let Some(error) = &self.append_error {
             return Err(error.clone());
@@ -632,9 +632,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _since_seq: i32,
-    ) -> Result<Vec<less_sync_storage::MembersLogEntry>, less_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::MembersLogEntry>, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         Ok(self.members_result.clone())
     }
@@ -643,9 +643,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _ucan_cid: &str,
-    ) -> Result<(), less_sync_storage::StorageError> {
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         if let Some(error) = &self.revoke_error {
             return Err(error.clone());
@@ -657,9 +657,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         ucan_cid: &str,
-    ) -> Result<bool, less_sync_storage::StorageError> {
+    ) -> Result<bool, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
-            return Err(less_sync_storage::StorageError::Unavailable);
+            return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
         Ok(self
             .revoked_ucans
@@ -669,8 +669,8 @@ impl SyncStorage for StubSyncStorage {
 
     async fn create_invitation(
         &self,
-        invitation: &less_sync_storage::Invitation,
-    ) -> Result<less_sync_storage::Invitation, less_sync_storage::StorageError> {
+        invitation: &betterbase_sync_storage::Invitation,
+    ) -> Result<betterbase_sync_storage::Invitation, betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.invitation_create_error {
             return Err(error.clone());
         }
@@ -686,7 +686,7 @@ impl SyncStorage for StubSyncStorage {
         mailbox_id: &str,
         _limit: usize,
         _after: Option<Uuid>,
-    ) -> Result<Vec<less_sync_storage::Invitation>, less_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::Invitation>, betterbase_sync_storage::StorageError> {
         Ok(self
             .invitations
             .iter()
@@ -699,19 +699,19 @@ impl SyncStorage for StubSyncStorage {
         &self,
         id: Uuid,
         mailbox_id: &str,
-    ) -> Result<less_sync_storage::Invitation, less_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_storage::Invitation, betterbase_sync_storage::StorageError> {
         self.invitations
             .iter()
             .find(|invitation| invitation.id == id && invitation.mailbox_id == mailbox_id)
             .cloned()
-            .ok_or(less_sync_storage::StorageError::InvitationNotFound)
+            .ok_or(betterbase_sync_storage::StorageError::InvitationNotFound)
     }
 
     async fn delete_invitation(
         &self,
         id: Uuid,
         mailbox_id: &str,
-    ) -> Result<(), less_sync_storage::StorageError> {
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.invitation_delete_error {
             return Err(error.clone());
         }
@@ -722,7 +722,7 @@ impl SyncStorage for StubSyncStorage {
         if exists {
             Ok(())
         } else {
-            Err(less_sync_storage::StorageError::InvitationNotFound)
+            Err(betterbase_sync_storage::StorageError::InvitationNotFound)
         }
     }
 
@@ -730,8 +730,8 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _requested_epoch: i32,
-        _opts: Option<&less_sync_storage::AdvanceEpochOptions>,
-    ) -> Result<less_sync_storage::AdvanceEpochResult, less_sync_storage::StorageError> {
+        _opts: Option<&betterbase_sync_storage::AdvanceEpochOptions>,
+    ) -> Result<betterbase_sync_storage::AdvanceEpochResult, betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.epoch_begin_error {
             return Err(error.clone());
         }
@@ -742,7 +742,7 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _epoch: i32,
-    ) -> Result<(), less_sync_storage::StorageError> {
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.epoch_complete_error {
             return Err(error.clone());
         }
@@ -753,15 +753,15 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _since: i64,
-    ) -> Result<Vec<less_sync_storage::DekRecord>, less_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::DekRecord>, betterbase_sync_storage::StorageError> {
         Ok(self.deks_result.clone())
     }
 
     async fn rewrap_deks(
         &self,
         _space_id: Uuid,
-        _deks: &[less_sync_storage::DekRecord],
-    ) -> Result<(), less_sync_storage::StorageError> {
+        _deks: &[betterbase_sync_storage::DekRecord],
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.deks_rewrap_error {
             return Err(error.clone());
         }
@@ -772,15 +772,15 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _since: i64,
-    ) -> Result<Vec<less_sync_storage::FileDekRecord>, less_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::FileDekRecord>, betterbase_sync_storage::StorageError> {
         Ok(self.file_deks_result.clone())
     }
 
     async fn rewrap_file_deks(
         &self,
         _space_id: Uuid,
-        _deks: &[less_sync_storage::FileDekRecord],
-    ) -> Result<(), less_sync_storage::StorageError> {
+        _deks: &[betterbase_sync_storage::FileDekRecord],
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         if let Some(error) = &self.file_deks_rewrap_error {
             return Err(error.clone());
         }
@@ -792,7 +792,7 @@ impl SyncStorage for StubSyncStorage {
         _action: &str,
         _actor_hash: &str,
         _since: std::time::SystemTime,
-    ) -> Result<i64, less_sync_storage::StorageError> {
+    ) -> Result<i64, betterbase_sync_storage::StorageError> {
         Ok(0)
     }
 
@@ -800,7 +800,7 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _action: &str,
         _actor_hash: &str,
-    ) -> Result<(), less_sync_storage::StorageError> {
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
         Ok(())
     }
 }
@@ -850,7 +850,7 @@ async fn websocket_federation_route_without_authenticator_returns_not_found() {
     let request = ws_request_path(
         server.addr,
         "/api/v1/federation/ws",
-        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
     );
 
     let error = connect_async(request)
@@ -894,7 +894,7 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-1",
             "method": "subscribe",
             "params": {
@@ -904,7 +904,7 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
     )
     .await;
 
-    let first: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let first: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(first.id, "fed-sub-1");
     assert_eq!(first.result.spaces.len(), 1);
@@ -914,7 +914,7 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-2",
             "method": "subscribe",
             "params": {
@@ -924,7 +924,7 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
     )
     .await;
 
-    let second: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let second: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(second.id, "fed-sub-2");
     assert_eq!(second.result.spaces.len(), 1);
@@ -961,7 +961,7 @@ async fn websocket_federation_subscribe_rejects_too_many_spaces() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-too-many-1",
             "method": "subscribe",
             "params": { "spaces": spaces }
@@ -973,7 +973,7 @@ async fn websocket_federation_subscribe_rejects_too_many_spaces() {
     assert_eq!(response.id, "fed-sub-too-many-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -999,7 +999,7 @@ async fn websocket_federation_invitation_create_returns_ok() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-inv-1",
             "method": "fed.invitation",
             "params": {
@@ -1010,7 +1010,7 @@ async fn websocket_federation_invitation_create_returns_ok() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::FederationInvitationResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::FederationInvitationResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "fed-inv-1");
     assert!(response.result.ok);
@@ -1046,21 +1046,21 @@ async fn websocket_federation_invitation_quota_is_enforced() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-inv-quota-1",
             "method": "fed.invitation",
             "params": invitation_params.clone()
         }),
     )
     .await;
-    let first: RpcResultResponse<less_sync_core::protocol::FederationInvitationResult> =
+    let first: RpcResultResponse<betterbase_sync_core::protocol::FederationInvitationResult> =
         read_result_response(&mut socket).await;
     assert!(first.result.ok);
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-inv-quota-2",
             "method": "fed.invitation",
             "params": invitation_params
@@ -1071,7 +1071,7 @@ async fn websocket_federation_invitation_quota_is_enforced() {
     assert_eq!(second.id, "fed-inv-quota-2");
     assert_eq!(
         second.error.code,
-        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+        betterbase_sync_core::protocol::ERR_CODE_RATE_LIMITED
     );
 
     server.handle.abort();
@@ -1093,7 +1093,7 @@ async fn websocket_federation_route_rejects_client_only_methods() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-refresh-1",
             "method": "token.refresh",
             "params": { "token": "ignored" }
@@ -1105,7 +1105,7 @@ async fn websocket_federation_route_rejects_client_only_methods() {
     assert_eq!(response.id, "fed-refresh-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+        betterbase_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
     );
 
     server.handle.abort();
@@ -1141,7 +1141,7 @@ async fn websocket_federation_subscribe_rejects_invalid_fst() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-bad-fst",
             "method": "subscribe",
             "params": {
@@ -1151,13 +1151,13 @@ async fn websocket_federation_subscribe_rejects_invalid_fst() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert!(response.result.spaces.is_empty());
     assert_eq!(response.result.errors.len(), 1);
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -1191,10 +1191,10 @@ async fn websocket_federation_push_requires_ucan() {
         &mut socket,
         "fed-push-no-ucan",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: shared_space_id.to_string(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -1204,12 +1204,12 @@ async fn websocket_federation_push_requires_ucan() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert!(!response.result.ok);
     assert_eq!(
         response.result.error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -1248,10 +1248,10 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
         &mut socket,
         "fed-push-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -1261,7 +1261,7 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
     )
     .await;
 
-    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let push: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(push.id, "fed-push-1");
     assert!(push.result.ok);
@@ -1270,7 +1270,7 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-pull-1",
             "method": "pull",
             "params": {
@@ -1280,18 +1280,18 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
     )
     .await;
 
-    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+    let begin: RpcChunkResponse<betterbase_sync_core::protocol::WsPullBeginData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(begin.id, "fed-pull-1");
     assert_eq!(begin.name, "pull.begin");
     assert_eq!(begin.data.space, shared_space_id.to_string());
 
-    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+    let record: RpcChunkResponse<betterbase_sync_core::protocol::WsPullRecordData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(record.name, "pull.record");
     assert_eq!(record.data.space, shared_space_id.to_string());
 
-    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+    let commit: RpcChunkResponse<betterbase_sync_core::protocol::WsPullCommitData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(commit.name, "pull.commit");
     assert_eq!(commit.data.count, 1);
@@ -1331,7 +1331,7 @@ async fn websocket_federation_route_enforces_connection_quota() {
     let close_code = expect_close_code(&mut second_socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
+        betterbase_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
     );
 
     server.handle.abort();
@@ -1378,7 +1378,7 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-quota-first",
             "method": "subscribe",
             "params": {
@@ -1387,7 +1387,7 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
         }),
     )
     .await;
-    let first: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let first: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(first.id, "fed-sub-quota-first");
     assert_eq!(first.result.spaces.len(), 1);
@@ -1396,7 +1396,7 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-quota-second",
             "method": "subscribe",
             "params": {
@@ -1409,13 +1409,13 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
     assert_eq!(second.id, "fed-sub-quota-second");
     assert_eq!(
         second.error.code,
-        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+        betterbase_sync_core::protocol::ERR_CODE_RATE_LIMITED
     );
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
             "method": "unsubscribe",
             "params": { "spaces": [first_space_id.to_string()] }
         }),
@@ -1425,7 +1425,7 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "fed-sub-quota-third",
             "method": "subscribe",
             "params": {
@@ -1434,7 +1434,7 @@ async fn websocket_federation_subscribe_quota_releases_on_unsubscribe() {
         }),
     )
     .await;
-    let third: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let third: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(third.id, "fed-sub-quota-third");
     assert_eq!(third.result.spaces.len(), 1);
@@ -1479,10 +1479,10 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         &mut socket,
         "fed-push-quota-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -1491,7 +1491,7 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         },
     )
     .await;
-    let first: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let first: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert!(first.result.ok);
 
@@ -1499,10 +1499,10 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         &mut socket,
         "fed-push-quota-2",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![4, 5, 6]),
                 expected_cursor: 0,
@@ -1515,7 +1515,7 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
     assert_eq!(second.id, "fed-push-quota-2");
     assert_eq!(
         second.error.code,
-        less_sync_core::protocol::ERR_CODE_RATE_LIMITED
+        betterbase_sync_core::protocol::ERR_CODE_RATE_LIMITED
     );
 
     server.handle.abort();
@@ -1537,7 +1537,7 @@ async fn websocket_federation_route_requires_signature() {
     let request = ws_request_path(
         server.addr,
         "/api/v1/federation/ws",
-        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
     );
 
     let error = connect_async(request)
@@ -1551,13 +1551,13 @@ async fn websocket_federation_route_requires_signature() {
 #[tokio::test]
 async fn websocket_auth_timeout_closes_with_auth_failed() {
     let server = spawn_server(base_state_with_ws(Duration::from_millis(100), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     let close_code = expect_close_code(&mut socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_AUTH_FAILED as u16
+        betterbase_sync_core::protocol::CLOSE_AUTH_FAILED as u16
     );
 
     server.handle.abort();
@@ -1566,11 +1566,11 @@ async fn websocket_auth_timeout_closes_with_auth_failed() {
 #[tokio::test]
 async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     let frame = minicbor_serde::to_vec(serde_json::json!({
-        "type": less_sync_core::protocol::RPC_REQUEST,
+        "type": betterbase_sync_core::protocol::RPC_REQUEST,
         "method": "subscribe",
         "id": "req-1",
         "params": {}
@@ -1584,7 +1584,7 @@ async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
     let close_code = expect_close_code(&mut socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_AUTH_FAILED as u16
+        betterbase_sync_core::protocol::CLOSE_AUTH_FAILED as u16
     );
 
     server.handle.abort();
@@ -1593,7 +1593,7 @@ async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
 #[tokio::test]
 async fn websocket_text_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1605,7 +1605,7 @@ async fn websocket_text_after_auth_closes_with_protocol_error() {
     let close_code = expect_close_code(&mut socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
+        betterbase_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
     );
 
     server.handle.abort();
@@ -1614,7 +1614,7 @@ async fn websocket_text_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_invalid_cbor_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1626,7 +1626,7 @@ async fn websocket_invalid_cbor_after_auth_closes_with_protocol_error() {
     let close_code = expect_close_code(&mut socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
+        betterbase_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
     );
 
     server.handle.abort();
@@ -1635,7 +1635,7 @@ async fn websocket_invalid_cbor_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1647,7 +1647,7 @@ async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
     let close_code = expect_close_code(&mut socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
+        betterbase_sync_core::protocol::CLOSE_PROTOCOL_ERROR as u16
     );
 
     server.handle.abort();
@@ -1656,14 +1656,14 @@ async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_unknown_method_returns_method_not_found() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "req-1",
             "method": "nonexistent.method",
             "params": {}
@@ -1672,11 +1672,11 @@ async fn websocket_unknown_method_returns_method_not_found() {
     .await;
 
     let response = read_error_response(&mut socket).await;
-    assert_eq!(response.frame_type, less_sync_core::protocol::RPC_RESPONSE);
+    assert_eq!(response.frame_type, betterbase_sync_core::protocol::RPC_RESPONSE);
     assert_eq!(response.id, "req-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+        betterbase_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
     );
 
     server.handle.abort();
@@ -1685,14 +1685,14 @@ async fn websocket_unknown_method_returns_method_not_found() {
 #[tokio::test]
 async fn websocket_token_refresh_returns_error_for_invalid_token() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "refresh-1",
             "method": "token.refresh",
             "params": { "token": "unknown-token" }
@@ -1700,7 +1700,7 @@ async fn websocket_token_refresh_returns_error_for_invalid_token() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::TokenRefreshResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "refresh-1");
     assert!(!response.result.ok);
@@ -1720,7 +1720,7 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
             .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -1729,7 +1729,7 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "refresh-2",
             "method": "token.refresh",
             "params": { "token": "refresh-no-sync" }
@@ -1737,7 +1737,7 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::TokenRefreshResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "refresh-2");
     assert!(!response.result.ok);
@@ -1747,10 +1747,10 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
         &mut socket,
         "push-after-refresh-fail",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -1760,7 +1760,7 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
     )
     .await;
 
-    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let push: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(push.id, "push-after-refresh-fail");
     assert!(push.result.ok);
@@ -1779,14 +1779,14 @@ async fn websocket_token_refresh_accepts_new_valid_token() {
         validator,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "refresh-3",
             "method": "token.refresh",
             "params": { "token": "refresh-token" }
@@ -1794,7 +1794,7 @@ async fn websocket_token_refresh_accepts_new_valid_token() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::TokenRefreshResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "refresh-3");
     assert!(response.result.ok);
@@ -1803,7 +1803,7 @@ async fn websocket_token_refresh_accepts_new_valid_token() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "refresh-post-unknown",
             "method": "nonexistent.method",
             "params": {}
@@ -1829,7 +1829,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
             .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -1838,7 +1838,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "refresh-4",
             "method": "token.refresh",
             "params": { "token": "refresh-mismatch" }
@@ -1846,7 +1846,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::TokenRefreshResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::TokenRefreshResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "refresh-4");
     assert!(!response.result.ok);
@@ -1856,10 +1856,10 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
         &mut socket,
         "push-after-refresh-mismatch",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -1869,7 +1869,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
     )
     .await;
 
-    let push: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let push: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(push.id, "push-after-refresh-mismatch");
     assert!(push.result.ok);
@@ -1885,7 +1885,7 @@ async fn websocket_space_create_returns_id_and_key_generation() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = Uuid::new_v4().to_string();
 
@@ -1894,14 +1894,14 @@ async fn websocket_space_create_returns_id_and_key_generation() {
         &mut socket,
         "space-create-1",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: space_id.clone(),
             root_public_key: vec![0x02; 33],
         },
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SpaceCreateResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SpaceCreateResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "space-create-1");
     assert_eq!(response.result.id, space_id);
@@ -1918,7 +1918,7 @@ async fn websocket_space_create_invalid_space_id_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1926,7 +1926,7 @@ async fn websocket_space_create_invalid_space_id_returns_bad_request() {
         &mut socket,
         "space-create-2",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: "not-a-uuid".to_owned(),
             root_public_key: vec![1, 2, 3],
         },
@@ -1937,7 +1937,7 @@ async fn websocket_space_create_invalid_space_id_returns_bad_request() {
     assert_eq!(response.id, "space-create-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -1951,7 +1951,7 @@ async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1959,7 +1959,7 @@ async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
         &mut socket,
         "space-create-2b",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
             root_public_key: vec![],
         },
@@ -1970,7 +1970,7 @@ async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
     assert_eq!(response.id, "space-create-2b");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -1982,11 +1982,11 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_create_error(
-            less_sync_storage::StorageError::SpaceExists,
+            betterbase_sync_storage::StorageError::SpaceExists,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1994,7 +1994,7 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
         &mut socket,
         "space-create-3",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
             root_public_key: vec![0x03; 33],
         },
@@ -2005,7 +2005,7 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
     assert_eq!(response.id, "space-create-3");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
@@ -2014,7 +2014,7 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
 #[tokio::test]
 async fn websocket_space_create_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2022,7 +2022,7 @@ async fn websocket_space_create_without_sync_storage_returns_internal_error() {
         &mut socket,
         "space-create-4",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
             root_public_key: vec![1, 2, 3],
         },
@@ -2033,7 +2033,7 @@ async fn websocket_space_create_without_sync_storage_returns_internal_error() {
     assert_eq!(response.id, "space-create-4");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     server.handle.abort();
@@ -2047,7 +2047,7 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2057,7 +2057,7 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
         &mut socket,
         "membership-append-1",
         "membership.append",
-        &less_sync_core::protocol::MembershipAppendParams {
+        &betterbase_sync_core::protocol::MembershipAppendParams {
             space: test_personal_space_id(),
             ucan: String::new(),
             expected_version: 1,
@@ -2068,7 +2068,7 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::MembershipAppendResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::MembershipAppendResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "membership-append-1");
     assert_eq!(response.result.chain_seq, 11);
@@ -2083,11 +2083,11 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_append_error(
-            less_sync_storage::StorageError::VersionConflict,
+            betterbase_sync_storage::StorageError::VersionConflict,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2097,7 +2097,7 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
         &mut socket,
         "membership-append-2",
         "membership.append",
-        &less_sync_core::protocol::MembershipAppendParams {
+        &betterbase_sync_core::protocol::MembershipAppendParams {
             space: test_personal_space_id(),
             ucan: String::new(),
             expected_version: 1,
@@ -2112,7 +2112,7 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
     assert_eq!(response.id, "membership-append-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
@@ -2126,14 +2126,14 @@ async fn websocket_membership_list_returns_entries_and_metadata_version() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "membership-list-1",
             "method": "membership.list",
             "params": {
@@ -2144,7 +2144,7 @@ async fn websocket_membership_list_returns_entries_and_metadata_version() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::MembershipListResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::MembershipListResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "membership-list-1");
     assert_eq!(response.result.metadata_version, 9);
@@ -2165,14 +2165,14 @@ async fn websocket_membership_list_non_personal_space_without_ucan_returns_forbi
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "membership-list-2",
             "method": "membership.list",
             "params": {
@@ -2187,7 +2187,7 @@ async fn websocket_membership_list_non_personal_space_without_ucan_returns_forbi
     assert_eq!(response.id, "membership-list-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -2201,14 +2201,14 @@ async fn websocket_membership_revoke_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "membership-revoke-1",
             "method": "membership.revoke",
             "params": {
@@ -2234,14 +2234,14 @@ async fn websocket_membership_revoke_non_personal_without_ucan_returns_forbidden
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "membership-revoke-2",
             "method": "membership.revoke",
             "params": {
@@ -2256,7 +2256,7 @@ async fn websocket_membership_revoke_non_personal_without_ucan_returns_forbidden
     assert_eq!(response.id, "membership-revoke-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -2268,18 +2268,18 @@ async fn websocket_membership_revoke_storage_failure_returns_internal_error() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_revoke_error(
-            less_sync_storage::StorageError::Unavailable,
+            betterbase_sync_storage::StorageError::Unavailable,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "membership-revoke-3",
             "method": "membership.revoke",
             "params": {
@@ -2294,7 +2294,7 @@ async fn websocket_membership_revoke_storage_failure_returns_internal_error() {
     assert_eq!(response.id, "membership-revoke-3");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     server.handle.abort();
@@ -2308,14 +2308,14 @@ async fn websocket_invitation_create_returns_created_invitation() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-1",
             "method": "invitation.create",
             "params": {
@@ -2326,7 +2326,7 @@ async fn websocket_invitation_create_returns_created_invitation() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationCreateResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-create-1");
     assert_eq!(response.result.payload, "ciphertext-new");
@@ -2345,14 +2345,14 @@ async fn websocket_invitation_create_invalid_mailbox_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-invalid-mailbox-1",
             "method": "invitation.create",
             "params": {
@@ -2367,7 +2367,7 @@ async fn websocket_invitation_create_invalid_mailbox_returns_bad_request() {
     assert_eq!(response.id, "invitation-create-invalid-mailbox-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -2381,14 +2381,14 @@ async fn websocket_invitation_create_empty_payload_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-empty-payload-1",
             "method": "invitation.create",
             "params": {
@@ -2403,7 +2403,7 @@ async fn websocket_invitation_create_empty_payload_returns_bad_request() {
     assert_eq!(response.id, "invitation-create-empty-payload-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -2417,7 +2417,7 @@ async fn websocket_invitation_create_oversized_payload_returns_payload_too_large
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let oversized_payload = "a".repeat((128 * 1024) + 1);
 
@@ -2425,7 +2425,7 @@ async fn websocket_invitation_create_oversized_payload_returns_payload_too_large
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-oversized-payload-1",
             "method": "invitation.create",
             "params": {
@@ -2440,7 +2440,7 @@ async fn websocket_invitation_create_oversized_payload_returns_payload_too_large
     assert_eq!(response.id, "invitation-create-oversized-payload-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_PAYLOAD_TOO_LARGE
+        betterbase_sync_core::protocol::ERR_CODE_PAYLOAD_TOO_LARGE
     );
 
     server.handle.abort();
@@ -2458,14 +2458,14 @@ async fn websocket_invitation_create_with_server_forwards_to_trusted_peer() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-forwarded-1",
             "method": "invitation.create",
             "params": {
@@ -2477,7 +2477,7 @@ async fn websocket_invitation_create_with_server_forwards_to_trusted_peer() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationCreateResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-create-forwarded-1");
     assert_eq!(response.result.id, "forwarded");
@@ -2510,14 +2510,14 @@ async fn websocket_invitation_create_with_untrusted_server_returns_bad_request()
         vec!["peer-a.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-forwarded-2",
             "method": "invitation.create",
             "params": {
@@ -2533,7 +2533,7 @@ async fn websocket_invitation_create_with_untrusted_server_returns_bad_request()
     assert_eq!(response.id, "invitation-create-forwarded-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
     assert!(forwarder.invitation_calls.lock().await.is_empty());
 
@@ -2552,14 +2552,14 @@ async fn websocket_invitation_create_with_forward_error_returns_internal_error()
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-forwarded-3",
             "method": "invitation.create",
             "params": {
@@ -2575,7 +2575,7 @@ async fn websocket_invitation_create_with_forward_error_returns_internal_error()
     assert_eq!(response.id, "invitation-create-forwarded-3");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
     assert_eq!(forwarder.invitation_calls.lock().await.len(), 1);
 
@@ -2588,18 +2588,18 @@ async fn websocket_invitation_create_storage_failure_returns_internal_error() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_invitation_create_error(
-            less_sync_storage::StorageError::Unavailable,
+            betterbase_sync_storage::StorageError::Unavailable,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-1b",
             "method": "invitation.create",
             "params": {
@@ -2614,7 +2614,7 @@ async fn websocket_invitation_create_storage_failure_returns_internal_error() {
     assert_eq!(response.id, "invitation-create-1b");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     server.handle.abort();
@@ -2628,14 +2628,14 @@ async fn websocket_invitation_create_for_other_mailbox_succeeds() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-create-2",
             "method": "invitation.create",
             "params": {
@@ -2648,7 +2648,7 @@ async fn websocket_invitation_create_for_other_mailbox_succeeds() {
 
     // Invitations can be sent to any mailbox (like a message inbox).
     // No ownership check — matches Go server behavior.
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationCreateResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-create-2");
 
@@ -2663,14 +2663,14 @@ async fn websocket_invitation_list_returns_mailbox_entries() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-list-1",
             "method": "invitation.list",
             "params": { "limit": 10 }
@@ -2678,7 +2678,7 @@ async fn websocket_invitation_list_returns_mailbox_entries() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationListResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationListResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-list-1");
     assert_eq!(response.result.invitations.len(), 1);
@@ -2696,14 +2696,14 @@ async fn websocket_invitation_get_returns_entry() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-get-1",
             "method": "invitation.get",
             "params": { "id": invitation_id }
@@ -2711,7 +2711,7 @@ async fn websocket_invitation_get_returns_entry() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationCreateResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationCreateResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "invitation-get-1");
     assert_eq!(response.result.id, invitation_id);
@@ -2729,14 +2729,14 @@ async fn websocket_invitation_delete_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-delete-1",
             "method": "invitation.delete",
             "params": { "id": invitation_id }
@@ -2757,18 +2757,18 @@ async fn websocket_invitation_delete_not_found_returns_not_found() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_invitation_delete_error(
-            less_sync_storage::StorageError::InvitationNotFound,
+            betterbase_sync_storage::StorageError::InvitationNotFound,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "invitation-delete-2",
             "method": "invitation.delete",
             "params": { "id": Uuid::new_v4().to_string() }
@@ -2780,7 +2780,7 @@ async fn websocket_invitation_delete_not_found_returns_not_found() {
     assert_eq!(response.id, "invitation-delete-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_NOT_FOUND
+        betterbase_sync_core::protocol::ERR_CODE_NOT_FOUND
     );
 
     server.handle.abort();
@@ -2794,14 +2794,14 @@ async fn websocket_epoch_begin_returns_epoch_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-begin-1",
             "method": "epoch.begin",
             "params": {
@@ -2812,7 +2812,7 @@ async fn websocket_epoch_begin_returns_epoch_result() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::EpochBeginResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::EpochBeginResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "epoch-begin-1");
     assert_eq!(response.result.epoch, 2);
@@ -2826,21 +2826,21 @@ async fn websocket_epoch_begin_conflict_returns_conflict_result_payload() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_epoch_begin_error(
-            less_sync_storage::StorageError::EpochConflict(less_sync_storage::EpochConflict {
+            betterbase_sync_storage::StorageError::EpochConflict(betterbase_sync_storage::EpochConflict {
                 current_epoch: 2,
                 rewrap_epoch: Some(2),
             }),
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-begin-2",
             "method": "epoch.begin",
             "params": {
@@ -2851,12 +2851,12 @@ async fn websocket_epoch_begin_conflict_returns_conflict_result_payload() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::EpochConflictResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::EpochConflictResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "epoch-begin-2");
     assert_eq!(
         response.result.error,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
     assert_eq!(response.result.current_epoch, 2);
     assert_eq!(response.result.rewrap_epoch, Some(2));
@@ -2872,14 +2872,14 @@ async fn websocket_epoch_complete_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-complete-1",
             "method": "epoch.complete",
             "params": {
@@ -2903,18 +2903,18 @@ async fn websocket_epoch_complete_mismatch_returns_conflict_error() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_epoch_complete_error(
-            less_sync_storage::StorageError::EpochMismatch,
+            betterbase_sync_storage::StorageError::EpochMismatch,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-complete-2",
             "method": "epoch.complete",
             "params": {
@@ -2929,7 +2929,7 @@ async fn websocket_epoch_complete_mismatch_returns_conflict_error() {
     assert_eq!(response.id, "epoch-complete-2");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
@@ -2943,14 +2943,14 @@ async fn websocket_deks_get_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "deks-get-1",
             "method": "deks.get",
             "params": {
@@ -2961,7 +2961,7 @@ async fn websocket_deks_get_returns_records() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::DeksGetResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::DeksGetResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "deks-get-1");
     assert_eq!(response.result.deks.len(), 1);
@@ -2977,11 +2977,11 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_deks_rewrap_error(
-            less_sync_storage::StorageError::DekEpochMismatch,
+            betterbase_sync_storage::StorageError::DekEpochMismatch,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2989,10 +2989,10 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         &mut socket,
         "deks-rewrap-1",
         "deks.rewrap",
-        &less_sync_core::protocol::DeksRewrapParams {
+        &betterbase_sync_core::protocol::DeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 44],
             }],
@@ -3004,7 +3004,7 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
     assert_eq!(response.id, "deks-rewrap-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
@@ -3018,7 +3018,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3026,10 +3026,10 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
         &mut socket,
         "deks-rewrap-invalid-id",
         "deks.rewrap",
-        &less_sync_core::protocol::DeksRewrapParams {
+        &betterbase_sync_core::protocol::DeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: String::new(),
                 dek: vec![9; 44],
             }],
@@ -3041,7 +3041,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
     assert_eq!(response.id, "deks-rewrap-invalid-id");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3055,7 +3055,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3063,10 +3063,10 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
         &mut socket,
         "deks-rewrap-invalid-size",
         "deks.rewrap",
-        &less_sync_core::protocol::DeksRewrapParams {
+        &betterbase_sync_core::protocol::DeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::DekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 43],
             }],
@@ -3078,7 +3078,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
     assert_eq!(response.id, "deks-rewrap-invalid-size");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3092,14 +3092,14 @@ async fn websocket_file_deks_get_requires_files_scope() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "file-deks-get-no-files-scope",
             "method": "file.deks.get",
             "params": {
@@ -3114,7 +3114,7 @@ async fn websocket_file_deks_get_requires_files_scope() {
     assert_eq!(response.id, "file-deks-get-no-files-scope");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -3128,14 +3128,14 @@ async fn websocket_file_deks_get_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "file-deks-get-1",
             "method": "file.deks.get",
             "params": {
@@ -3146,7 +3146,7 @@ async fn websocket_file_deks_get_returns_records() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::FileDeksGetResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::FileDeksGetResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "file-deks-get-1");
     assert_eq!(response.result.deks.len(), 1);
@@ -3164,14 +3164,14 @@ async fn websocket_deks_get_files_alias_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "deks-get-files-alias",
             "method": "deks.getFiles",
             "params": {
@@ -3182,7 +3182,7 @@ async fn websocket_deks_get_files_alias_returns_records() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::FileDeksGetResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::FileDeksGetResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "deks-get-files-alias");
     assert_eq!(response.result.deks.len(), 1);
@@ -3199,7 +3199,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3207,10 +3207,10 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
         &mut socket,
         "file-deks-rewrap-1",
         "file.deks.rewrap",
-        &less_sync_core::protocol::FileDeksRewrapParams {
+        &betterbase_sync_core::protocol::FileDeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
                 dek: vec![9; 44],
             }],
@@ -3222,7 +3222,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
     assert_eq!(response.id, "file-deks-rewrap-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3236,7 +3236,7 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3244,10 +3244,10 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
         &mut socket,
         "deks-rewrap-files-alias",
         "deks.rewrapFiles",
-        &less_sync_core::protocol::FileDeksRewrapParams {
+        &betterbase_sync_core::protocol::FileDeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
                 dek: vec![9; 44],
             }],
@@ -3259,7 +3259,7 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
     assert_eq!(response.id, "deks-rewrap-files-alias");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3273,7 +3273,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3281,10 +3281,10 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
         &mut socket,
         "file-deks-rewrap-bad-size",
         "file.deks.rewrap",
-        &less_sync_core::protocol::FileDeksRewrapParams {
+        &betterbase_sync_core::protocol::FileDeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 43],
             }],
@@ -3296,7 +3296,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
     assert_eq!(response.id, "file-deks-rewrap-bad-size");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3308,11 +3308,11 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         Duration::from_secs(1),
         "sync files",
         Arc::new(StubSyncStorage::with_file_deks_rewrap_error(
-            less_sync_storage::StorageError::DekEpochMismatch,
+            betterbase_sync_storage::StorageError::DekEpochMismatch,
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3320,10 +3320,10 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         &mut socket,
         "file-deks-rewrap-conflict",
         "file.deks.rewrap",
-        &less_sync_core::protocol::FileDeksRewrapParams {
+        &betterbase_sync_core::protocol::FileDeksRewrapParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            deks: vec![less_sync_core::protocol::FileDekRewrapEntry {
+            deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 44],
             }],
@@ -3335,7 +3335,7 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
     assert_eq!(response.id, "file-deks-rewrap-conflict");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_CONFLICT
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
     );
 
     server.handle.abort();
@@ -3349,7 +3349,7 @@ async fn websocket_subscribe_returns_space_metadata() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
 
@@ -3357,7 +3357,7 @@ async fn websocket_subscribe_returns_space_metadata() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-1",
             "method": "subscribe",
             "params": {
@@ -3367,7 +3367,7 @@ async fn websocket_subscribe_returns_space_metadata() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-1");
     assert_eq!(response.result.spaces.len(), 1);
@@ -3387,7 +3387,7 @@ async fn websocket_subscribe_rejects_too_many_spaces() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let spaces = (0..(crate::federation_quota::MAX_SUBSCRIBE_SPACES + 1))
         .map(|_| {
@@ -3402,7 +3402,7 @@ async fn websocket_subscribe_rejects_too_many_spaces() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-too-many-1",
             "method": "subscribe",
             "params": {
@@ -3416,7 +3416,7 @@ async fn websocket_subscribe_rejects_too_many_spaces() {
     assert_eq!(response.id, "sub-too-many-1");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3437,14 +3437,14 @@ async fn websocket_subscribe_forwards_to_space_home_server() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-forward-1",
             "method": "subscribe",
             "params": {
@@ -3454,7 +3454,7 @@ async fn websocket_subscribe_forwards_to_space_home_server() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-forward-1");
     assert_eq!(response.result.spaces.len(), 1);
@@ -3497,14 +3497,14 @@ async fn websocket_subscribe_remote_forward_failure_does_not_block_local_space()
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-forward-fail-1",
             "method": "subscribe",
             "params": {
@@ -3517,7 +3517,7 @@ async fn websocket_subscribe_remote_forward_failure_does_not_block_local_space()
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-forward-fail-1");
     assert_eq!(response.result.spaces.len(), 1);
@@ -3526,7 +3526,7 @@ async fn websocket_subscribe_remote_forward_failure_does_not_block_local_space()
     assert_eq!(response.result.errors[0].space, test_personal_space_id());
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     let calls = forwarder.subscribe_calls.lock().await;
@@ -3546,14 +3546,14 @@ async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-2",
             "method": "subscribe",
             "params": {
@@ -3563,14 +3563,14 @@ async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-2");
     assert!(response.result.spaces.is_empty());
     assert_eq!(response.result.errors.len(), 1);
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -3584,14 +3584,14 @@ async fn websocket_subscribe_non_personal_space_without_ucan_reports_forbidden()
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-forbidden-1",
             "method": "subscribe",
             "params": {
@@ -3601,14 +3601,14 @@ async fn websocket_subscribe_non_personal_space_without_ucan_reports_forbidden()
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-forbidden-1");
     assert!(response.result.spaces.is_empty());
     assert_eq!(response.result.errors.len(), 1);
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -3640,14 +3640,14 @@ async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-shared-1",
             "method": "subscribe",
             "params": {
@@ -3657,7 +3657,7 @@ async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-shared-1");
     assert_eq!(response.result.spaces.len(), 1);
@@ -3702,14 +3702,14 @@ async fn websocket_subscribe_shared_space_with_delegated_ucan_returns_space_meta
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-shared-2",
             "method": "subscribe",
             "params": {
@@ -3719,7 +3719,7 @@ async fn websocket_subscribe_shared_space_with_delegated_ucan_returns_space_meta
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-shared-2");
     assert_eq!(response.result.spaces.len(), 1);
@@ -3759,14 +3759,14 @@ async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() 
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-shared-revoked-1",
             "method": "subscribe",
             "params": {
@@ -3776,7 +3776,7 @@ async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() 
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-shared-revoked-1");
     assert!(response.result.spaces.is_empty());
@@ -3784,7 +3784,7 @@ async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() 
     assert_eq!(response.result.errors[0].space, shared_space_id.to_string());
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -3825,14 +3825,14 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-shared-revoked-2",
             "method": "subscribe",
             "params": {
@@ -3842,7 +3842,7 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-shared-revoked-2");
     assert!(response.result.spaces.is_empty());
@@ -3850,7 +3850,7 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
     assert_eq!(response.result.errors[0].space, shared_space_id.to_string());
     assert_eq!(
         response.result.errors[0].error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -3859,14 +3859,14 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
 #[tokio::test]
 async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-3",
             "method": "subscribe",
             "params": { "spaces": [] }
@@ -3878,7 +3878,7 @@ async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
     assert_eq!(response.id, "sub-3");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_INTERNAL
+        betterbase_sync_core::protocol::ERR_CODE_INTERNAL
     );
 
     server.handle.abort();
@@ -3892,7 +3892,7 @@ async fn websocket_push_returns_cursor_on_success() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -3902,10 +3902,10 @@ async fn websocket_push_returns_cursor_on_success() {
         &mut socket,
         "push-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -3915,7 +3915,7 @@ async fn websocket_push_returns_cursor_on_success() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "push-1");
     assert!(response.result.ok);
@@ -3939,7 +3939,7 @@ async fn websocket_push_forwards_to_space_home_server() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -3949,10 +3949,10 @@ async fn websocket_push_forwards_to_space_home_server() {
         &mut socket,
         "push-forward-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -3962,7 +3962,7 @@ async fn websocket_push_forwards_to_space_home_server() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "push-forward-1");
     assert!(response.result.ok);
@@ -3997,7 +3997,7 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -4006,7 +4006,7 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-forward-restore-1",
             "method": "subscribe",
             "params": {
@@ -4015,7 +4015,7 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
         }),
     )
     .await;
-    let subscribe_response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let subscribe_response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(subscribe_response.id, "sub-forward-restore-1");
     assert_eq!(subscribe_response.result.spaces.len(), 1);
@@ -4025,10 +4025,10 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
         &mut socket,
         "push-forward-restore-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -4038,7 +4038,7 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "push-forward-restore-1");
     assert!(response.result.ok);
@@ -4075,7 +4075,7 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let record_id = Uuid::new_v4().to_string();
 
@@ -4084,10 +4084,10 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
         &mut socket,
         "push-2",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: "not-a-uuid".to_owned(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -4097,12 +4097,12 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert!(!response.result.ok);
     assert_eq!(
         response.result.error,
-        less_sync_core::protocol::ERR_CODE_BAD_REQUEST
+        betterbase_sync_core::protocol::ERR_CODE_BAD_REQUEST
     );
 
     server.handle.abort();
@@ -4116,7 +4116,7 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let record_id = Uuid::new_v4().to_string();
 
@@ -4125,10 +4125,10 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
         &mut socket,
         "push-forbidden-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: Uuid::new_v4().to_string(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -4138,13 +4138,13 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "push-forbidden-1");
     assert!(!response.result.ok);
     assert_eq!(
         response.result.error,
-        less_sync_core::protocol::ERR_CODE_FORBIDDEN
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
     );
 
     server.handle.abort();
@@ -4158,7 +4158,7 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
 
@@ -4166,7 +4166,7 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "pull-1",
             "method": "pull",
             "params": {
@@ -4176,18 +4176,18 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
     )
     .await;
 
-    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+    let begin: RpcChunkResponse<betterbase_sync_core::protocol::WsPullBeginData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(begin.id, "pull-1");
     assert_eq!(begin.name, "pull.begin");
     assert_eq!(begin.data.cursor, 101);
 
-    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+    let record: RpcChunkResponse<betterbase_sync_core::protocol::WsPullRecordData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(record.name, "pull.record");
     assert_eq!(record.data.cursor, 101);
 
-    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+    let commit: RpcChunkResponse<betterbase_sync_core::protocol::WsPullCommitData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(commit.name, "pull.commit");
     assert_eq!(commit.data.count, 1);
@@ -4207,7 +4207,7 @@ async fn websocket_pull_skips_unauthorized_space_entries() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let forbidden_space = Uuid::new_v4().to_string();
 
@@ -4215,7 +4215,7 @@ async fn websocket_pull_skips_unauthorized_space_entries() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "pull-multi-1",
             "method": "pull",
             "params": {
@@ -4228,16 +4228,16 @@ async fn websocket_pull_skips_unauthorized_space_entries() {
     )
     .await;
 
-    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+    let begin: RpcChunkResponse<betterbase_sync_core::protocol::WsPullBeginData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(begin.id, "pull-multi-1");
     assert_eq!(begin.data.space, test_personal_space_id());
 
-    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+    let record: RpcChunkResponse<betterbase_sync_core::protocol::WsPullRecordData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(record.data.space, test_personal_space_id());
 
-    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+    let commit: RpcChunkResponse<betterbase_sync_core::protocol::WsPullCommitData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(commit.data.space, test_personal_space_id());
     assert_eq!(commit.data.count, 1);
@@ -4255,8 +4255,8 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
     let remote_chunks = vec![
         crate::federation_client::FederationPullChunk {
             name: "pull.begin".to_owned(),
-            data: less_sync_core::protocol::CborValue::from_serializable(
-                &less_sync_core::protocol::WsPullBeginData {
+            data: betterbase_sync_core::protocol::CborValue::from_serializable(
+                &betterbase_sync_core::protocol::WsPullBeginData {
                     space: space_id.clone(),
                     prev: 100,
                     cursor: 240,
@@ -4268,8 +4268,8 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         },
         crate::federation_client::FederationPullChunk {
             name: "pull.record".to_owned(),
-            data: less_sync_core::protocol::CborValue::from_serializable(
-                &less_sync_core::protocol::WsPullRecordData {
+            data: betterbase_sync_core::protocol::CborValue::from_serializable(
+                &betterbase_sync_core::protocol::WsPullRecordData {
                     space: space_id.clone(),
                     id: Uuid::new_v4().to_string(),
                     blob: Some(vec![7, 8, 9]),
@@ -4282,8 +4282,8 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         },
         crate::federation_client::FederationPullChunk {
             name: "pull.commit".to_owned(),
-            data: less_sync_core::protocol::CborValue::from_serializable(
-                &less_sync_core::protocol::WsPullCommitData {
+            data: betterbase_sync_core::protocol::CborValue::from_serializable(
+                &betterbase_sync_core::protocol::WsPullCommitData {
                     space: space_id.clone(),
                     prev: 100,
                     cursor: 241,
@@ -4306,14 +4306,14 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "pull-forward-1",
             "method": "pull",
             "params": {
@@ -4323,18 +4323,18 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
     )
     .await;
 
-    let begin: RpcChunkResponse<less_sync_core::protocol::WsPullBeginData> =
+    let begin: RpcChunkResponse<betterbase_sync_core::protocol::WsPullBeginData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(begin.id, "pull-forward-1");
     assert_eq!(begin.name, "pull.begin");
     assert_eq!(begin.data.cursor, 240);
 
-    let record: RpcChunkResponse<less_sync_core::protocol::WsPullRecordData> =
+    let record: RpcChunkResponse<betterbase_sync_core::protocol::WsPullRecordData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(record.name, "pull.record");
     assert_eq!(record.data.cursor, 241);
 
-    let commit: RpcChunkResponse<less_sync_core::protocol::WsPullCommitData> =
+    let commit: RpcChunkResponse<betterbase_sync_core::protocol::WsPullCommitData> =
         read_chunk_response(&mut socket).await;
     assert_eq!(commit.name, "pull.commit");
     assert_eq!(commit.data.count, 1);
@@ -4372,14 +4372,14 @@ async fn websocket_pull_remote_forward_failure_skips_space() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "pull-forward-2",
             "method": "pull",
             "params": {
@@ -4410,7 +4410,7 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4426,7 +4426,7 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
     send_binary_frame(
         &mut sender_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-sender",
             "method": "subscribe",
             "params": {
@@ -4435,13 +4435,13 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
         }),
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut sender_socket).await;
 
     send_binary_frame(
         &mut watcher_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-watcher",
             "method": "subscribe",
             "params": {
@@ -4450,17 +4450,17 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
         }),
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut watcher_socket).await;
 
     send_rpc_request(
         &mut sender_socket,
         "push-sync-1",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![7, 8, 9]),
                 expected_cursor: 0,
@@ -4470,12 +4470,12 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut sender_socket).await;
     assert_eq!(response.id, "push-sync-1");
     assert!(response.result.ok);
 
-    let notification: RpcNotificationResponse<less_sync_core::protocol::WsSyncData> =
+    let notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsSyncData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(notification.method, "sync");
     assert_eq!(notification.params.space, space_id);
@@ -4503,7 +4503,7 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4519,7 +4519,7 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
     send_binary_frame(
         &mut sender_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-sender-2",
             "method": "subscribe",
             "params": {
@@ -4528,13 +4528,13 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         }),
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut sender_socket).await;
 
     send_binary_frame(
         &mut watcher_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-watcher-2",
             "method": "subscribe",
             "params": {
@@ -4543,13 +4543,13 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         }),
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut watcher_socket).await;
 
     send_binary_frame(
         &mut watcher_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
             "method": "unsubscribe",
             "params": { "spaces": [space_id.clone()] }
         }),
@@ -4561,10 +4561,10 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         &mut sender_socket,
         "push-sync-2",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: space_id.clone(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: record_id.clone(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 0,
@@ -4573,7 +4573,7 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         },
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut sender_socket).await;
 
     let watcher_frame =
@@ -4596,7 +4596,7 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4611,7 +4611,7 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
     send_binary_frame(
         &mut sender_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-presence-sender-1",
             "method": "subscribe",
             "params": {
@@ -4620,13 +4620,13 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
         }),
     )
     .await;
-    let _: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let _: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut sender_socket).await;
 
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![9, 9, 9],
         },
@@ -4637,7 +4637,7 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
     send_binary_frame(
         &mut watcher_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-presence-watcher-1",
             "method": "subscribe",
             "params": {
@@ -4647,7 +4647,7 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut watcher_socket).await;
     assert_eq!(response.id, "sub-presence-watcher-1");
     assert_eq!(response.result.spaces.len(), 1);
@@ -4668,7 +4668,7 @@ async fn websocket_presence_set_broadcasts_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4685,14 +4685,14 @@ async fn websocket_presence_set_broadcasts_to_other_subscribers() {
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![1, 2, 3, 4],
         },
     )
     .await;
 
-    let notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+    let notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(notification.method, "presence");
     assert_eq!(notification.params.space, space_id);
@@ -4718,7 +4718,7 @@ async fn websocket_presence_clear_broadcasts_leave_notification() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4735,28 +4735,28 @@ async fn websocket_presence_clear_broadcasts_leave_notification() {
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![8, 8],
         },
     )
     .await;
 
-    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+    let set_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(set_notification.method, "presence");
 
     send_binary_frame(
         &mut sender_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
             "method": "presence.clear",
             "params": { "space": space_id.clone() }
         }),
     )
     .await;
 
-    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
@@ -4775,7 +4775,7 @@ async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4792,28 +4792,28 @@ async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![2, 2],
         },
     )
     .await;
 
-    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+    let set_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(set_notification.method, "presence");
 
     send_binary_frame(
         &mut sender_socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
             "method": "unsubscribe",
             "params": { "spaces": [space_id.clone()] }
         }),
     )
     .await;
 
-    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
@@ -4832,7 +4832,7 @@ async fn websocket_event_send_broadcasts_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4849,14 +4849,14 @@ async fn websocket_event_send_broadcasts_to_other_subscribers() {
     send_rpc_notification(
         &mut sender_socket,
         "event.send",
-        &less_sync_core::protocol::WsEventSendParams {
+        &betterbase_sync_core::protocol::WsEventSendParams {
             space: space_id.clone(),
             data: vec![4, 5, 6],
         },
     )
     .await;
 
-    let notification: RpcNotificationResponse<less_sync_core::protocol::WsEventData> =
+    let notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsEventData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(notification.method, "event");
     assert_eq!(notification.params.space, space_id);
@@ -4876,7 +4876,7 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4893,14 +4893,14 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![1],
         },
     )
     .await;
 
-    let set_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceData> =
+    let set_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(set_notification.method, "presence");
 
@@ -4909,7 +4909,7 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
         .await
         .expect("close sender socket");
 
-    let leave_notification: RpcNotificationResponse<less_sync_core::protocol::WsPresenceLeaveData> =
+    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
         read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
@@ -4928,7 +4928,7 @@ async fn websocket_presence_set_oversized_payload_is_ignored() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4945,7 +4945,7 @@ async fn websocket_presence_set_oversized_payload_is_ignored() {
     send_rpc_notification(
         &mut sender_socket,
         "presence.set",
-        &less_sync_core::protocol::WsPresenceSetParams {
+        &betterbase_sync_core::protocol::WsPresenceSetParams {
             space: space_id.clone(),
             data: vec![7; super::presence::MAX_PRESENCE_DATA_BYTES + 1],
         },
@@ -4972,7 +4972,7 @@ async fn websocket_event_send_oversized_payload_is_ignored() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4989,7 +4989,7 @@ async fn websocket_event_send_oversized_payload_is_ignored() {
     send_rpc_notification(
         &mut sender_socket,
         "event.send",
-        &less_sync_core::protocol::WsEventSendParams {
+        &betterbase_sync_core::protocol::WsEventSendParams {
             space: space_id.clone(),
             data: vec![7; super::presence::MAX_EVENT_DATA_BYTES + 1],
         },
@@ -5017,7 +5017,7 @@ async fn websocket_connection_limit_closes_after_auth() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut first_socket, _) = connect_async(request.clone())
         .await
         .expect("connect first websocket");
@@ -5031,7 +5031,7 @@ async fn websocket_connection_limit_closes_after_auth() {
     let close_code = expect_close_code(&mut second_socket).await;
     assert_eq!(
         close_code,
-        less_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
+        betterbase_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS as u16
     );
 
     server.handle.abort();
@@ -5040,14 +5040,14 @@ async fn websocket_connection_limit_closes_after_auth() {
 #[tokio::test]
 async fn websocket_request_with_empty_id_gets_response() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "method": "nonexistent.method",
             "params": {}
         }),
@@ -5058,7 +5058,7 @@ async fn websocket_request_with_empty_id_gets_response() {
     assert_eq!(response.id, "");
     assert_eq!(
         response.error.code,
-        less_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
+        betterbase_sync_core::protocol::ERR_CODE_METHOD_NOT_FOUND
     );
 
     server.handle.abort();
@@ -5067,7 +5067,7 @@ async fn websocket_request_with_empty_id_gets_response() {
 #[tokio::test]
 async fn websocket_unknown_frame_type_does_not_close_connection() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5083,7 +5083,7 @@ async fn websocket_unknown_frame_type_does_not_close_connection() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "req-2",
             "method": "nonexistent.method",
             "params": {}
@@ -5100,14 +5100,14 @@ async fn websocket_unknown_frame_type_does_not_close_connection() {
 #[tokio::test]
 async fn websocket_unknown_notification_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_NOTIFICATION,
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
             "method": "some.unknown.event",
             "params": {"foo": "bar"}
         }),
@@ -5116,7 +5116,7 @@ async fn websocket_unknown_notification_is_ignored() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "req-3",
             "method": "nonexistent.method",
             "params": {}
@@ -5133,14 +5133,14 @@ async fn websocket_unknown_notification_is_ignored() {
 #[tokio::test]
 async fn websocket_client_response_frame_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_RESPONSE,
+            "type": betterbase_sync_core::protocol::RPC_RESPONSE,
             "id": "fake-resp-1",
             "result": {"ok": true}
         }),
@@ -5149,7 +5149,7 @@ async fn websocket_client_response_frame_is_ignored() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "req-4",
             "method": "nonexistent.method",
             "params": {}
@@ -5166,14 +5166,14 @@ async fn websocket_client_response_frame_is_ignored() {
 #[tokio::test]
 async fn websocket_client_chunk_frame_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_CHUNK,
+            "type": betterbase_sync_core::protocol::RPC_CHUNK,
             "id": "fake-chunk-1",
             "name": "pull.record",
             "data": {"id": "r1"}
@@ -5183,7 +5183,7 @@ async fn websocket_client_chunk_frame_is_ignored() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "req-5",
             "method": "nonexistent.method",
             "params": {}
@@ -5315,8 +5315,8 @@ fn sign_es256_token(claims: &UcanClaims, key: &SigningKey) -> String {
     format!("{signing_input}.{signature}")
 }
 
-fn test_invitation(id: Uuid, mailbox_id: &str, payload: &str) -> less_sync_storage::Invitation {
-    less_sync_storage::Invitation {
+fn test_invitation(id: Uuid, mailbox_id: &str, payload: &str) -> betterbase_sync_storage::Invitation {
+    betterbase_sync_storage::Invitation {
         id,
         mailbox_id: mailbox_id.to_owned(),
         payload: payload.as_bytes().to_vec(),
@@ -5398,7 +5398,7 @@ fn signed_federation_ws_request(
     let mut request = ws_request_path(
         addr,
         "/api/v1/federation/ws",
-        Some(less_sync_realtime::ws::WS_SUBPROTOCOL),
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
     );
     sign_http_request(&mut request, signing_key, key_id);
     request
@@ -5428,7 +5428,7 @@ async fn send_auth(socket: &mut TestSocket) {
 
 async fn send_auth_with_token(socket: &mut TestSocket, token: &str) {
     let frame = minicbor_serde::to_vec(serde_json::json!({
-        "type": less_sync_core::protocol::RPC_NOTIFICATION,
+        "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
         "method": "auth",
         "params": { "token": token }
     }))
@@ -5462,7 +5462,7 @@ async fn send_rpc_request<T: serde::Serialize>(
         params: &'a T,
     }
     let encoded = minicbor_serde::to_vec(&Frame {
-        frame_type: less_sync_core::protocol::RPC_REQUEST,
+        frame_type: betterbase_sync_core::protocol::RPC_REQUEST,
         id,
         method,
         params,
@@ -5487,7 +5487,7 @@ async fn send_rpc_notification<T: serde::Serialize>(
         params: &'a T,
     }
     let encoded = minicbor_serde::to_vec(&Frame {
-        frame_type: less_sync_core::protocol::RPC_NOTIFICATION,
+        frame_type: betterbase_sync_core::protocol::RPC_NOTIFICATION,
         method,
         params,
     })
@@ -5502,7 +5502,7 @@ async fn subscribe_socket_to_space(socket: &mut TestSocket, request_id: &str, sp
     send_binary_frame(
         socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": request_id,
             "method": "subscribe",
             "params": {
@@ -5512,7 +5512,7 @@ async fn subscribe_socket_to_space(socket: &mut TestSocket, request_id: &str, sp
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(socket).await;
     assert_eq!(response.id, request_id);
     assert_eq!(response.result.spaces.len(), 1);
@@ -5664,7 +5664,7 @@ async fn websocket_deks_get_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5672,7 +5672,7 @@ async fn websocket_deks_get_invalid_params_returns_invalid_params_error() {
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "deks-bad-params",
             "method": "deks.get",
             "params": "not-a-map"
@@ -5695,14 +5695,14 @@ async fn websocket_deks_rewrap_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "deks-rewrap-bad",
             "method": "deks.rewrap",
             "params": "not-a-map"
@@ -5725,7 +5725,7 @@ async fn websocket_deks_get_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5752,7 +5752,7 @@ async fn websocket_deks_rewrap_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5781,14 +5781,14 @@ async fn websocket_epoch_begin_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-bad-params",
             "method": "epoch.begin",
             "params": "not-a-map"
@@ -5811,14 +5811,14 @@ async fn websocket_epoch_complete_invalid_params_returns_invalid_params_error() 
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "epoch-complete-bad",
             "method": "epoch.complete",
             "params": "not-a-map"
@@ -5841,7 +5841,7 @@ async fn websocket_epoch_begin_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5868,7 +5868,7 @@ async fn websocket_epoch_complete_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5897,14 +5897,14 @@ async fn websocket_membership_append_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "mem-append-bad",
             "method": "membership.append",
             "params": "not-a-map"
@@ -5927,14 +5927,14 @@ async fn websocket_membership_list_invalid_params_returns_invalid_params_error()
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "mem-list-bad",
             "method": "membership.list",
             "params": "not-a-map"
@@ -5957,14 +5957,14 @@ async fn websocket_membership_revoke_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "mem-revoke-bad",
             "method": "membership.revoke",
             "params": "not-a-map"
@@ -5987,7 +5987,7 @@ async fn websocket_membership_append_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5995,7 +5995,7 @@ async fn websocket_membership_append_invalid_space_id_returns_bad_request() {
         &mut socket,
         "mem-append-badspace",
         "membership.append",
-        &less_sync_core::protocol::MembershipAppendParams {
+        &betterbase_sync_core::protocol::MembershipAppendParams {
             space: "not-a-uuid".to_owned(),
             ucan: String::new(),
             expected_version: 0,
@@ -6021,7 +6021,7 @@ async fn websocket_membership_list_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6048,7 +6048,7 @@ async fn websocket_membership_revoke_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6080,14 +6080,14 @@ async fn websocket_space_create_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sc-bad-params",
             "method": "space.create",
             "params": "not-a-map"
@@ -6110,7 +6110,7 @@ async fn websocket_space_create_invalid_public_key_wrong_size_returns_bad_reques
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6119,7 +6119,7 @@ async fn websocket_space_create_invalid_public_key_wrong_size_returns_bad_reques
         &mut socket,
         "sc-badkey1",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
             root_public_key: vec![0x02; 32],
         },
@@ -6141,7 +6141,7 @@ async fn websocket_space_create_invalid_public_key_not_compressed_returns_bad_re
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6150,7 +6150,7 @@ async fn websocket_space_create_invalid_public_key_not_compressed_returns_bad_re
         &mut socket,
         "sc-badkey2",
         "space.create",
-        &less_sync_core::protocol::SpaceCreateParams {
+        &betterbase_sync_core::protocol::SpaceCreateParams {
             id: Uuid::new_v4().to_string(),
             root_public_key: vec![0x04; 33],
         },
@@ -6174,14 +6174,14 @@ async fn websocket_invitation_create_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "inv-bad-params",
             "method": "invitation.create",
             "params": "not-a-map"
@@ -6204,7 +6204,7 @@ async fn websocket_invitation_get_not_found_returns_not_found_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6238,7 +6238,7 @@ async fn websocket_invitation_list_wrong_mailbox_returns_empty_list() {
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth_with_token(&mut socket, "other-token").await;
 
@@ -6250,7 +6250,7 @@ async fn websocket_invitation_list_wrong_mailbox_returns_empty_list() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::InvitationListResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::InvitationListResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "inv-list-other");
     assert!(
@@ -6272,14 +6272,14 @@ async fn websocket_push_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "push-bad-params",
             "method": "push",
             "params": "not-a-map"
@@ -6297,7 +6297,7 @@ async fn websocket_push_invalid_params_returns_invalid_params_error() {
 async fn websocket_push_conflict_returns_conflict_result() {
     // Configure stub to return ok=false (conflict)
     let storage = Arc::new(StubSyncStorage {
-        push_result: less_sync_storage::PushResult {
+        push_result: betterbase_sync_storage::PushResult {
             ok: false,
             cursor: 0,
             deleted_file_ids: Vec::new(),
@@ -6310,7 +6310,7 @@ async fn websocket_push_conflict_returns_conflict_result() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6318,10 +6318,10 @@ async fn websocket_push_conflict_returns_conflict_result() {
         &mut socket,
         "push-conflict",
         "push",
-        &less_sync_core::protocol::PushParams {
+        &betterbase_sync_core::protocol::PushParams {
             space: test_personal_space_id(),
             ucan: String::new(),
-            changes: vec![less_sync_core::protocol::WsPushChange {
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
                 id: Uuid::new_v4().to_string(),
                 blob: Some(vec![1, 2, 3]),
                 expected_cursor: 99,
@@ -6331,7 +6331,7 @@ async fn websocket_push_conflict_returns_conflict_result() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::PushRpcResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "push-conflict");
     assert!(!response.result.ok);
@@ -6350,14 +6350,14 @@ async fn websocket_subscribe_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
     send_binary_frame(
         &mut socket,
         serde_json::json!({
-            "type": less_sync_core::protocol::RPC_REQUEST,
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
             "id": "sub-bad-params",
             "method": "subscribe",
             "params": "not-a-map"
@@ -6380,7 +6380,7 @@ async fn websocket_subscribe_empty_space_list_returns_empty_result() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(less_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6392,7 +6392,7 @@ async fn websocket_subscribe_empty_space_list_returns_empty_result() {
     )
     .await;
 
-    let response: RpcResultResponse<less_sync_core::protocol::SubscribeResult> =
+    let response: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "sub-empty");
     assert!(response.result.spaces.is_empty());

@@ -1,10 +1,10 @@
-use less_sync_auth::Permission;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::Permission;
+use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, WsPullBeginData, WsPullCommitData, ERR_CODE_BAD_REQUEST,
     ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
     ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
-use less_sync_storage::StorageError;
+use betterbase_sync_storage::StorageError;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -297,7 +297,7 @@ struct PullRpcResult {
     chunks: i32,
 }
 
-fn push_change_bytes(change: &less_sync_core::protocol::WsPushChange) -> u64 {
+fn push_change_bytes(change: &betterbase_sync_core::protocol::WsPushChange) -> u64 {
     let blob_bytes = change.blob.as_ref().map_or(0, Vec::len) as u64;
     let dek_bytes = change.wrapped_dek.as_ref().map_or(0, Vec::len) as u64;
     blob_bytes.saturating_add(dek_bytes)

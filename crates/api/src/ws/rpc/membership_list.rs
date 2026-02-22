@@ -3,12 +3,12 @@ use super::super::realtime::OutboundSender;
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     MembershipListParams, MembershipListResult, WsMembershipEntry, ERR_CODE_BAD_REQUEST,
     ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
 };
-use less_sync_storage::StorageError;
+use betterbase_sync_storage::StorageError;
 use uuid::Uuid;
 
 pub(super) async fn handle_request(

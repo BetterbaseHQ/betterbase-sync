@@ -1,8 +1,8 @@
 use super::realtime::{OutboundSender, RealtimeSession};
 use super::PresenceRegistry;
 use super::SyncStorage;
-use less_sync_auth::{AuthContext, TokenValidator};
-use less_sync_core::protocol::{
+use betterbase_sync_auth::{AuthContext, TokenValidator};
+use betterbase_sync_core::protocol::{
     WsFileData, WsMembershipData, WsRevokedData, WsSyncData, ERR_CODE_INTERNAL, RPC_RESPONSE,
 };
 use serde::de::DeserializeOwned;

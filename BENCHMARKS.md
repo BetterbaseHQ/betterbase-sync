@@ -22,30 +22,30 @@ This repo now includes a baseline benchmark set mirrored from the Go project for
 Auth benches:
 
 ```bash
-cargo bench -p less-sync-auth --bench ucan
+cargo bench -p betterbase-sync-auth --bench ucan
 ```
 
 Realtime benches:
 
 ```bash
-cargo bench -p less-sync-realtime --bench events
-cargo bench -p less-sync-realtime --bench rpcconn
+cargo bench -p betterbase-sync-realtime --bench events
+cargo bench -p betterbase-sync-realtime --bench rpcconn
 ```
 
 Storage benches (requires `DATABASE_URL`):
 
 ```bash
 export DATABASE_URL='postgres://...'
-cargo bench -p less-sync-storage --bench postgres
+cargo bench -p betterbase-sync-storage --bench postgres
 ```
 
 Run all mirrored benches:
 
 ```bash
-cargo bench -p less-sync-auth --bench ucan && \
-cargo bench -p less-sync-realtime --bench events && \
-cargo bench -p less-sync-realtime --bench rpcconn && \
-cargo bench -p less-sync-storage --bench postgres
+cargo bench -p betterbase-sync-auth --bench ucan && \
+cargo bench -p betterbase-sync-realtime --bench events && \
+cargo bench -p betterbase-sync-realtime --bench rpcconn && \
+cargo bench -p betterbase-sync-storage --bench postgres
 ```
 
 ## Notes

@@ -9,11 +9,11 @@ COPY bins ./bins
 COPY crates ./crates
 RUN cargo fetch --locked
 
-COPY docker/dev-entrypoint.sh /usr/local/bin/less-sync-dev-entrypoint
-RUN chmod +x /usr/local/bin/less-sync-dev-entrypoint
+COPY docker/dev-entrypoint.sh /usr/local/bin/betterbase-sync-dev-entrypoint
+RUN chmod +x /usr/local/bin/betterbase-sync-dev-entrypoint
 
-ENV CARGO_TARGET_DIR=/tmp/less-sync-rs-target
+ENV CARGO_TARGET_DIR=/tmp/betterbase-sync-target
 
 EXPOSE 5379
 
-CMD ["/usr/local/bin/less-sync-dev-entrypoint"]
+CMD ["/usr/local/bin/betterbase-sync-dev-entrypoint"]

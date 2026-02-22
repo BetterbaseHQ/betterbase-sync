@@ -1,6 +1,6 @@
-# less-sync-rs
+# betterbase-sync
 
-Encrypted blob sync service for the Less platform, written in Rust. This is a port of [less-sync](https://github.com/lessismore-co/less-sync) (Go).
+Encrypted blob sync service for the Less platform, written in Rust. This is a port of [betterbase-sync](https://github.com/lessismore-co/betterbase-sync) (Go).
 
 The server stores and syncs encrypted blobs on behalf of clients. It never sees plaintext — encryption and decryption happen client-side.
 
@@ -49,8 +49,8 @@ just db-shell    # psql into the test database
 ## Docker
 
 ```bash
-docker build -t less-sync-rs .              # production image
-docker build -f Dockerfile.dev -t less-sync-rs:dev .  # dev image with hot reload
+docker build -t betterbase-sync .              # production image
+docker build -f Dockerfile.dev -t betterbase-sync:dev .  # dev image with hot reload
 ```
 
 ## License

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use less_sync_core::protocol::Change;
-use less_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE};
+use betterbase_sync_core::protocol::Change;
+use betterbase_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE};
 use uuid::Uuid;
 
 use super::PostgresStorage;
@@ -421,7 +421,7 @@ struct SpaceAuthRow {
 
 #[cfg(test)]
 mod tests {
-    use less_sync_core::protocol::Change;
+    use betterbase_sync_core::protocol::Change;
 
     use super::super::test_support::*;
     use crate::{PullEntry, PullEntryKind};
@@ -657,7 +657,7 @@ mod tests {
         create_space(&storage, space_id).await;
 
         let large_blob =
-            vec![0u8; (less_sync_core::validation::DEFAULT_MAX_BLOB_SIZE + 1) as usize];
+            vec![0u8; (betterbase_sync_core::validation::DEFAULT_MAX_BLOB_SIZE + 1) as usize];
         let error = storage
             .push(
                 space_id,

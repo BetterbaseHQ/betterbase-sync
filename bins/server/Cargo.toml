@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-server"
+name = "betterbase-sync-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-less-sync-app = { path = "../../crates/app" }
+betterbase-sync-app = { path = "../../crates/app" }
 tokio.workspace = true
 tracing-subscriber.workspace = true

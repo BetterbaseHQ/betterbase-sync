@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-less-sync-rs is the encrypted blob sync service for the Less platform, ported from Go (less-sync). The server stores and syncs encrypted blobs via WebSocket RPC (CBOR) and HTTP. Encryption happens client-side — the server never sees plaintext.
+betterbase-sync is the encrypted blob sync service for the Less platform, ported from Go (betterbase-sync). The server stores and syncs encrypted blobs via WebSocket RPC (CBOR) and HTTP. Encryption happens client-side — the server never sees plaintext.
 
 ## Commands
 
@@ -18,12 +18,12 @@ just lint           # cargo clippy --workspace -- -D warnings
 just fmt            # cargo fmt --all
 
 # Run a single test
-cargo test -p less-sync-auth test_name
-cargo test -p less-sync-storage test_name
+cargo test -p betterbase-sync-auth test_name
+cargo test -p betterbase-sync-storage test_name
 
 # Database tests with a running container
 just db-start       # start test PostgreSQL (port 15432)
-DATABASE_URL="postgres://sync:sync@localhost:15432/sync_test?sslmode=disable" cargo test -p less-sync-storage test_name
+DATABASE_URL="postgres://sync:sync@localhost:15432/sync_test?sslmode=disable" cargo test -p betterbase-sync-storage test_name
 just db-down        # remove container
 ```
 

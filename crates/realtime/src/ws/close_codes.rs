@@ -1,4 +1,4 @@
-use less_sync_core::protocol::{CLOSE_AUTH_FAILED, CLOSE_PROTOCOL_ERROR};
+use betterbase_sync_core::protocol::{CLOSE_AUTH_FAILED, CLOSE_PROTOCOL_ERROR};
 
 pub const WS_SUBPROTOCOL: &str = "less-rpc-v1";
 

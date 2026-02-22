@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-core"
+name = "betterbase-sync-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

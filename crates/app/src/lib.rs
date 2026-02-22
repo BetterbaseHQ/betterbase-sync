@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use less_sync_api::ApiState;
-use less_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
-use less_sync_core::protocol::{WsPresenceLeaveData, RPC_NOTIFICATION};
-use less_sync_realtime::broker::{BrokerConfig, MultiBroker};
-use less_sync_storage::{migrate_with_pool, PostgresStorage};
+use betterbase_sync_api::ApiState;
+use betterbase_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
+use betterbase_sync_core::protocol::{WsPresenceLeaveData, RPC_NOTIFICATION};
+use betterbase_sync_realtime::broker::{BrokerConfig, MultiBroker};
+use betterbase_sync_storage::{migrate_with_pool, PostgresStorage};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
@@ -149,13 +149,13 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "server listening");
-    axum::serve(listener, less_sync_api::router(api_state)).await?;
+    axum::serve(listener, betterbase_sync_api::router(api_state)).await?;
     Ok(())
 }
 
 /// Periodically remove stale presence entries and broadcast leave notifications.
 async fn presence_cleanup_loop(
-    registry: Arc<less_sync_api::PresenceRegistry>,
+    registry: Arc<betterbase_sync_api::PresenceRegistry>,
     broker: Arc<MultiBroker>,
 ) {
     const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -453,11 +453,11 @@ mod tests {
             Some("127.0.0.1:5379".to_owned()),
             Some("postgres://localhost/less-sync".to_owned()),
             Some("https://accounts.less.so".to_owned()),
-            Some("less-sync, less-sync-local ,".to_owned()),
+            Some("betterbase-sync, less-sync-local ,".to_owned()),
         )
         .expect("parse config");
 
-        assert_eq!(config.audiences, vec!["less-sync", "less-sync-local"]);
+        assert_eq!(config.audiences, vec!["betterbase-sync", "betterbase-sync-local"]);
     }
 
     #[test]
@@ -533,7 +533,7 @@ mod tests {
             s3_endpoint: Some("minio.internal:9000".to_owned()),
             s3_access_key: Some("access".to_owned()),
             s3_secret_key: Some("secret".to_owned()),
-            s3_bucket: Some("less-sync".to_owned()),
+            s3_bucket: Some("betterbase-sync".to_owned()),
             ..FileStorageEnv::default()
         })
         .expect("parse file storage");
@@ -543,7 +543,7 @@ mod tests {
                 endpoint: "minio.internal:9000".to_owned(),
                 access_key: "access".to_owned(),
                 secret_key: "secret".to_owned(),
-                bucket: "less-sync".to_owned(),
+                bucket: "betterbase-sync".to_owned(),
                 region: "us-east-1".to_owned(),
                 use_ssl: true,
             }
@@ -557,7 +557,7 @@ mod tests {
             s3_endpoint: Some("minio.internal:9000".to_owned()),
             s3_access_key: Some("access".to_owned()),
             s3_secret_key: Some("secret".to_owned()),
-            s3_bucket: Some("less-sync".to_owned()),
+            s3_bucket: Some("betterbase-sync".to_owned()),
             s3_region: Some("auto".to_owned()),
             s3_use_ssl: Some("false".to_owned()),
             ..FileStorageEnv::default()
@@ -569,7 +569,7 @@ mod tests {
                 endpoint: "minio.internal:9000".to_owned(),
                 access_key: "access".to_owned(),
                 secret_key: "secret".to_owned(),
-                bucket: "less-sync".to_owned(),
+                bucket: "betterbase-sync".to_owned(),
                 region: "auto".to_owned(),
                 use_ssl: false,
             }
@@ -582,7 +582,7 @@ mod tests {
             backend: Some("s3".to_owned()),
             s3_access_key: Some("access".to_owned()),
             s3_secret_key: Some("secret".to_owned()),
-            s3_bucket: Some("less-sync".to_owned()),
+            s3_bucket: Some("betterbase-sync".to_owned()),
             ..FileStorageEnv::default()
         })
         .expect_err("missing endpoint should fail");
@@ -605,7 +605,7 @@ mod tests {
             endpoint: "localhost:9000".to_owned(),
             access_key: "access".to_owned(),
             secret_key: "secret".to_owned(),
-            bucket: "less-sync".to_owned(),
+            bucket: "betterbase-sync".to_owned(),
             region: "us-east-1".to_owned(),
             use_ssl: false,
         };

@@ -2,12 +2,12 @@ use super::super::realtime::OutboundSender;
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     SpaceCreateParams, SpaceCreateResult, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
     ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
 };
-use less_sync_storage::StorageError;
+use betterbase_sync_storage::StorageError;
 use uuid::Uuid;
 
 /// A compressed SEC1 public key is exactly 33 bytes with a 0x02 or 0x03 prefix.

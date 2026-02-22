@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use less_sync_core::protocol::Change;
-use less_sync_storage::{
+use betterbase_sync_core::protocol::Change;
+use betterbase_sync_storage::{
     migrate_with_pool, FileStorage, PostgresStorage, RecordStorage, SpaceStorage,
 };
 use sqlx::postgres::PgPoolOptions;

@@ -1,4 +1,4 @@
-use less_sync_core::protocol::{Change, PushParams, WsSyncRecord};
+use betterbase_sync_core::protocol::{Change, PushParams, WsSyncRecord};
 
 use crate::ws::realtime::RealtimeSession;
 

@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
-use less_sync_auth::{
+use betterbase_sync_auth::{
     canonicalize_domain, create_fst, extract_domain_from_key_id, verify_fst_dual_key,
     verify_http_signature_with_max_age, AuthContext, FederationSubscribeClaims,
     FederationTokenError, DEFAULT_SIGNATURE_MAX_AGE,
@@ -158,7 +158,7 @@ impl FederationAuthenticator for HttpSignatureFederationAuthenticator {
             self.signature_max_age,
             |key_id| match self.keys_by_id.get(key_id) {
                 Some(key) => Ok(*key),
-                None => Err(less_sync_auth::HttpSignatureError::KeyLookupFailed(
+                None => Err(betterbase_sync_auth::HttpSignatureError::KeyLookupFailed(
                     "unknown key id".to_owned(),
                 )),
             },
@@ -218,7 +218,7 @@ mod tests {
     use axum::http::header::HOST;
     use axum::http::Method;
     use ed25519_dalek::SigningKey;
-    use less_sync_auth::sign_http_request;
+    use betterbase_sync_auth::sign_http_request;
     use p256::elliptic_curve::rand_core::OsRng;
 
     fn signed_request(signing_key: &SigningKey, key_id: &str) -> Request<()> {

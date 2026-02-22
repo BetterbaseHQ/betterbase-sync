@@ -7,13 +7,13 @@ use super::super::realtime::{OutboundSender, RealtimeSession};
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     MembershipAppendParams, MembershipAppendResult, WsMembershipData, WsMembershipEntry,
     ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
     ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_RATE_LIMITED,
 };
-use less_sync_storage::{MembersLogEntry, StorageError};
+use betterbase_sync_storage::{MembersLogEntry, StorageError};
 use uuid::Uuid;
 
 const RATE_LIMIT_MAX: i64 = 10;
@@ -58,7 +58,7 @@ pub(super) async fn handle_request(
 
     // Rate limiting (before expensive validation/storage ops).
     let actor_hash = if let Some(key) = identity_hash_key {
-        let hash = less_sync_storage::rate_limit_hash(key, &auth.issuer, &auth.user_id);
+        let hash = betterbase_sync_storage::rate_limit_hash(key, &auth.issuer, &auth.user_id);
         let since = SystemTime::now() - RATE_LIMIT_WINDOW;
         match sync_storage
             .count_recent_actions("membership_append", &hash, since)

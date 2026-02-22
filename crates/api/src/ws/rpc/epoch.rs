@@ -3,13 +3,13 @@ use super::super::realtime::OutboundSender;
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     EpochBeginParams, EpochBeginResult, EpochCompleteParams, EpochConflictResult,
     ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
     ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
 };
-use less_sync_storage::{AdvanceEpochOptions, StorageError};
+use betterbase_sync_storage::{AdvanceEpochOptions, StorageError};
 use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize)]

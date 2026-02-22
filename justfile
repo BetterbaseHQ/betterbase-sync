@@ -38,7 +38,7 @@ clean:
     cargo clean
 
 # Docker settings for test database
-_db_container := "less-sync-rs-test-db"
+_db_container := "betterbase-sync-test-db"
 _db_port      := "15432"
 _db_user      := "sync"
 _db_pass      := "sync"

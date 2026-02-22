@@ -9,12 +9,12 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use less_sync_auth::{
+use betterbase_sync_auth::{
     compute_ucan_cid, parse_ucan, validate_chain, AuthContext, Permission, UcanError,
     ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
 };
-use less_sync_core::protocol::{ErrorResponse, Space, WsFileData, WsFileEntry};
-use less_sync_storage::{
+use betterbase_sync_core::protocol::{ErrorResponse, Space, WsFileData, WsFileEntry};
+use betterbase_sync_storage::{
     FileMetadata, FileStorage as FileStorageTrait, RecordStorage, RevocationStorage, SpaceStorage,
     StorageError,
 };
@@ -682,7 +682,7 @@ mod tests {
     use axum::http::Request;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{Algorithm, Header};
-    use less_sync_auth::{
+    use betterbase_sync_auth::{
         compress_public_key, compute_ucan_cid, encode_did_key, AudienceClaim, AuthError,
         TokenValidator, UcanClaims,
     };

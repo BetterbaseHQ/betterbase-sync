@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-migrate"
+name = "betterbase-sync-migrate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,5 +7,5 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-less-sync-storage = { path = "../../crates/storage" }
+betterbase-sync-storage = { path = "../../crates/storage" }
 tokio.workspace = true

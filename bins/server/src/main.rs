@@ -6,6 +6,6 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let config = less_sync_app::AppConfig::from_env()?;
-    less_sync_app::run(config).await
+    let config = betterbase_sync_app::AppConfig::from_env()?;
+    betterbase_sync_app::run(config).await
 }

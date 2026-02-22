@@ -1,7 +1,7 @@
-use less_sync_core::protocol::{
+use betterbase_sync_core::protocol::{
     WsMembershipData, WsMembershipEntry, WsPullFileData, WsPullRecordData,
 };
-use less_sync_storage::PullEntry;
+use betterbase_sync_storage::PullEntry;
 
 use super::frames::send_chunk_response;
 use crate::ws::realtime::OutboundSender;
@@ -16,7 +16,7 @@ pub(super) async fn send_pull_entry(
     entry: &PullEntry,
 ) -> bool {
     match entry.kind {
-        less_sync_storage::PullEntryKind::Record => {
+        betterbase_sync_storage::PullEntryKind::Record => {
             let Some(record) = &entry.record else {
                 tracing::error!(
                     space = space_id,
@@ -41,7 +41,7 @@ pub(super) async fn send_pull_entry(
             .await;
             true
         }
-        less_sync_storage::PullEntryKind::Membership => {
+        betterbase_sync_storage::PullEntryKind::Membership => {
             let Some(member) = &entry.member else {
                 tracing::error!(
                     space = space_id,
@@ -72,7 +72,7 @@ pub(super) async fn send_pull_entry(
             .await;
             true
         }
-        less_sync_storage::PullEntryKind::File => {
+        betterbase_sync_storage::PullEntryKind::File => {
             let Some(file) = &entry.file else {
                 tracing::error!(
                     space = space_id,

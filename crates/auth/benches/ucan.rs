@@ -4,7 +4,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use jsonwebtoken::{Algorithm, Header};
-use less_sync_auth::{
+use betterbase_sync_auth::{
     compress_public_key, encode_did_key, validate_chain, AudienceClaim, Permission, UcanClaims,
     ValidateChainParams,
 };

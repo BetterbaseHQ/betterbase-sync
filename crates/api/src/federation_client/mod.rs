@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
-use less_sync_auth::canonicalize_domain;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::canonicalize_domain;
+use betterbase_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, PullParams, PushParams, PushRpcResult,
     SubscribeParams, SubscribeResult, WsPullSpace, WsSubscribeSpace,
 };
@@ -34,7 +34,7 @@ pub enum FederationPeerError {
     #[error("unexpected federation websocket subprotocol {0:?}")]
     UnexpectedSubprotocol(Option<String>),
     #[error("federation RPC failed: {0}")]
-    Rpc(#[from] less_sync_core::protocol::RpcError),
+    Rpc(#[from] betterbase_sync_core::protocol::RpcError),
     #[error("peer {0} rejected federation invitation")]
     InvitationRejected(String),
 }
@@ -49,7 +49,7 @@ pub struct FederationPeerManager {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FederationPullChunk {
     pub name: String,
-    pub data: less_sync_core::protocol::CborValue,
+    pub data: betterbase_sync_core::protocol::CborValue,
 }
 
 #[async_trait]
@@ -244,7 +244,7 @@ impl FederationPeerManager {
         peer: &peer::PeerConnection,
         method: &str,
         params: &P,
-    ) -> Result<less_sync_core::protocol::CborValue, FederationPeerError>
+    ) -> Result<betterbase_sync_core::protocol::CborValue, FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -265,7 +265,7 @@ impl FederationPeerManager {
         params: &P,
     ) -> Result<
         (
-            less_sync_core::protocol::CborValue,
+            betterbase_sync_core::protocol::CborValue,
             Vec<peer::ReceivedChunk>,
         ),
         FederationPeerError,
@@ -289,7 +289,7 @@ impl FederationPeerManager {
         params: &P,
     ) -> Result<
         (
-            less_sync_core::protocol::CborValue,
+            betterbase_sync_core::protocol::CborValue,
             Vec<peer::ReceivedChunk>,
         ),
         FederationPeerError,
@@ -411,7 +411,7 @@ fn should_retry(error: &FederationPeerError) -> bool {
 }
 
 fn decode_cbor_value<T>(
-    value: less_sync_core::protocol::CborValue,
+    value: betterbase_sync_core::protocol::CborValue,
 ) -> Result<T, FederationPeerError>
 where
     T: DeserializeOwned,

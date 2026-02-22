@@ -1,5 +1,5 @@
-use less_sync_auth::{AuthContext, AuthError, TokenValidator};
-use less_sync_core::protocol::RPC_NOTIFICATION;
+use betterbase_sync_auth::{AuthContext, AuthError, TokenValidator};
+use betterbase_sync_core::protocol::RPC_NOTIFICATION;
 use serde::Deserialize;
 
 use super::close_codes::CloseDirective;
@@ -151,7 +151,7 @@ mod tests {
             .expect_err("non-binary first message must fail");
         assert_eq!(
             error.close.code,
-            less_sync_core::protocol::CLOSE_AUTH_FAILED
+            betterbase_sync_core::protocol::CLOSE_AUTH_FAILED
         );
     }
 
@@ -181,7 +181,7 @@ mod tests {
             .expect_err("non-auth first frame must fail");
         assert_eq!(
             error.close.code,
-            less_sync_core::protocol::CLOSE_AUTH_FAILED
+            betterbase_sync_core::protocol::CLOSE_AUTH_FAILED
         );
     }
 

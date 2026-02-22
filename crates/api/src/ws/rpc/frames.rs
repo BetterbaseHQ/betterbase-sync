@@ -1,6 +1,6 @@
 use super::super::realtime::{send_binary, OutboundSender};
 use super::{RpcChunkFrame, RpcErrorFrame, RpcErrorPayload, RpcResultFrame, RESPONSE_FRAME_TYPE};
-use less_sync_core::protocol::{ERR_CODE_METHOD_NOT_FOUND, RPC_CHUNK};
+use betterbase_sync_core::protocol::{ERR_CODE_METHOD_NOT_FOUND, RPC_CHUNK};
 use serde::Serialize;
 
 pub(super) async fn send_method_not_found_response(

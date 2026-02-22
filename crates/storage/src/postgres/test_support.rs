@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use less_sync_core::protocol::Change;
+use betterbase_sync_core::protocol::Change;
 use sqlx::postgres::PgPoolOptions;
 
 use super::PostgresStorage;

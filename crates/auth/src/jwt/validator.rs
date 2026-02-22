@@ -529,7 +529,7 @@ mod tests {
         let server = mock_jwks_server(vec![key.jwk()]).await;
         let validator =
             new_single_issuer_validator("https://accounts.example.com", &server.url, |config| {
-                config.audiences = vec!["less-sync".to_owned()]
+                config.audiences = vec!["betterbase-sync".to_owned()]
             });
 
         let mut claims = test_claims("https://accounts.example.com", "user-123", "test-client-id");
@@ -549,11 +549,11 @@ mod tests {
         let server = mock_jwks_server(vec![key.jwk()]).await;
         let validator =
             new_single_issuer_validator("https://accounts.example.com", &server.url, |config| {
-                config.audiences = vec!["less-sync".to_owned(), "other-allowed".to_owned()]
+                config.audiences = vec!["betterbase-sync".to_owned(), "other-allowed".to_owned()]
             });
 
         let mut claims = test_claims("https://accounts.example.com", "user-123", "test-client-id");
-        claims.aud = Some(super::AudienceClaim::One("less-sync".to_owned()));
+        claims.aud = Some(super::AudienceClaim::One("betterbase-sync".to_owned()));
         let token = key.sign_token(&claims).expect("sign token");
 
         let token_info = validator

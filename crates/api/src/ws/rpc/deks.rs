@@ -3,14 +3,14 @@ use super::super::realtime::OutboundSender;
 use super::super::SyncStorage;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     DekRecord as WsDekRecord, DeksGetParams, DeksGetResult, DeksRewrapParams, DeksRewrapResult,
     FileDekRecord as WsFileDekRecord, FileDeksGetParams, FileDeksGetResult, FileDeksRewrapParams,
     FileDeksRewrapResult, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN,
     ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND,
 };
-use less_sync_storage::{DekRecord, FileDekRecord, StorageError};
+use betterbase_sync_storage::{DekRecord, FileDekRecord, StorageError};
 use uuid::Uuid;
 
 const WRAPPED_DEK_LEN: usize = 44;

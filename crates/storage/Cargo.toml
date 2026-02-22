@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-storage"
+name = "betterbase-sync-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 async-trait.workspace = true
 futures-util = "0.3"
 hmac.workspace = true
-less-sync-core = { path = "../core" }
+betterbase-sync-core = { path = "../core" }
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true

@@ -4,8 +4,8 @@ use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, Method, Request};
-use less_sync_auth::sign_http_request;
-use less_sync_realtime::ws::WS_SUBPROTOCOL;
+use betterbase_sync_auth::sign_http_request;
+use betterbase_sync_realtime::ws::WS_SUBPROTOCOL;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -21,7 +21,7 @@ type PeerSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ReceivedChunk {
     pub(super) name: String,
-    pub(super) data: less_sync_core::protocol::CborValue,
+    pub(super) data: betterbase_sync_core::protocol::CborValue,
 }
 
 pub(super) struct PeerConnection {
@@ -46,7 +46,7 @@ impl PeerConnection {
         request_id: &str,
         method: &str,
         params: &P,
-    ) -> Result<(less_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError>
+    ) -> Result<(betterbase_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError>
     where
         P: serde::Serialize,
     {
@@ -186,7 +186,7 @@ fn host_header_value(url: &Url) -> Option<String> {
 async fn read_response_for_request(
     socket: &mut PeerSocket,
     request_id: &str,
-) -> Result<(less_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError> {
+) -> Result<(betterbase_sync_core::protocol::CborValue, Vec<ReceivedChunk>), FederationPeerError> {
     let mut chunks = Vec::new();
     while let Some(frame) = socket.next().await {
         let frame = frame.map_err(|_| FederationPeerError::Closed)?;
@@ -198,7 +198,7 @@ async fn read_response_for_request(
 
                 match decode_inbound_frame(payload.as_ref())? {
                     InboundFrame::Response(response) => {
-                        if response.frame_type != less_sync_core::protocol::RPC_RESPONSE {
+                        if response.frame_type != betterbase_sync_core::protocol::RPC_RESPONSE {
                             continue;
                         }
                         if response.id != request_id {
@@ -210,12 +210,12 @@ async fn read_response_for_request(
                         return Ok((
                             response
                                 .result
-                                .unwrap_or(less_sync_core::protocol::CborValue::Null),
+                                .unwrap_or(betterbase_sync_core::protocol::CborValue::Null),
                             chunks,
                         ));
                     }
                     InboundFrame::Chunk(chunk) => {
-                        if chunk.frame_type != less_sync_core::protocol::RPC_CHUNK {
+                        if chunk.frame_type != betterbase_sync_core::protocol::RPC_CHUNK {
                             continue;
                         }
                         if chunk.id != request_id {

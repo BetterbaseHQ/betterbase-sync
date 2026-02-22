@@ -1,4 +1,4 @@
-use less_sync_core::protocol::ERR_CODE_INTERNAL;
+use betterbase_sync_core::protocol::ERR_CODE_INTERNAL;
 
 use super::frames::{send_error_response, send_method_not_found_response};
 use super::{RequestContext, RequestFrame};

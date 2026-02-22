@@ -4,15 +4,15 @@ use super::super::realtime::OutboundSender;
 use super::super::{realtime::RealtimeSession, PresenceRegistry, SyncStorage};
 use super::decode_frame_params;
 use super::frames::{send_chunk_response, send_error_response, send_result_response};
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
     WsEventSendParams, WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData,
     WsPullCommitData, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
     ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE,
     ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
 };
-use less_sync_storage::StorageError;
+use betterbase_sync_storage::StorageError;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -211,7 +211,7 @@ pub(super) async fn handle_subscribe_request(
                 if let (Some(federation_forwarder), Some(home_server)) =
                     (federation_forwarder, home_server)
                 {
-                    let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+                    let peer_domain = betterbase_sync_auth::canonicalize_domain(&home_server);
                     let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
                     if federation_forwarder
                         .subscribe(&peer_domain, &peer_ws_url, std::slice::from_ref(requested))
@@ -341,7 +341,7 @@ pub(super) async fn handle_push_request(
             .ok()
             .and_then(|space| space.home_server);
         if let Some(home_server) = home_server {
-            let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+            let peer_domain = betterbase_sync_auth::canonicalize_domain(&home_server);
             let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
             let response = match federation_forwarder
                 .forward_push(&peer_domain, &peer_ws_url, &params)
@@ -461,7 +461,7 @@ pub(super) async fn handle_pull_request(
         if let (Some(federation_forwarder), Some(home_server)) =
             (federation_forwarder, space_state.home_server.clone())
         {
-            let peer_domain = less_sync_auth::canonicalize_domain(&home_server);
+            let peer_domain = betterbase_sync_auth::canonicalize_domain(&home_server);
             let peer_ws_url = crate::federation_client::peer_ws_url(&home_server);
             let remote_chunks = match federation_forwarder
                 .pull(&peer_domain, &peer_ws_url, std::slice::from_ref(requested))

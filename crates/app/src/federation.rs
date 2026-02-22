@@ -6,12 +6,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::VerifyingKey;
-use less_sync_api::{
+use betterbase_sync_api::{
     ApiState, FederationJwk, FederationJwks, FederationPeerManager, FederationQuotaLimits,
     FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
-use less_sync_auth::{canonicalize_domain, derive_fst_key, extract_domain_from_key_id};
-use less_sync_storage::{FederationStorage, PostgresStorage};
+use betterbase_sync_auth::{canonicalize_domain, derive_fst_key, extract_domain_from_key_id};
+use betterbase_sync_storage::{FederationStorage, PostgresStorage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct FederationRuntimeConfig {
@@ -308,8 +308,8 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
-    use less_sync_api::{router, ApiState};
-    use less_sync_storage::{migrate_with_pool, FederationStorage, PostgresStorage};
+    use betterbase_sync_api::{router, ApiState};
+    use betterbase_sync_storage::{migrate_with_pool, FederationStorage, PostgresStorage};
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 

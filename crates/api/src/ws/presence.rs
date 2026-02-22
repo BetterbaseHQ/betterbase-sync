@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use hmac::{Hmac, Mac};
-use less_sync_core::protocol::WsPresencePeer;
+use betterbase_sync_core::protocol::WsPresencePeer;
 use sha2::Sha256;
 use tokio::sync::RwLock;
 

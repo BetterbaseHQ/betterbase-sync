@@ -9,11 +9,11 @@ use axum::routing::get;
 use axum::Router;
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
-use less_sync_core::protocol::{
+use betterbase_sync_core::protocol::{
     FederationInvitationParams, PushParams, PushRpcResult, SubscribeResult, WsPullSpace,
     WsPushChange, WsSubscribeSpace, RPC_CHUNK, RPC_RESPONSE,
 };
-use less_sync_realtime::ws::WS_SUBPROTOCOL;
+use betterbase_sync_realtime::ws::WS_SUBPROTOCOL;
 use p256::elliptic_curve::rand_core::OsRng;
 use tokio::sync::mpsc;
 
@@ -25,7 +25,7 @@ struct InboundRequestFrame {
     frame_type: i32,
     id: String,
     method: String,
-    params: less_sync_core::protocol::CborValue,
+    params: betterbase_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -33,7 +33,7 @@ struct OutboundResponseFrame {
     #[serde(rename = "type")]
     frame_type: i32,
     id: String,
-    result: less_sync_core::protocol::CborValue,
+    result: betterbase_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -42,14 +42,14 @@ struct OutboundChunkFrame {
     frame_type: i32,
     id: String,
     name: String,
-    data: less_sync_core::protocol::CborValue,
+    data: betterbase_sync_core::protocol::CborValue,
 }
 
 #[derive(Debug, Clone)]
 enum MockPeerReply {
     Respond {
-        result: less_sync_core::protocol::CborValue,
-        chunks: Vec<(String, less_sync_core::protocol::CborValue)>,
+        result: betterbase_sync_core::protocol::CborValue,
+        chunks: Vec<(String, betterbase_sync_core::protocol::CborValue)>,
     },
     CloseConnection,
 }
@@ -125,9 +125,9 @@ impl Drop for MockFederationPeer {
 #[tokio::test]
 async fn federation_peer_manager_subscribe_stores_returned_fsts() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
             spaces: vec![
-                less_sync_core::protocol::WsSubscribedSpace {
+                betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
                     cursor: 0,
                     key_generation: 0,
@@ -135,7 +135,7 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
                     token: "fst-1".to_owned(),
                     peers: Vec::new(),
                 },
-                less_sync_core::protocol::WsSubscribedSpace {
+                betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-2".to_owned(),
                     cursor: 0,
                     key_generation: 0,
@@ -176,8 +176,8 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
 
     let req = peer.require_request().await;
     assert_eq!(req.method, "subscribe");
-    assert_eq!(req.frame_type, less_sync_core::protocol::RPC_REQUEST);
-    let params: less_sync_core::protocol::SubscribeParams = decode_params(req.params);
+    assert_eq!(req.frame_type, betterbase_sync_core::protocol::RPC_REQUEST);
+    let params: betterbase_sync_core::protocol::SubscribeParams = decode_params(req.params);
     assert_eq!(params.spaces.len(), 2);
     assert_eq!(params.spaces[0].id, "space-1");
     assert_eq!(params.spaces[1].id, "space-2");
@@ -192,7 +192,7 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
 #[tokio::test]
 async fn federation_peer_manager_subscribe_fallback_tracks_spaces_on_decode_failure() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::Integer(7),
+        result: betterbase_sync_core::protocol::CborValue::Integer(7),
         chunks: Vec::new(),
     })
     .await;
@@ -231,7 +231,7 @@ async fn federation_peer_manager_subscribe_fallback_tracks_spaces_on_decode_fail
 #[tokio::test]
 async fn federation_peer_manager_forward_push_forwards_and_decodes() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
             ok: true,
             cursor: 42,
             error: String::new(),
@@ -273,8 +273,8 @@ async fn federation_peer_manager_forward_push_forwards_and_decodes() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
     let peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(
-            &less_sync_core::protocol::FederationInvitationResult { ok: false },
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(
+            &betterbase_sync_core::protocol::FederationInvitationResult { ok: false },
         )
         .expect("encode invitation result"),
         chunks: Vec::new(),
@@ -301,8 +301,8 @@ async fn federation_peer_manager_forward_invitation_rejects_not_ok() {
 #[tokio::test]
 async fn federation_peer_manager_forward_invitation_forwards_params() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(
-            &less_sync_core::protocol::FederationInvitationResult { ok: true },
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(
+            &betterbase_sync_core::protocol::FederationInvitationResult { ok: true },
         )
         .expect("encode invitation result"),
         chunks: Vec::new(),
@@ -332,15 +332,15 @@ async fn federation_peer_manager_forward_invitation_forwards_params() {
 #[tokio::test]
 async fn federation_peer_manager_pull_collects_chunk_frames() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::Null,
+        result: betterbase_sync_core::protocol::CborValue::Null,
         chunks: vec![
             (
                 "pull.begin".to_owned(),
-                less_sync_core::protocol::CborValue::Integer(1),
+                betterbase_sync_core::protocol::CborValue::Integer(1),
             ),
             (
                 "pull.record".to_owned(),
-                less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]),
+                betterbase_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3]),
             ),
         ],
     })
@@ -361,17 +361,17 @@ async fn federation_peer_manager_pull_collects_chunk_frames() {
     assert_eq!(chunks[0].name, "pull.begin");
     assert_eq!(
         chunks[0].data,
-        less_sync_core::protocol::CborValue::Integer(1)
+        betterbase_sync_core::protocol::CborValue::Integer(1)
     );
     assert_eq!(chunks[1].name, "pull.record");
     assert_eq!(
         chunks[1].data,
-        less_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3])
+        betterbase_sync_core::protocol::CborValue::Bytes(vec![1, 2, 3])
     );
 
     let req = peer.require_request().await;
     assert_eq!(req.method, "pull");
-    let got: less_sync_core::protocol::PullParams = decode_params(req.params);
+    let got: betterbase_sync_core::protocol::PullParams = decode_params(req.params);
     assert_eq!(got.spaces, spaces);
 
     manager.close().await;
@@ -388,7 +388,7 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
             return MockPeerReply::CloseConnection;
         }
         MockPeerReply::Respond {
-            result: less_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
+            result: betterbase_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
                 ok: true,
                 cursor: 7,
                 error: String::new(),
@@ -431,9 +431,9 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
 #[tokio::test]
 async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
     let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
-        result: less_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
             spaces: vec![
-                less_sync_core::protocol::WsSubscribedSpace {
+                betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
                     cursor: 0,
                     key_generation: 0,
@@ -441,7 +441,7 @@ async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
                     token: "fst-1".to_owned(),
                     peers: Vec::new(),
                 },
-                less_sync_core::protocol::WsSubscribedSpace {
+                betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-2".to_owned(),
                     cursor: 0,
                     key_generation: 0,
@@ -488,7 +488,7 @@ async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
     let restore_req = peer.require_request().await;
     assert_eq!(restore_req.method, "subscribe");
 
-    let restore_params: less_sync_core::protocol::SubscribeParams =
+    let restore_params: betterbase_sync_core::protocol::SubscribeParams =
         decode_params(restore_req.params);
     assert_eq!(restore_params.spaces.len(), 2);
     let token_by_space = restore_params
@@ -530,7 +530,7 @@ async fn peer_tokens(
     peer.space_tokens().await
 }
 
-fn decode_params<T>(params: less_sync_core::protocol::CborValue) -> T
+fn decode_params<T>(params: betterbase_sync_core::protocol::CborValue) -> T
 where
     T: serde::de::DeserializeOwned,
 {

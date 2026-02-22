@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use less_sync_core::protocol::Change;
-use less_sync_core::protocol::Space;
+use betterbase_sync_core::protocol::Change;
+use betterbase_sync_core::protocol::Space;
 use std::time::SystemTime;
 
-use less_sync_storage::{
+use betterbase_sync_storage::{
     AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochStorage,
     FileDekRecord, FileStorage as FileStorageTrait, Invitation, InvitationStorage, MembersLogEntry,
     MembershipStorage, PullStream, PushResult, RateLimitStorage, RecordStorage, RevocationStorage,

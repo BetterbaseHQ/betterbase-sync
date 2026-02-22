@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::close_codes::CloseDirective;
-use less_sync_core::protocol::{RPC_CHUNK, RPC_NOTIFICATION, RPC_REQUEST, RPC_RESPONSE};
+use betterbase_sync_core::protocol::{RPC_CHUNK, RPC_NOTIFICATION, RPC_REQUEST, RPC_RESPONSE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientFrame {
@@ -56,8 +56,8 @@ pub fn validate_client_binary_frame(payload: &[u8]) -> Result<(), CloseDirective
 
 #[cfg(test)]
 mod tests {
-    use less_sync_core::protocol::CLOSE_PROTOCOL_ERROR;
-    use less_sync_core::protocol::{RPC_CHUNK, RPC_NOTIFICATION, RPC_REQUEST, RPC_RESPONSE};
+    use betterbase_sync_core::protocol::CLOSE_PROTOCOL_ERROR;
+    use betterbase_sync_core::protocol::{RPC_CHUNK, RPC_NOTIFICATION, RPC_REQUEST, RPC_RESPONSE};
 
     use super::{parse_client_binary_frame, validate_client_binary_frame, ClientFrame};
 

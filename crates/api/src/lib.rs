@@ -11,10 +11,10 @@ use axum::routing::{get, put};
 use axum::{
     extract::State, http::StatusCode, response::IntoResponse, response::Response, Json, Router,
 };
-use less_sync_auth::{AuthError, TokenValidator};
-use less_sync_core::protocol::ErrorResponse;
-use less_sync_realtime::broker::MultiBroker;
-use less_sync_storage::{SpaceStorage, Storage, StorageError};
+use betterbase_sync_auth::{AuthError, TokenValidator};
+use betterbase_sync_core::protocol::ErrorResponse;
+use betterbase_sync_realtime::broker::MultiBroker;
+use betterbase_sync_storage::{SpaceStorage, Storage, StorageError};
 use object_store::ObjectStore;
 use serde::Serialize;
 
@@ -168,7 +168,7 @@ impl ApiState {
     pub fn with_federation_trusted_domains(mut self, domains: Vec<String>) -> Self {
         let mut domains = domains
             .into_iter()
-            .map(|domain| less_sync_auth::canonicalize_domain(&domain))
+            .map(|domain| betterbase_sync_auth::canonicalize_domain(&domain))
             .collect::<Vec<_>>();
         domains.sort_unstable();
         domains.dedup();
@@ -505,7 +505,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     use http::header::AUTHORIZATION;
-    use less_sync_auth::{AuthContext, AuthError, TokenValidator};
+    use betterbase_sync_auth::{AuthContext, AuthError, TokenValidator};
 
     use super::{
         router, ApiState, FederationAuthError, FederationAuthenticator, FederationJwks,
@@ -540,11 +540,11 @@ mod tests {
 
     #[async_trait]
     impl HealthCheck for StubHealth {
-        async fn ping(&self) -> Result<(), less_sync_storage::StorageError> {
+        async fn ping(&self) -> Result<(), betterbase_sync_storage::StorageError> {
             if self.healthy {
                 Ok(())
             } else {
-                Err(less_sync_storage::StorageError::Unavailable)
+                Err(betterbase_sync_storage::StorageError::Unavailable)
             }
         }
     }

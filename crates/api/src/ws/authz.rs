@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use less_sync_auth::{
+use betterbase_sync_auth::{
     compute_ucan_cid, parse_ucan, validate_chain, AuthContext, Permission, UcanError,
     ValidateChainParams, MAX_CHAIN_DEPTH, MAX_TOKENS_PER_CHAIN,
 };

@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use less_sync_auth::{parse_ucan, validate_chain, AudienceClaim, Permission, ValidateChainParams};
-use less_sync_storage::StorageError;
+use betterbase_sync_auth::{parse_ucan, validate_chain, AudienceClaim, Permission, ValidateChainParams};
+use betterbase_sync_storage::StorageError;
 use uuid::Uuid;
 
 use crate::ws::authz;
@@ -98,7 +98,7 @@ pub(super) async fn authorize_federation_ucan(
     })
 }
 
-fn first_ucan_audience(parsed: &less_sync_auth::ParsedUcan) -> Option<&str> {
+fn first_ucan_audience(parsed: &betterbase_sync_auth::ParsedUcan) -> Option<&str> {
     match parsed.claims.aud.as_ref() {
         Some(AudienceClaim::One(value)) => Some(value),
         Some(AudienceClaim::Many(values)) => values.first().map(String::as_str),
@@ -106,7 +106,7 @@ fn first_ucan_audience(parsed: &less_sync_auth::ParsedUcan) -> Option<&str> {
     }
 }
 
-fn ucan_expiry_cap(parsed: &less_sync_auth::ParsedUcan) -> Option<SystemTime> {
+fn ucan_expiry_cap(parsed: &betterbase_sync_auth::ParsedUcan) -> Option<SystemTime> {
     parsed
         .claims
         .exp

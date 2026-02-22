@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-auth"
+name = "betterbase-sync-auth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-api"
+name = "betterbase-sync-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,10 +14,10 @@ futures-util = "0.3"
 hex = "0.4"
 hmac.workspace = true
 http.workspace = true
-less-sync-auth = { path = "../auth" }
-less-sync-core = { path = "../core" }
-less-sync-realtime = { path = "../realtime" }
-less-sync-storage = { path = "../storage" }
+betterbase-sync-auth = { path = "../auth" }
+betterbase-sync-core = { path = "../core" }
+betterbase-sync-realtime = { path = "../realtime" }
+betterbase-sync-storage = { path = "../storage" }
 object_store.workspace = true
 rand_core.workspace = true
 serde.workspace = true

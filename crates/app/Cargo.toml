@@ -1,5 +1,5 @@
 [package]
-name = "less-sync-app"
+name = "betterbase-sync-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,11 @@ axum.workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true
 hex = "0.4"
-less-sync-auth = { path = "../auth" }
-less-sync-api = { path = "../api" }
-less-sync-core = { path = "../core" }
-less-sync-realtime = { path = "../realtime" }
-less-sync-storage = { path = "../storage" }
+betterbase-sync-auth = { path = "../auth" }
+betterbase-sync-api = { path = "../api" }
+betterbase-sync-core = { path = "../core" }
+betterbase-sync-realtime = { path = "../realtime" }
+betterbase-sync-storage = { path = "../storage" }
 minicbor-serde.workspace = true
 object_store = { workspace = true, features = ["aws"] }
 serde.workspace = true

@@ -1,13 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use less_sync_auth::AuthContext;
-use less_sync_core::protocol::{
+use betterbase_sync_auth::AuthContext;
+use betterbase_sync_core::protocol::{
     WsEventData, WsFileData, WsMembershipData, WsPresenceData, WsPresenceLeaveData, WsRevokedData,
     WsSyncData, WsSyncRecord, CLOSE_TOO_MANY_CONNECTIONS, RPC_NOTIFICATION,
 };
-use less_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, SubscriberId};
-use less_sync_realtime::ws::CloseDirective;
+use betterbase_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, SubscriberId};
+use betterbase_sync_realtime::ws::CloseDirective;
 use serde::Serialize;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
