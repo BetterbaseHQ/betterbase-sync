@@ -1646,7 +1646,7 @@ mod tests {
 
     fn auth_context_with_did(scope: &str, personal_space_id: Uuid, did: &str) -> AuthContext {
         AuthContext {
-            issuer: "https://accounts.less.so".to_owned(),
+            issuer: "https://accounts.betterbase.dev".to_owned(),
             user_id: "user".to_owned(),
             client_id: "client".to_owned(),
             personal_space_id: personal_space_id.to_string(),

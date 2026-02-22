@@ -372,20 +372,20 @@ mod tests {
     fn from_values_uses_default_listen_addr() {
         let config = AppConfig::from_values(
             None,
-            Some("postgres://localhost/less-sync".to_owned()),
-            Some("https://accounts.less.so".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
+            Some("https://accounts.betterbase.dev".to_owned()),
             None,
         )
         .expect("parse config");
 
         assert_eq!(config.listen_addr.to_string(), "0.0.0.0:5379");
-        assert_eq!(config.database_url, "postgres://localhost/less-sync");
+        assert_eq!(config.database_url, "postgres://localhost/betterbase-sync");
         assert_eq!(
             config
                 .trusted_issuers
-                .get("https://accounts.less.so")
+                .get("https://accounts.betterbase.dev")
                 .expect("issuer"),
-            "https://accounts.less.so/.well-known/jwks.json"
+            "https://accounts.betterbase.dev/.well-known/jwks.json"
         );
     }
 
@@ -394,7 +394,7 @@ mod tests {
         let error = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
             None,
-            Some("https://accounts.less.so".to_owned()),
+            Some("https://accounts.betterbase.dev".to_owned()),
             None,
         )
         .expect_err("missing DATABASE_URL should fail");
@@ -406,8 +406,8 @@ mod tests {
     fn from_values_validates_listen_addr() {
         let error = AppConfig::from_values(
             Some("not-an-address".to_owned()),
-            Some("postgres://localhost/less-sync".to_owned()),
-            Some("https://accounts.less.so".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
+            Some("https://accounts.betterbase.dev".to_owned()),
             None,
         )
         .expect_err("invalid listen address should fail");
@@ -419,7 +419,7 @@ mod tests {
     fn from_values_requires_trusted_issuers() {
         let error = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
-            Some("postgres://localhost/less-sync".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
             None,
             None,
         )
@@ -432,8 +432,8 @@ mod tests {
     fn from_values_parses_explicit_jwks_urls() {
         let config = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
-            Some("postgres://localhost/less-sync".to_owned()),
-            Some("https://accounts.less.so=http://auth.internal/.well-known/jwks.json".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
+            Some("https://accounts.betterbase.dev=http://auth.internal/.well-known/jwks.json".to_owned()),
             None,
         )
         .expect("parse config");
@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(
             config
                 .trusted_issuers
-                .get("https://accounts.less.so")
+                .get("https://accounts.betterbase.dev")
                 .expect("issuer"),
             "http://auth.internal/.well-known/jwks.json"
         );
@@ -451,9 +451,9 @@ mod tests {
     fn from_values_parses_comma_separated_audiences() {
         let config = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
-            Some("postgres://localhost/less-sync".to_owned()),
-            Some("https://accounts.less.so".to_owned()),
-            Some("betterbase-sync, less-sync-local ,".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
+            Some("https://accounts.betterbase.dev".to_owned()),
+            Some("betterbase-sync, betterbase-sync-local ,".to_owned()),
         )
         .expect("parse config");
 
@@ -464,7 +464,7 @@ mod tests {
     fn from_values_rejects_invalid_issuer_urls() {
         let error = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
-            Some("postgres://localhost/less-sync".to_owned()),
+            Some("postgres://localhost/betterbase-sync".to_owned()),
             Some("not-a-url".to_owned()),
             None,
         )
@@ -498,14 +498,14 @@ mod tests {
     fn parse_file_storage_local_uses_explicit_path() {
         let config = parse_file_storage(FileStorageEnv {
             backend: Some("local".to_owned()),
-            path: Some("/tmp/less-sync-files".to_owned()),
+            path: Some("/tmp/betterbase-sync-files".to_owned()),
             ..FileStorageEnv::default()
         })
         .expect("parse file storage");
         assert_eq!(
             config,
             FileStorageConfig::Local {
-                path: PathBuf::from("/tmp/less-sync-files"),
+                path: PathBuf::from("/tmp/betterbase-sync-files"),
             }
         );
     }
@@ -514,14 +514,14 @@ mod tests {
     fn parse_file_storage_supports_fs_alias() {
         let config = parse_file_storage(FileStorageEnv {
             backend: Some("fs".to_owned()),
-            path: Some("/tmp/less-sync-files".to_owned()),
+            path: Some("/tmp/betterbase-sync-files".to_owned()),
             ..FileStorageEnv::default()
         })
         .expect("parse file storage");
         assert_eq!(
             config,
             FileStorageConfig::Local {
-                path: PathBuf::from("/tmp/less-sync-files"),
+                path: PathBuf::from("/tmp/betterbase-sync-files"),
             }
         );
     }

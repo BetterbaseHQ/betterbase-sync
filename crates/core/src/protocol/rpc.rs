@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
-// RPC frame type discriminators for the less-rpc-v1 subprotocol.
+// RPC frame type discriminators for the betterbase-rpc-v1 subprotocol.
 pub const RPC_REQUEST: i32 = 0;
 pub const RPC_RESPONSE: i32 = 1;
 pub const RPC_NOTIFICATION: i32 = 2;

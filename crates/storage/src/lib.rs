@@ -532,8 +532,8 @@ mod tests {
     #[test]
     fn rate_limit_hash_is_deterministic() {
         let key = b"01234567890123456789012345678901";
-        let first = rate_limit_hash(key, "https://accounts.less.so", "user1");
-        let second = rate_limit_hash(key, "https://accounts.less.so", "user1");
+        let first = rate_limit_hash(key, "https://accounts.betterbase.dev", "user1");
+        let second = rate_limit_hash(key, "https://accounts.betterbase.dev", "user1");
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
     }
@@ -541,8 +541,8 @@ mod tests {
     #[test]
     fn rate_limit_hash_changes_with_inputs() {
         let key = b"01234567890123456789012345678901";
-        let first = rate_limit_hash(key, "https://accounts.less.so", "user1");
-        let second = rate_limit_hash(key, "https://accounts.less.so", "user2");
+        let first = rate_limit_hash(key, "https://accounts.betterbase.dev", "user1");
+        let second = rate_limit_hash(key, "https://accounts.betterbase.dev", "user2");
         let third = rate_limit_hash(key, "https://other.example.com", "user1");
         assert_ne!(first, second);
         assert_ne!(first, third);

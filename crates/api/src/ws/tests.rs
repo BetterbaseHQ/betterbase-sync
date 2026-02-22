@@ -5231,7 +5231,7 @@ fn test_auth_context(scope: &str) -> AuthContext {
 
 fn test_auth_context_with_did(scope: &str, did: &str) -> AuthContext {
     AuthContext {
-        issuer: "https://accounts.less.so".to_owned(),
+        issuer: "https://accounts.betterbase.dev".to_owned(),
         user_id: "user-1".to_owned(),
         client_id: "client-1".to_owned(),
         personal_space_id: test_personal_space_id(),
@@ -5650,7 +5650,7 @@ where
 }
 
 // ============================================================
-// Missing RPC handler tests ported from Go (less-sync)
+// Missing RPC handler tests ported from Go (betterbase-sync)
 // ============================================================
 
 // --- DEKs: invalid params and invalid space ID ---

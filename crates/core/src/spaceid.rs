@@ -1,9 +1,9 @@
 use uuid::Uuid;
 
 /// LessNamespace is the root UUID namespace for the Less platform.
-/// Computed as UUID5(DNS, "less.so").
+/// Computed as UUID5(DNS, "betterbase.dev").
 pub fn less_namespace() -> Uuid {
-    Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"less.so")
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"betterbase.dev")
 }
 
 /// Personal computes the deterministic personal space ID for a user.
@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn less_namespace_matches_expected_value() {
-        let expected = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"less.so");
+        let expected = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"betterbase.dev");
         let got = less_namespace();
         assert_eq!(got, expected);
         assert_eq!(got.get_version_num(), 5);
@@ -56,9 +56,9 @@ mod tests {
 
     #[test]
     fn personal_known_vector_matches_go_and_typescript() {
-        let expected = "cf78fa75-e714-5073-8972-126a66255b39";
+        let expected = "da29e793-3f05-51c3-9f72-63cc953f9c05";
         let got = personal(
-            "https://accounts.less.so",
+            "https://accounts.betterbase.dev",
             "user-1",
             "11111111-1111-1111-1111-111111111111",
         );

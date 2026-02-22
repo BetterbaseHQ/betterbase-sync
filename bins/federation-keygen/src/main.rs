@@ -138,7 +138,7 @@ fn default_key_fragment() -> String {
 
 fn print_usage() {
     println!(
-        "Usage: less-sync-federation-keygen --domain <domain> [--kid <key-fragment>] [--database-url <url>] [--print-private] [--no-promote]"
+        "Usage: betterbase-sync-federation-keygen --domain <domain> [--kid <key-fragment>] [--database-url <url>] [--print-private] [--no-promote]"
     );
     println!("  --domain: public sync domain used in key id URL");
     println!("  --kid: key fragment appended to #... (default: fed-<time>)");

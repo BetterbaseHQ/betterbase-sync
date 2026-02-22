@@ -1,6 +1,6 @@
 use betterbase_sync_core::protocol::{CLOSE_AUTH_FAILED, CLOSE_PROTOCOL_ERROR};
 
-pub const WS_SUBPROTOCOL: &str = "less-rpc-v1";
+pub const WS_SUBPROTOCOL: &str = "betterbase-rpc-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseDirective {

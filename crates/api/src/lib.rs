@@ -524,7 +524,7 @@ mod tests {
         async fn validate_token(&self, token: &str) -> Result<AuthContext, AuthError> {
             if token == "valid-token" {
                 Ok(AuthContext {
-                    issuer: "https://accounts.less.so".to_owned(),
+                    issuer: "https://accounts.betterbase.dev".to_owned(),
                     user_id: "user-1".to_owned(),
                     client_id: "client-1".to_owned(),
                     personal_space_id: "8e4f907f-cdb8-45a4-bb92-6d9c4f6e8b17".to_owned(),
