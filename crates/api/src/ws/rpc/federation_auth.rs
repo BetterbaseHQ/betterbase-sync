@@ -1,6 +1,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use betterbase_sync_auth::{parse_ucan, validate_chain, AudienceClaim, Permission, ValidateChainParams};
+use betterbase_sync_auth::{
+    parse_ucan, validate_chain, AudienceClaim, Permission, ValidateChainParams,
+};
 use betterbase_sync_storage::StorageError;
 use uuid::Uuid;
 

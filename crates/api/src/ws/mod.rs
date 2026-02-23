@@ -7,13 +7,13 @@ use axum::extract::{OriginalUri, State};
 use axum::http::header::SEC_WEBSOCKET_PROTOCOL;
 use axum::http::{HeaderMap, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use futures_util::{SinkExt, StreamExt};
 use betterbase_sync_auth::AuthContext;
 use betterbase_sync_core::protocol::CLOSE_TOO_MANY_CONNECTIONS;
 use betterbase_sync_realtime::ws::{
     authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
     FirstMessage, WS_SUBPROTOCOL,
 };
+use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use crate::ApiState;

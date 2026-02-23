@@ -4,12 +4,12 @@ use std::time::Duration;
 use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use ed25519_dalek::VerifyingKey;
 use betterbase_sync_auth::{
     canonicalize_domain, create_fst, extract_domain_from_key_id, verify_fst_dual_key,
     verify_http_signature_with_max_age, AuthContext, FederationSubscribeClaims,
     FederationTokenError, DEFAULT_SIGNATURE_MAX_AGE,
 };
+use ed25519_dalek::VerifyingKey;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,8 +217,8 @@ mod tests {
     use super::*;
     use axum::http::header::HOST;
     use axum::http::Method;
-    use ed25519_dalek::SigningKey;
     use betterbase_sync_auth::sign_http_request;
+    use ed25519_dalek::SigningKey;
     use p256::elliptic_curve::rand_core::OsRng;
 
     fn signed_request(signing_key: &SigningKey, key_id: &str) -> Request<()> {

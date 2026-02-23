@@ -681,11 +681,11 @@ mod tests {
     use axum::http::header::{AUTHORIZATION, CONTENT_LENGTH};
     use axum::http::Request;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use jsonwebtoken::{Algorithm, Header};
     use betterbase_sync_auth::{
         compress_public_key, compute_ucan_cid, encode_did_key, AudienceClaim, AuthError,
         TokenValidator, UcanClaims,
     };
+    use jsonwebtoken::{Algorithm, Header};
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
     use p256::elliptic_curve::rand_core::OsRng;

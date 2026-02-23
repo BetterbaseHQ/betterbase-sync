@@ -276,7 +276,15 @@ pub(super) async fn handle_push_request(
 ) {
     let params = match decode_frame_params::<PushParams>(payload) {
         Ok(params) => params,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("push decode error: {e:?}, payload_len={}", payload.len());
+            // Log first 200 bytes as hex for debugging
+            let hex: String = payload
+                .iter()
+                .take(200)
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            tracing::error!("push payload hex (first 200 bytes): {hex}");
             send_error_response(
                 outbound,
                 id,

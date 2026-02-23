@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "PostgreSQL storage traits and implementation with streaming pulls"
 
 [dependencies]
 async-trait.workspace = true

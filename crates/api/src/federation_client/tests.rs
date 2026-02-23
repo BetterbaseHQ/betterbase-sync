@@ -7,13 +7,13 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use ed25519_dalek::SigningKey;
-use futures_util::{SinkExt, StreamExt};
 use betterbase_sync_core::protocol::{
     FederationInvitationParams, PushParams, PushRpcResult, SubscribeResult, WsPullSpace,
     WsPushChange, WsSubscribeSpace, RPC_CHUNK, RPC_RESPONSE,
 };
 use betterbase_sync_realtime::ws::WS_SUBPROTOCOL;
+use ed25519_dalek::SigningKey;
+use futures_util::{SinkExt, StreamExt};
 use p256::elliptic_curve::rand_core::OsRng;
 use tokio::sync::mpsc;
 

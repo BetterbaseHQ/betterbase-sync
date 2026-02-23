@@ -5,16 +5,16 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use ed25519_dalek::SigningKey as Ed25519SigningKey;
-use futures_util::{SinkExt, StreamExt};
-use http::header::SEC_WEBSOCKET_PROTOCOL;
-use http::{HeaderValue, StatusCode};
-use jsonwebtoken::{Algorithm, Header};
 use betterbase_sync_auth::{
     compress_public_key, compute_ucan_cid, derive_fst_key, encode_did_key, sign_http_request,
     AudienceClaim, AuthContext, AuthError, Permission, TokenValidator, UcanClaims,
 };
 use betterbase_sync_realtime::broker::{BrokerConfig, MultiBroker};
+use ed25519_dalek::SigningKey as Ed25519SigningKey;
+use futures_util::{SinkExt, StreamExt};
+use http::header::SEC_WEBSOCKET_PROTOCOL;
+use http::{HeaderValue, StatusCode};
+use jsonwebtoken::{Algorithm, Header};
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
@@ -618,7 +618,8 @@ impl SyncStorage for StubSyncStorage {
         space_id: Uuid,
         _expected_version: i32,
         _entry: &betterbase_sync_storage::MembersLogEntry,
-    ) -> Result<betterbase_sync_storage::AppendLogResult, betterbase_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_storage::AppendLogResult, betterbase_sync_storage::StorageError>
+    {
         if self.fail_for.contains(&space_id) {
             return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
@@ -632,7 +633,8 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _since_seq: i32,
-    ) -> Result<Vec<betterbase_sync_storage::MembersLogEntry>, betterbase_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::MembersLogEntry>, betterbase_sync_storage::StorageError>
+    {
         if self.fail_for.contains(&space_id) {
             return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
@@ -686,7 +688,8 @@ impl SyncStorage for StubSyncStorage {
         mailbox_id: &str,
         _limit: usize,
         _after: Option<Uuid>,
-    ) -> Result<Vec<betterbase_sync_storage::Invitation>, betterbase_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::Invitation>, betterbase_sync_storage::StorageError>
+    {
         Ok(self
             .invitations
             .iter()
@@ -731,7 +734,8 @@ impl SyncStorage for StubSyncStorage {
         _space_id: Uuid,
         _requested_epoch: i32,
         _opts: Option<&betterbase_sync_storage::AdvanceEpochOptions>,
-    ) -> Result<betterbase_sync_storage::AdvanceEpochResult, betterbase_sync_storage::StorageError> {
+    ) -> Result<betterbase_sync_storage::AdvanceEpochResult, betterbase_sync_storage::StorageError>
+    {
         if let Some(error) = &self.epoch_begin_error {
             return Err(error.clone());
         }
@@ -753,7 +757,8 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _since: i64,
-    ) -> Result<Vec<betterbase_sync_storage::DekRecord>, betterbase_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::DekRecord>, betterbase_sync_storage::StorageError>
+    {
         Ok(self.deks_result.clone())
     }
 
@@ -772,7 +777,8 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _since: i64,
-    ) -> Result<Vec<betterbase_sync_storage::FileDekRecord>, betterbase_sync_storage::StorageError> {
+    ) -> Result<Vec<betterbase_sync_storage::FileDekRecord>, betterbase_sync_storage::StorageError>
+    {
         Ok(self.file_deks_result.clone())
     }
 
@@ -1551,7 +1557,10 @@ async fn websocket_federation_route_requires_signature() {
 #[tokio::test]
 async fn websocket_auth_timeout_closes_with_auth_failed() {
     let server = spawn_server(base_state_with_ws(Duration::from_millis(100), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     let close_code = expect_close_code(&mut socket).await;
@@ -1566,7 +1575,10 @@ async fn websocket_auth_timeout_closes_with_auth_failed() {
 #[tokio::test]
 async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     let frame = minicbor_serde::to_vec(serde_json::json!({
@@ -1593,7 +1605,10 @@ async fn websocket_non_auth_first_frame_closes_with_auth_failed() {
 #[tokio::test]
 async fn websocket_text_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1614,7 +1629,10 @@ async fn websocket_text_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_invalid_cbor_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1635,7 +1653,10 @@ async fn websocket_invalid_cbor_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1656,7 +1677,10 @@ async fn websocket_empty_binary_after_auth_closes_with_protocol_error() {
 #[tokio::test]
 async fn websocket_unknown_method_returns_method_not_found() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1672,7 +1696,10 @@ async fn websocket_unknown_method_returns_method_not_found() {
     .await;
 
     let response = read_error_response(&mut socket).await;
-    assert_eq!(response.frame_type, betterbase_sync_core::protocol::RPC_RESPONSE);
+    assert_eq!(
+        response.frame_type,
+        betterbase_sync_core::protocol::RPC_RESPONSE
+    );
     assert_eq!(response.id, "req-1");
     assert_eq!(
         response.error.code,
@@ -1685,7 +1712,10 @@ async fn websocket_unknown_method_returns_method_not_found() {
 #[tokio::test]
 async fn websocket_token_refresh_returns_error_for_invalid_token() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1720,7 +1750,10 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
             .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -1779,7 +1812,10 @@ async fn websocket_token_refresh_accepts_new_valid_token() {
         validator,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1829,7 +1865,10 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
             .with_sync_storage_adapter(Arc::new(StubSyncStorage::healthy())),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -1885,7 +1924,10 @@ async fn websocket_space_create_returns_id_and_key_generation() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = Uuid::new_v4().to_string();
 
@@ -1918,7 +1960,10 @@ async fn websocket_space_create_invalid_space_id_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1951,7 +1996,10 @@ async fn websocket_space_create_empty_root_public_key_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -1986,7 +2034,10 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2014,7 +2065,10 @@ async fn websocket_space_create_conflict_returns_conflict_error() {
 #[tokio::test]
 async fn websocket_space_create_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2047,7 +2101,10 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2087,7 +2144,10 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2126,7 +2186,10 @@ async fn websocket_membership_list_returns_entries_and_metadata_version() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2165,7 +2228,10 @@ async fn websocket_membership_list_non_personal_space_without_ucan_returns_forbi
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2201,7 +2267,10 @@ async fn websocket_membership_revoke_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2234,7 +2303,10 @@ async fn websocket_membership_revoke_non_personal_without_ucan_returns_forbidden
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2272,7 +2344,10 @@ async fn websocket_membership_revoke_storage_failure_returns_internal_error() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2308,7 +2383,10 @@ async fn websocket_invitation_create_returns_created_invitation() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2345,7 +2423,10 @@ async fn websocket_invitation_create_invalid_mailbox_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2381,7 +2462,10 @@ async fn websocket_invitation_create_empty_payload_returns_bad_request() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2417,7 +2501,10 @@ async fn websocket_invitation_create_oversized_payload_returns_payload_too_large
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let oversized_payload = "a".repeat((128 * 1024) + 1);
 
@@ -2458,7 +2545,10 @@ async fn websocket_invitation_create_with_server_forwards_to_trusted_peer() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2510,7 +2600,10 @@ async fn websocket_invitation_create_with_untrusted_server_returns_bad_request()
         vec!["peer-a.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2552,7 +2645,10 @@ async fn websocket_invitation_create_with_forward_error_returns_internal_error()
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2592,7 +2688,10 @@ async fn websocket_invitation_create_storage_failure_returns_internal_error() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2628,7 +2727,10 @@ async fn websocket_invitation_create_for_other_mailbox_succeeds() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2663,7 +2765,10 @@ async fn websocket_invitation_list_returns_mailbox_entries() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2696,7 +2801,10 @@ async fn websocket_invitation_get_returns_entry() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2729,7 +2837,10 @@ async fn websocket_invitation_delete_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2761,7 +2872,10 @@ async fn websocket_invitation_delete_not_found_returns_not_found() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2794,7 +2908,10 @@ async fn websocket_epoch_begin_returns_epoch_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2826,14 +2943,19 @@ async fn websocket_epoch_begin_conflict_returns_conflict_result_payload() {
         Duration::from_secs(1),
         "sync",
         Arc::new(StubSyncStorage::with_epoch_begin_error(
-            betterbase_sync_storage::StorageError::EpochConflict(betterbase_sync_storage::EpochConflict {
-                current_epoch: 2,
-                rewrap_epoch: Some(2),
-            }),
+            betterbase_sync_storage::StorageError::EpochConflict(
+                betterbase_sync_storage::EpochConflict {
+                    current_epoch: 2,
+                    rewrap_epoch: Some(2),
+                },
+            ),
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2872,7 +2994,10 @@ async fn websocket_epoch_complete_returns_empty_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2907,7 +3032,10 @@ async fn websocket_epoch_complete_mismatch_returns_conflict_error() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2943,7 +3071,10 @@ async fn websocket_deks_get_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -2981,7 +3112,10 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3018,7 +3152,10 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3055,7 +3192,10 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3092,7 +3232,10 @@ async fn websocket_file_deks_get_requires_files_scope() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3128,7 +3271,10 @@ async fn websocket_file_deks_get_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3164,7 +3310,10 @@ async fn websocket_deks_get_files_alias_returns_records() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3199,7 +3348,10 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3236,7 +3388,10 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3273,7 +3428,10 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3312,7 +3470,10 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
         )),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3349,7 +3510,10 @@ async fn websocket_subscribe_returns_space_metadata() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
 
@@ -3387,7 +3551,10 @@ async fn websocket_subscribe_rejects_too_many_spaces() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let spaces = (0..(crate::federation_quota::MAX_SUBSCRIBE_SPACES + 1))
         .map(|_| {
@@ -3437,7 +3604,10 @@ async fn websocket_subscribe_forwards_to_space_home_server() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3497,7 +3667,10 @@ async fn websocket_subscribe_remote_forward_failure_does_not_block_local_space()
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3546,7 +3719,10 @@ async fn websocket_subscribe_invalid_space_id_is_reported_in_result_errors() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3584,7 +3760,10 @@ async fn websocket_subscribe_non_personal_space_without_ucan_reports_forbidden()
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3640,7 +3819,10 @@ async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3702,7 +3884,10 @@ async fn websocket_subscribe_shared_space_with_delegated_ucan_returns_space_meta
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3759,7 +3944,10 @@ async fn websocket_subscribe_shared_space_with_revoked_ucan_reports_forbidden() 
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3825,7 +4013,10 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3859,7 +4050,10 @@ async fn websocket_subscribe_shared_space_with_revoked_proof_ucan_reports_forbid
 #[tokio::test]
 async fn websocket_subscribe_without_sync_storage_returns_internal_error() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -3892,7 +4086,10 @@ async fn websocket_push_returns_cursor_on_success() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -3939,7 +4136,10 @@ async fn websocket_push_forwards_to_space_home_server() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -3997,7 +4197,10 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
     let record_id = Uuid::new_v4().to_string();
@@ -4075,7 +4278,10 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let record_id = Uuid::new_v4().to_string();
 
@@ -4116,7 +4322,10 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let record_id = Uuid::new_v4().to_string();
 
@@ -4158,7 +4367,10 @@ async fn websocket_pull_streams_chunks_and_terminal_result() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let space_id = test_personal_space_id();
 
@@ -4207,7 +4419,10 @@ async fn websocket_pull_skips_unauthorized_space_entries() {
         Arc::new(StubSyncStorage::healthy()),
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     let forbidden_space = Uuid::new_v4().to_string();
 
@@ -4306,7 +4521,10 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -4372,7 +4590,10 @@ async fn websocket_pull_remote_forward_failure_skips_space() {
         vec!["peer.example.com".to_owned()],
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -4410,7 +4631,10 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4503,7 +4727,10 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4596,7 +4823,10 @@ async fn websocket_subscribe_with_presence_returns_existing_peers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4668,7 +4898,10 @@ async fn websocket_presence_set_broadcasts_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4718,7 +4951,10 @@ async fn websocket_presence_clear_broadcasts_leave_notification() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4756,8 +4992,9 @@ async fn websocket_presence_clear_broadcasts_leave_notification() {
     )
     .await;
 
-    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
-        read_notification_response(&mut watcher_socket).await;
+    let leave_notification: RpcNotificationResponse<
+        betterbase_sync_core::protocol::WsPresenceLeaveData,
+    > = read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
     assert_eq!(leave_notification.params.peer, set_notification.params.peer);
@@ -4775,7 +5012,10 @@ async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4813,8 +5053,9 @@ async fn websocket_unsubscribe_clears_presence_and_broadcasts_leave() {
     )
     .await;
 
-    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
-        read_notification_response(&mut watcher_socket).await;
+    let leave_notification: RpcNotificationResponse<
+        betterbase_sync_core::protocol::WsPresenceLeaveData,
+    > = read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
     assert_eq!(leave_notification.params.peer, set_notification.params.peer);
@@ -4832,7 +5073,10 @@ async fn websocket_event_send_broadcasts_to_other_subscribers() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4876,7 +5120,10 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4909,8 +5156,9 @@ async fn websocket_presence_leave_broadcasts_when_peer_disconnects() {
         .await
         .expect("close sender socket");
 
-    let leave_notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsPresenceLeaveData> =
-        read_notification_response(&mut watcher_socket).await;
+    let leave_notification: RpcNotificationResponse<
+        betterbase_sync_core::protocol::WsPresenceLeaveData,
+    > = read_notification_response(&mut watcher_socket).await;
     assert_eq!(leave_notification.method, "presence.leave");
     assert_eq!(leave_notification.params.space, space_id);
     assert_eq!(leave_notification.params.peer, set_notification.params.peer);
@@ -4928,7 +5176,10 @@ async fn websocket_presence_set_oversized_payload_is_ignored() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -4972,7 +5223,10 @@ async fn websocket_event_send_oversized_payload_is_ignored() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut sender_socket, _) = connect_async(request.clone())
         .await
         .expect("connect websocket sender");
@@ -5017,7 +5271,10 @@ async fn websocket_connection_limit_closes_after_auth() {
         broker,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut first_socket, _) = connect_async(request.clone())
         .await
         .expect("connect first websocket");
@@ -5040,7 +5297,10 @@ async fn websocket_connection_limit_closes_after_auth() {
 #[tokio::test]
 async fn websocket_request_with_empty_id_gets_response() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5067,7 +5327,10 @@ async fn websocket_request_with_empty_id_gets_response() {
 #[tokio::test]
 async fn websocket_unknown_frame_type_does_not_close_connection() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5100,7 +5363,10 @@ async fn websocket_unknown_frame_type_does_not_close_connection() {
 #[tokio::test]
 async fn websocket_unknown_notification_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5133,7 +5399,10 @@ async fn websocket_unknown_notification_is_ignored() {
 #[tokio::test]
 async fn websocket_client_response_frame_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5166,7 +5435,10 @@ async fn websocket_client_response_frame_is_ignored() {
 #[tokio::test]
 async fn websocket_client_chunk_frame_is_ignored() {
     let server = spawn_server(base_state_with_ws(Duration::from_secs(1), "sync")).await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
 
     send_auth(&mut socket).await;
@@ -5315,7 +5587,11 @@ fn sign_es256_token(claims: &UcanClaims, key: &SigningKey) -> String {
     format!("{signing_input}.{signature}")
 }
 
-fn test_invitation(id: Uuid, mailbox_id: &str, payload: &str) -> betterbase_sync_storage::Invitation {
+fn test_invitation(
+    id: Uuid,
+    mailbox_id: &str,
+    payload: &str,
+) -> betterbase_sync_storage::Invitation {
     betterbase_sync_storage::Invitation {
         id,
         mailbox_id: mailbox_id.to_owned(),
@@ -5664,7 +5940,10 @@ async fn websocket_deks_get_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5695,7 +5974,10 @@ async fn websocket_deks_rewrap_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5725,7 +6007,10 @@ async fn websocket_deks_get_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5752,7 +6037,10 @@ async fn websocket_deks_rewrap_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5781,7 +6069,10 @@ async fn websocket_epoch_begin_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5811,7 +6102,10 @@ async fn websocket_epoch_complete_invalid_params_returns_invalid_params_error() 
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5841,7 +6135,10 @@ async fn websocket_epoch_begin_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5868,7 +6165,10 @@ async fn websocket_epoch_complete_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5897,7 +6197,10 @@ async fn websocket_membership_append_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5927,7 +6230,10 @@ async fn websocket_membership_list_invalid_params_returns_invalid_params_error()
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5957,7 +6263,10 @@ async fn websocket_membership_revoke_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -5987,7 +6296,10 @@ async fn websocket_membership_append_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6021,7 +6333,10 @@ async fn websocket_membership_list_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6048,7 +6363,10 @@ async fn websocket_membership_revoke_invalid_space_id_returns_bad_request() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6080,7 +6398,10 @@ async fn websocket_space_create_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6110,7 +6431,10 @@ async fn websocket_space_create_invalid_public_key_wrong_size_returns_bad_reques
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6141,7 +6465,10 @@ async fn websocket_space_create_invalid_public_key_not_compressed_returns_bad_re
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6174,7 +6501,10 @@ async fn websocket_invitation_create_invalid_params_returns_invalid_params_error
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6204,7 +6534,10 @@ async fn websocket_invitation_get_not_found_returns_not_found_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6238,7 +6571,10 @@ async fn websocket_invitation_list_wrong_mailbox_returns_empty_list() {
             .with_sync_storage_adapter(storage),
     )
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth_with_token(&mut socket, "other-token").await;
 
@@ -6272,7 +6608,10 @@ async fn websocket_push_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6310,7 +6649,10 @@ async fn websocket_push_conflict_returns_conflict_result() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6350,7 +6692,10 @@ async fn websocket_subscribe_invalid_params_returns_invalid_params_error() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 
@@ -6380,7 +6725,10 @@ async fn websocket_subscribe_empty_space_list_returns_empty_result() {
         storage,
     ))
     .await;
-    let request = ws_request(server.addr, Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL));
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
     let (mut socket, _) = connect_async(request).await.expect("connect websocket");
     send_auth(&mut socket).await;
 

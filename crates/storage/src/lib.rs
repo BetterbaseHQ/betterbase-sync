@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
 use betterbase_sync_core::protocol::{Change, Space};
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use uuid::Uuid;
 

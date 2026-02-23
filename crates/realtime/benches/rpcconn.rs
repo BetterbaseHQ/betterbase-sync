@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use betterbase_sync_core::protocol::{RPC_NOTIFICATION, RPC_REQUEST};
 use betterbase_sync_realtime::ws::parse_client_binary_frame;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn bench_handle_message_request(c: &mut Criterion) {
     let frame = minicbor_serde::to_vec(serde_json::json!({

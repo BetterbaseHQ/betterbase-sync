@@ -2,7 +2,9 @@ use super::super::realtime::OutboundSender;
 use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
 use betterbase_sync_auth::{AuthContext, AuthError, TokenValidator};
-use betterbase_sync_core::protocol::{TokenRefreshParams, TokenRefreshResult, ERR_CODE_INVALID_PARAMS};
+use betterbase_sync_core::protocol::{
+    TokenRefreshParams, TokenRefreshResult, ERR_CODE_INVALID_PARAMS,
+};
 
 pub(super) async fn handle_request(
     outbound: &OutboundSender,

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use hmac::{Hmac, Mac};
 use betterbase_sync_core::protocol::WsPresencePeer;
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tokio::sync::RwLock;
 

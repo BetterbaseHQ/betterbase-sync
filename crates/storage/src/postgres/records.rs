@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use betterbase_sync_core::protocol::Change;
 use betterbase_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE};
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 use super::PostgresStorage;

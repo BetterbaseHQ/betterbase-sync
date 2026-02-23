@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use betterbase_sync_auth::canonicalize_domain;
 use betterbase_sync_core::protocol::{
     FederationInvitationParams, FederationInvitationResult, PullParams, PushParams, PushRpcResult,
     SubscribeParams, SubscribeResult, WsPullSpace, WsSubscribeSpace,
 };
+use ed25519_dalek::SigningKey;
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use url::Url;

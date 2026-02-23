@@ -433,7 +433,10 @@ mod tests {
         let config = AppConfig::from_values(
             Some("127.0.0.1:5379".to_owned()),
             Some("postgres://localhost/betterbase-sync".to_owned()),
-            Some("https://accounts.betterbase.dev=http://auth.internal/.well-known/jwks.json".to_owned()),
+            Some(
+                "https://accounts.betterbase.dev=http://auth.internal/.well-known/jwks.json"
+                    .to_owned(),
+            ),
             None,
         )
         .expect("parse config");
@@ -457,7 +460,10 @@ mod tests {
         )
         .expect("parse config");
 
-        assert_eq!(config.audiences, vec!["betterbase-sync", "betterbase-sync-local"]);
+        assert_eq!(
+            config.audiences,
+            vec!["betterbase-sync", "betterbase-sync-local"]
+        );
     }
 
     #[test]

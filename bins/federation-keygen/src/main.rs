@@ -5,9 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use ed25519_dalek::SigningKey;
 use betterbase_sync_auth::canonicalize_domain;
 use betterbase_sync_storage::{FederationStorage, PostgresStorage};
+use ed25519_dalek::SigningKey;
 use rand_core::OsRng;
 
 #[tokio::main]
@@ -150,8 +150,8 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::{parse_args, run, KeygenConfig};
-    use ed25519_dalek::SigningKey;
     use betterbase_sync_storage::{migrate_with_pool, FederationStorage, PostgresStorage};
+    use ed25519_dalek::SigningKey;
 
     #[test]
     fn parse_args_requires_domain() {

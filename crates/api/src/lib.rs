@@ -504,8 +504,8 @@ mod tests {
     use serde::Deserialize;
     use tower::util::ServiceExt;
 
-    use http::header::AUTHORIZATION;
     use betterbase_sync_auth::{AuthContext, AuthError, TokenValidator};
+    use http::header::AUTHORIZATION;
 
     use super::{
         router, ApiState, FederationAuthError, FederationAuthenticator, FederationJwks,
