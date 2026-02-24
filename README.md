@@ -204,7 +204,7 @@ docker build -f Dockerfile.dev -t betterbase-sync-dev .
 - [betterbase-dev](https://github.com/BetterbaseHQ/betterbase-dev) -- Platform orchestration
 - [betterbase-accounts](../betterbase-accounts/) -- OPAQUE auth + OAuth 2.0 server
 - [betterbase-inference](../betterbase-inference/) -- E2EE inference proxy
-- [@betterbase/sdk](../betterbase/) -- Client SDK (auth, crypto, discovery, sync, db)
+- [betterbase](../betterbase/) -- Client SDK (auth, crypto, discovery, sync, db)
 
 ## License
 
