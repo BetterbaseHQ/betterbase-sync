@@ -23,7 +23,7 @@ RUN SQLX_OFFLINE=true cargo build --locked --release \
 # --- Runtime ---
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 nonroot \
     && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin nonroot \
