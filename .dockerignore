@@ -1,5 +1,9 @@
-.git
-target
-tmp
+.git/
+target/
+tmp/
 coverage.*
 *.db*
+.env*
+*.md
+docker-compose*.yml
+Dockerfile.dev
