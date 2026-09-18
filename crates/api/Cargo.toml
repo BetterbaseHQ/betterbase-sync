@@ -22,7 +22,6 @@ betterbase-sync-core = { path = "../core" }
 betterbase-sync-realtime = { path = "../realtime" }
 betterbase-sync-storage = { path = "../storage" }
 object_store.workspace = true
-rand_core.workspace = true
 rand.workspace = true
 serde.workspace = true
 sha2.workspace = true
@@ -38,6 +37,7 @@ uuid.workspace = true
 [dev-dependencies]
 jsonwebtoken.workspace = true
 p256.workspace = true
+rand_core.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower = "0.5"

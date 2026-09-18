@@ -138,11 +138,11 @@ impl MultiValidator {
             decode::<Claims>(token, &decoding_key, &validation).map_err(map_decode_error)?;
         let claims = token_data.claims;
 
-        if let Some(exp) = claims.exp {
-            let now = unix_now().map_err(|_| JwtValidationError::InvalidToken)?;
-            if now > exp {
-                return Err(JwtValidationError::ExpiredToken);
-            }
+        // Access tokens must carry an expiry; validate manually so leeway is ours to control
+        let exp = claims.exp.ok_or(JwtValidationError::InvalidToken)?;
+        let now = unix_now().map_err(|_| JwtValidationError::InvalidToken)?;
+        if now > exp {
+            return Err(JwtValidationError::ExpiredToken);
         }
 
         if normalize_issuer(&claims.iss) != selected_issuer {
