@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI coding agents working with code in this repository.
 
 ## Overview
 
@@ -17,7 +17,7 @@ just test-db        # Spin up Postgres container, run full suite, tear down
 just test-v         # Tests with --nocapture
 just bench          # cargo bench --workspace
 just bench-db       # Storage benchmarks against real PostgreSQL
-just lint           # cargo clippy --workspace -- -D warnings
+just lint           # cargo clippy --workspace --all-targets -- -D warnings
 just fmt            # cargo fmt --all
 just build          # cargo build --workspace
 just db-start       # Start test PostgreSQL on port 15432
@@ -153,5 +153,5 @@ Frozen -- changes require a versioned migration:
 
 ## Docker
 
-- `Dockerfile` -- Multi-stage production build: Rust 1.88 -> debian:bookworm-slim, nonroot user, port 5379
+- `Dockerfile` -- Multi-stage production build: Rust 1.98 -> debian:bookworm-slim, nonroot user, port 5379
 - `Dockerfile.dev` -- Dev build with `cargo-watch` hot reload
