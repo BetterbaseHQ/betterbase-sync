@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # --- Dependency cache ---
-FROM rust:1.88-bookworm AS chef
+FROM rust:1.98.1-bookworm AS chef
 RUN cargo install cargo-chef --locked --version 0.1.77
 WORKDIR /app
 
