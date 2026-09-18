@@ -219,7 +219,7 @@ mod tests {
     use axum::http::Method;
     use betterbase_sync_auth::sign_http_request;
     use ed25519_dalek::SigningKey;
-    use p256::elliptic_curve::rand_core::OsRng;
+    use rand_core::OsRng;
 
     fn signed_request(signing_key: &SigningKey, key_id: &str) -> Request<()> {
         let mut request = Request::builder()

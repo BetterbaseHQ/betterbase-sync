@@ -17,8 +17,9 @@ use http::{HeaderValue, StatusCode};
 use jsonwebtoken::{Algorithm, Header};
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
+use p256::elliptic_curve::Generate;
 use p256::PublicKey;
+use rand_core::OsRng;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -5521,9 +5522,9 @@ struct TestIssuer {
 
 impl TestIssuer {
     fn new() -> Self {
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         let public_key =
-            PublicKey::from_sec1_bytes(key.verifying_key().to_encoded_point(false).as_bytes())
+            PublicKey::from_sec1_bytes(key.verifying_key().to_sec1_point(false).as_bytes())
                 .expect("public key should decode");
         let did = encode_did_key(&public_key);
         Self { key, did }
@@ -5531,7 +5532,7 @@ impl TestIssuer {
 
     fn compressed_public_key(&self) -> [u8; 33] {
         let public_key =
-            PublicKey::from_sec1_bytes(self.key.verifying_key().to_encoded_point(false).as_bytes())
+            PublicKey::from_sec1_bytes(self.key.verifying_key().to_sec1_point(false).as_bytes())
                 .expect("public key should decode");
         compress_public_key(&public_key)
     }

@@ -163,8 +163,8 @@ impl RealtimeSession {
         tokio::spawn(async move {
             // Random delay 1-5 seconds to mitigate timing correlation
             let delay_ms = {
-                use rand_core::{OsRng, RngCore};
-                1000 + (OsRng.next_u32() % 4000) // 1000-4999ms
+                use rand::RngExt;
+                1000 + (rand::rng().random::<u32>() % 4000) // 1000-4999ms
             };
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
 

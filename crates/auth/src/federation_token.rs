@@ -3,8 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use hmac::{Hmac, Mac};
-use rand_core::{OsRng, RngCore};
+use hmac::{Hmac, KeyInit, Mac};
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -65,7 +65,7 @@ pub fn create_fst(
     let mut token = vec![0_u8; FST_TOKEN_LEN];
     token[0] = FST_VERSION;
 
-    OsRng.fill_bytes(&mut token[1..17]);
+    rand::rng().fill(&mut token[1..17]);
     token[17..33].copy_from_slice(space_id.as_bytes());
 
     let domain_hash = Sha256::digest(canonicalize_domain(peer_domain).as_bytes());

@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::PublicKey;
 
 const DID_KEY_PREFIX: &str = "did:key:z";
@@ -64,7 +64,7 @@ pub fn encode_did_key(public_key: &PublicKey) -> String {
 
 #[must_use]
 pub fn compress_public_key(public_key: &PublicKey) -> [u8; 33] {
-    let encoded = public_key.to_encoded_point(true);
+    let encoded = public_key.to_sec1_point(true);
     let bytes = encoded.as_bytes();
     let mut out = [0_u8; 33];
     out.copy_from_slice(bytes);
@@ -112,7 +112,7 @@ fn varint_decode(bytes: &[u8]) -> Result<(u64, usize), DidKeyError> {
 #[cfg(test)]
 mod tests {
     use super::{compress_public_key, decode_did_key, encode_did_key};
-    use p256::{elliptic_curve::rand_core::OsRng, SecretKey};
+    use p256::{elliptic_curve::Generate, SecretKey};
 
     #[test]
     fn decode_known_vector_roundtrips() {
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn random_key_roundtrip() {
-        let secret = SecretKey::random(&mut OsRng);
+        let secret = SecretKey::generate();
         let public_key = secret.public_key();
 
         let did = encode_did_key(&public_key);
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn compressed_public_key_shape() {
-        let secret = SecretKey::random(&mut OsRng);
+        let secret = SecretKey::generate();
         let public_key = secret.public_key();
 
         let compressed = compress_public_key(&public_key);

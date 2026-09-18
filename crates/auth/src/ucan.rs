@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::PublicKey;
 use sha2::{Digest, Sha256};
 
@@ -283,7 +283,7 @@ fn extract_unverified_issuer(token: &str) -> Result<String, UcanError> {
 }
 
 fn decoding_key_from_public_key(public_key: &PublicKey) -> Result<DecodingKey, UcanError> {
-    let encoded = public_key.to_encoded_point(false);
+    let encoded = public_key.to_sec1_point(false);
     let bytes = encoded.as_bytes();
     let x = URL_SAFE_NO_PAD.encode(&bytes[1..33]);
     let y = URL_SAFE_NO_PAD.encode(&bytes[33..65]);
@@ -330,7 +330,7 @@ mod tests {
     use jsonwebtoken::{Algorithm, Header};
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
 
     use super::{
         compute_ucan_cid, parse_ucan, validate_chain, AudienceClaim, UcanClaims, UcanError,
@@ -347,15 +347,15 @@ mod tests {
     impl TestIssuer {
         fn public_key(&self) -> p256::PublicKey {
             p256::PublicKey::from_sec1_bytes(
-                self.key.verifying_key().to_encoded_point(false).as_bytes(),
+                self.key.verifying_key().to_sec1_point(false).as_bytes(),
             )
             .expect("public key should decode")
         }
 
         fn new() -> Self {
-            let key = SigningKey::random(&mut OsRng);
+            let key = SigningKey::generate();
             let public_key = p256::PublicKey::from_sec1_bytes(
-                key.verifying_key().to_encoded_point(false).as_bytes(),
+                key.verifying_key().to_sec1_point(false).as_bytes(),
             )
             .expect("public key should decode");
             let did = encode_did_key(&public_key);

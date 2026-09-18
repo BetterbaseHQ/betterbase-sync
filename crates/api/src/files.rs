@@ -692,7 +692,7 @@ mod tests {
     use jsonwebtoken::{Algorithm, Header};
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use p256::PublicKey;
     use tower::ServiceExt;
 
@@ -1668,9 +1668,9 @@ mod tests {
 
     impl TestIssuer {
         fn new() -> Self {
-            let key = SigningKey::random(&mut OsRng);
+            let key = SigningKey::generate();
             let public_key =
-                PublicKey::from_sec1_bytes(key.verifying_key().to_encoded_point(false).as_bytes())
+                PublicKey::from_sec1_bytes(key.verifying_key().to_sec1_point(false).as_bytes())
                     .expect("public key should decode");
             let did = encode_did_key(&public_key);
             Self { key, did }
@@ -1678,7 +1678,7 @@ mod tests {
 
         fn compressed_public_key(&self) -> [u8; 33] {
             let public_key = PublicKey::from_sec1_bytes(
-                self.key.verifying_key().to_encoded_point(false).as_bytes(),
+                self.key.verifying_key().to_sec1_point(false).as_bytes(),
             )
             .expect("public key should decode");
             compress_public_key(&public_key)

@@ -480,9 +480,9 @@ async fn release_federation_quotas(
 
 /// Returns base ± 10% to prevent thundering herd on reconnect.
 fn jittered_lifetime(base: Duration) -> Duration {
-    use rand_core::{OsRng, RngCore};
+    use rand::RngExt;
     // ±10%: multiply base by [0.9, 1.1)
-    let random = (OsRng.next_u32() as f64) / (u32::MAX as f64); // [0, 1)
+    let random = (rand::rng().random::<u32>() as f64) / (u32::MAX as f64); // [0, 1)
     let jitter = 0.9 + random * 0.2;
     Duration::from_secs_f64(base.as_secs_f64() * jitter)
 }

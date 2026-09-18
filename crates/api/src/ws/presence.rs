@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use betterbase_sync_core::protocol::WsPresencePeer;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tokio::sync::RwLock;
 
@@ -33,9 +33,9 @@ impl Default for PresenceRegistry {
 
 impl PresenceRegistry {
     pub fn new() -> Self {
-        use rand_core::{OsRng, RngCore};
+        use rand::RngExt;
         let mut secret = [0u8; 32];
-        OsRng.fill_bytes(&mut secret);
+        rand::rng().fill(&mut secret);
         Self {
             peer_secret: secret,
             spaces: RwLock::new(HashMap::new()),

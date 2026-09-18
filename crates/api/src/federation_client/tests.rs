@@ -14,7 +14,7 @@ use betterbase_sync_core::protocol::{
 use betterbase_sync_realtime::ws::WS_SUBPROTOCOL;
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
-use p256::elliptic_curve::rand_core::OsRng;
+use rand_core::OsRng;
 use tokio::sync::mpsc;
 
 use super::FederationPeerManager;

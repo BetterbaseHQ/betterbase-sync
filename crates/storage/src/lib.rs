@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use betterbase_sync_core::protocol::{Change, Space};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use uuid::Uuid;
 

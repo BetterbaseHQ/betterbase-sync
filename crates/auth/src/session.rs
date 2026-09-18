@@ -2,8 +2,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
-use rand_core::{OsRng, RngCore};
+use hmac::{Hmac, KeyInit, Mac};
+use rand::RngExt;
 use sha2::Sha256;
 
 use crate::permission::{ParsePermissionError, Permission};
@@ -81,7 +81,7 @@ impl SessionManager {
         token[1..9].copy_from_slice(&expiry.to_be_bytes());
         token[9] = permission as u8;
 
-        OsRng.fill_bytes(&mut token[10..26]);
+        rand::rng().fill(&mut token[10..26]);
         let mac = self.sign(&token[..26], space_id)?;
         token[26..].copy_from_slice(&mac);
 

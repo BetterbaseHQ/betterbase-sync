@@ -264,7 +264,7 @@ mod tests {
     use jsonwebtoken::{Algorithm, Header};
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio::time::sleep;
@@ -280,13 +280,13 @@ mod tests {
     impl TestKeyPair {
         fn new(kid: &str) -> Self {
             Self {
-                private: SigningKey::random(&mut OsRng),
+                private: SigningKey::generate(),
                 kid: kid.to_owned(),
             }
         }
 
         fn jwk(&self) -> JWK {
-            let public = self.private.verifying_key().to_encoded_point(false);
+            let public = self.private.verifying_key().to_sec1_point(false);
             let public_bytes = public.as_bytes();
             let x = &public_bytes[1..33];
             let y = &public_bytes[33..65];
