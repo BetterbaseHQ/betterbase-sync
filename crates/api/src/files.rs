@@ -20,7 +20,7 @@ use betterbase_sync_storage::{
 };
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutMode, PutOptions};
+use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
 use uuid::Uuid;
 
 use crate::ApiState;
@@ -196,13 +196,17 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
 
     async fn get(&self, space_id: Uuid, file_id: Uuid) -> Result<Vec<u8>, FileBlobStorageError> {
         let location = file_object_path(space_id, file_id);
-        let get_result = self.store.get(&location).await.map_err(|error| {
-            if matches!(error, object_store::Error::NotFound { .. }) {
-                FileBlobStorageError::NotFound
-            } else {
-                FileBlobStorageError::Internal
-            }
-        })?;
+        let get_result = self
+            .store
+            .get_opts(&location, GetOptions::default())
+            .await
+            .map_err(|error| {
+                if matches!(error, object_store::Error::NotFound { .. }) {
+                    FileBlobStorageError::NotFound
+                } else {
+                    FileBlobStorageError::Internal
+                }
+            })?;
 
         let bytes = get_result
             .bytes()

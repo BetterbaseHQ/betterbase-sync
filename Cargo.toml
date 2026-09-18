@@ -40,7 +40,7 @@ serde_bytes = "0.11"
 minicbor-serde = { version = "0.6", features = ["alloc"] }
 serde_json = "1.0"
 sha2 = "0.10"
-object_store = "0.12"
+object_store = "0.14"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid"] }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time", "net", "sync"] }
