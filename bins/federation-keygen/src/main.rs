@@ -22,6 +22,7 @@ async fn run(config: KeygenConfig) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("domain must not be empty"));
     }
 
+    let auto_kid = config.kid.is_none();
     let key_fragment = config.kid.unwrap_or_else(default_key_fragment);
     let key_id = format!("https://{domain}/.well-known/jwks.json#{key_fragment}");
 
@@ -32,6 +33,15 @@ async fn run(config: KeygenConfig) -> anyhow::Result<()> {
 
     if let Some(database_url) = config.database_url.as_deref() {
         let storage = PostgresStorage::connect(database_url).await?;
+        // Auto-provisioning mode (no explicit --kid, no --promote): if a primary
+        // key already exists there is nothing to do. This keeps container
+        // restarts true no-ops — without it every restart would stage another
+        // unused key in the JWKS forever. Deliberate staging/rotation passes
+        // --kid or --promote and always runs.
+        if !config.promote && auto_kid && storage.get_federation_signing_key().await?.is_some() {
+            println!("Federation primary key already present; nothing to do");
+            return Ok(());
+        }
         storage
             .ensure_federation_key(&key_id, &private_seed, &public_key)
             .await?;
@@ -299,6 +309,48 @@ mod tests {
             .await
             .expect("list active keys");
         assert_eq!(keys.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_auto_provision_is_noop_when_primary_exists() {
+        let Some(test_db) = isolated_database().await else {
+            return;
+        };
+
+        let kid = "https://sync.example.com/.well-known/jwks.json#fed-boot1";
+        let key = SigningKey::from_bytes(&[11_u8; 32]);
+        test_db
+            .storage
+            .ensure_federation_key(kid, &key.to_bytes(), key.verifying_key().as_bytes())
+            .await
+            .expect("insert primary key");
+
+        // Mimics the container entrypoint on restart: no --kid, no --promote.
+        // A primary exists, so this must not stage another key.
+        run(KeygenConfig {
+            domain: "sync.example.com".to_owned(),
+            kid: None,
+            database_url: Some(test_db.scoped_url.clone()),
+            print_private: false,
+            promote: false,
+        })
+        .await
+        .expect("run keygen auto-provision");
+
+        let primary = test_db
+            .storage
+            .get_federation_signing_key()
+            .await
+            .expect("load primary signing key")
+            .expect("primary key should exist");
+        assert_eq!(primary.kid, kid);
+
+        let keys = test_db
+            .storage
+            .list_federation_public_keys()
+            .await
+            .expect("list active keys");
+        assert_eq!(keys.len(), 1, "restart must not add a staged key");
     }
 
     struct TestDatabase {
