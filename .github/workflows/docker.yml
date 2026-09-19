@@ -35,8 +35,8 @@ jobs:
       packages: write
 
     steps:
-      # actions/checkout@v4
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      # actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Prepare platform label
         run: |
@@ -45,13 +45,13 @@ jobs:
           # GHCR repository names must be lowercase; github.repository is not
           echo "IMAGE_NAME_LC=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
-      # docker/setup-buildx-action@v3
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      # docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
 
       - name: Log in to Container Registry
         if: startsWith(github.ref, 'refs/tags/')
-        # docker/login-action@v3
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        # docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -59,8 +59,8 @@ jobs:
 
       - name: Build
         id: build
-        # docker/build-push-action@v6
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        # docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -86,8 +86,8 @@ jobs:
 
       - name: Upload digest
         if: startsWith(github.ref, 'refs/tags/')
-        # actions/upload-artifact@v4
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: digests-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
@@ -103,16 +103,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      # actions/download-artifact@v4
+      # actions/download-artifact@v8
       - name: Download digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
           merge-multiple: true
 
-      # docker/setup-buildx-action@v3
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      # docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
 
       - name: Prepare image name
         run: |
@@ -120,8 +120,8 @@ jobs:
           echo "IMAGE_NAME_LC=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
 
       - name: Log in to Container Registry
-        # docker/login-action@v3
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        # docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -131,8 +131,8 @@ jobs:
       # default latest=auto would too for semver tags, but we are explicit).
       - name: Extract metadata
         id: meta
-        # docker/metadata-action@v5
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        # docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
           flavor: |
