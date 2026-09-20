@@ -372,8 +372,11 @@ impl RecordStorage for PostgresStorage {
     }
 
     async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError> {
+        // Tombstones keep their row (deleted = TRUE) but must not count as
+        // existing: file uploads gate on this check, and a deleted record
+        // must not accept new blobs.
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM records WHERE space_id = $1 AND id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM records WHERE space_id = $1 AND id = $2 AND deleted = FALSE)",
         )
         .bind(space_id)
         .bind(record_id)
@@ -611,6 +614,18 @@ mod tests {
             .await
             .expect("exists query");
         assert!(exists);
+
+        // A tombstone (blob = NULL) keeps the row but must not count as an
+        // existing record — file uploads for deleted records are rejected.
+        storage
+            .push(space_id, &[change(id, None, 1)], None)
+            .await
+            .expect("tombstone push");
+        let after_delete = storage
+            .record_exists(space_id, parsed)
+            .await
+            .expect("exists query");
+        assert!(!after_delete);
     }
 
     #[tokio::test]
