@@ -427,7 +427,7 @@ mod tests {
     use betterbase_sync_core::protocol::Change;
 
     use super::super::test_support::*;
-    use crate::{PullEntry, PullEntryKind};
+    use crate::{AdvanceEpochOptions, EpochStorage, PullEntry, PullEntryKind, PushOptions};
 
     #[tokio::test]
     async fn pull_empty_space() {
@@ -656,6 +656,43 @@ mod tests {
             !after_delete,
             "tombstoned record must not count as existing"
         );
+    }
+
+    /// The push CAS check rejects pushes encrypted under a key generation
+    /// older than the space minimum (set when an epoch advance completes).
+    /// Clients depend on this error to know they must pull the new epoch
+    /// and rewrap their DEKs before retrying the push.
+    #[tokio::test]
+    async fn push_stale_key_generation_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        storage
+            .create_space(space_id, "client-1", Some(&[0x02; 33]))
+            .await
+            .expect("create shared space");
+        storage
+            .advance_epoch(
+                space_id,
+                2,
+                Some(&AdvanceEpochOptions {
+                    set_min_key_generation: true,
+                }),
+            )
+            .await
+            .expect("advance epoch");
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let stale = storage
+            .push(
+                space_id,
+                &[change(&id, Some(b"x"), 0)],
+                Some(&PushOptions { key_generation: 1 }),
+            )
+            .await
+            .expect_err("stale key generation should be rejected");
+        assert_eq!(stale, StorageError::KeyGenerationStale);
     }
 
     #[tokio::test]
