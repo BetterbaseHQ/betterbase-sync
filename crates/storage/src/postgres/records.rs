@@ -614,18 +614,48 @@ mod tests {
             .await
             .expect("exists query");
         assert!(exists);
+    }
 
-        // A tombstone (blob = NULL) keeps the row but must not count as an
-        // existing record — file uploads for deleted records are rejected.
+    /// Regression: a tombstone (blob = NULL) keeps the row but must not
+    /// count as an existing record. `record_exists` gates file uploads;
+    /// without the `deleted = FALSE` filter, uploads against tombstoned
+    /// records succeeded and created orphan rows that re-entered every
+    /// peer's incremental pull.
+    #[tokio::test]
+    async fn record_exists_ignores_tombstones() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let id = "019400e8-7b5d-7000-8000-000000000002";
+        let parsed = uuid::Uuid::parse_str(id).expect("parse id");
+        storage
+            .push(space_id, &[change(id, Some(b"x"), 0)], None)
+            .await
+            .expect("initial push");
+
+        let exists = storage
+            .record_exists(space_id, parsed)
+            .await
+            .expect("exists query before tombstone");
+        assert!(exists, "record should exist after initial push");
+
+        // Tombstone at the next cursor; blob = NULL marks deletion.
         storage
             .push(space_id, &[change(id, None, 1)], None)
             .await
             .expect("tombstone push");
+
         let after_delete = storage
             .record_exists(space_id, parsed)
             .await
-            .expect("exists query");
-        assert!(!after_delete);
+            .expect("exists query after tombstone");
+        assert!(
+            !after_delete,
+            "tombstoned record must not count as existing"
+        );
     }
 
     #[tokio::test]
