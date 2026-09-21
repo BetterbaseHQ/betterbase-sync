@@ -205,6 +205,7 @@ fn federation_auth_context(peer_domain: &str) -> AuthContext {
         did: format!("did:web:{canonical}"),
         mailbox_id: format!("federation:{canonical}"),
         scope: "sync".to_owned(),
+        expires_at: None,
     }
 }
 

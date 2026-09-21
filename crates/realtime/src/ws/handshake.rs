@@ -127,6 +127,7 @@ mod tests {
                 personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
                 did: "did:key:zDnaStub".to_owned(),
                 mailbox_id: "mailbox-1".to_owned(),
+                expires_at: None,
                 scope: "sync".to_owned(),
             }),
         };
@@ -165,6 +166,7 @@ mod tests {
                 personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
                 did: "did:key:zDnaStub".to_owned(),
                 mailbox_id: "mailbox-1".to_owned(),
+                expires_at: None,
                 scope: "sync".to_owned(),
             }),
         };
@@ -195,6 +197,7 @@ mod tests {
                 personal_space_id: "00000000-0000-0000-0000-000000000001".to_owned(),
                 did: "did:key:zDnaStub".to_owned(),
                 mailbox_id: "mailbox-1".to_owned(),
+                expires_at: None,
                 scope: "files".to_owned(),
             }),
         };

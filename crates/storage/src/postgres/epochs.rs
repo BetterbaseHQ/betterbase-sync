@@ -3,7 +3,8 @@ use uuid::Uuid;
 
 use super::PostgresStorage;
 use crate::{
-    AdvanceEpochOptions, AdvanceEpochResult, DekRecord, EpochConflict, EpochStorage, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, DekRecord, EpochConflict, EpochKeyShare, EpochStorage,
+    StorageError,
 };
 
 #[async_trait]
@@ -165,6 +166,82 @@ impl EpochStorage for PostgresStorage {
         }
 
         tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn put_epoch_key_shares(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        shares: &[EpochKeyShare],
+    ) -> Result<(), StorageError> {
+        if shares.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        // Replace any prior shares for this epoch (rotation restart after an
+        // aborted attempt issues a different fresh key).
+        sqlx::query("DELETE FROM epoch_keys WHERE space_id = $1 AND epoch = $2")
+            .bind(space_id)
+            .bind(epoch)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        for share in shares {
+            let result =
+                sqlx::query("INSERT INTO epoch_keys (space_id, epoch, member_did, wrapped_key) VALUES ($1, $2, $3, $4)")
+                    .bind(space_id)
+                    .bind(epoch)
+                    .bind(&share.member_did)
+                    .bind(&share.wrapped_key)
+                    .execute(tx.as_mut())
+                    .await
+                    .map_err(|error| StorageError::Database(error.to_string()))?;
+            if result.rows_affected() != 1 {
+                return Err(StorageError::Database(
+                    "epoch key share insert failed".into(),
+                ));
+            }
+        }
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_epoch_key_share(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        member_did: &str,
+    ) -> Result<Vec<u8>, StorageError> {
+        let row = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT wrapped_key FROM epoch_keys WHERE space_id = $1 AND epoch = $2 AND member_did = $3",
+        )
+        .bind(space_id)
+        .bind(epoch)
+        .bind(member_did)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        row.ok_or(StorageError::EpochKeyShareNotFound)
+    }
+
+    async fn prune_epoch_key_shares(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM epoch_keys WHERE space_id = $1 AND epoch <= $2")
+            .bind(space_id)
+            .bind(epoch)
+            .execute(&self.pool)
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
         Ok(())
@@ -466,5 +543,106 @@ mod cas_tests {
             .expect("rewrap with current observation");
         let updated = storage.get_deks(space_id, 0).await.expect("get DEKs");
         assert_eq!(updated[0].wrapped_dek, wrapped_dek_with_epoch(2, 0xcc));
+    }
+}
+
+#[cfg(test)]
+mod epoch_key_share_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    use crate::EpochKeyShare;
+
+    #[tokio::test]
+    async fn epoch_key_shares_roundtrip_and_replace() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let shares = vec![
+            EpochKeyShare {
+                member_did: "did:key:alice".to_owned(),
+                wrapped_key: vec![1, 2, 3],
+            },
+            EpochKeyShare {
+                member_did: "did:key:bob".to_owned(),
+                wrapped_key: vec![4, 5, 6],
+            },
+        ];
+        storage
+            .put_epoch_key_shares(space_id, 2, &shares)
+            .await
+            .expect("put shares");
+
+        // Each member reads only their own share.
+        assert_eq!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:alice")
+                .await
+                .expect("alice share"),
+            vec![1, 2, 3],
+        );
+        assert_eq!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:bob")
+                .await
+                .expect("bob share"),
+            vec![4, 5, 6],
+        );
+        // No cross-member reads, and no shares for unknown epochs.
+        assert!(matches!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:eve")
+                .await
+                .unwrap_err(),
+            StorageError::EpochKeyShareNotFound
+        ));
+        assert!(matches!(
+            storage
+                .get_epoch_key_share(space_id, 3, "did:key:alice")
+                .await
+                .unwrap_err(),
+            StorageError::EpochKeyShareNotFound
+        ));
+
+        // Re-putting for the same epoch replaces (rotation restart).
+        let replacement = vec![EpochKeyShare {
+            member_did: "did:key:alice".to_owned(),
+            wrapped_key: vec![9, 9, 9],
+        }];
+        storage
+            .put_epoch_key_shares(space_id, 2, &replacement)
+            .await
+            .expect("replace shares");
+        assert_eq!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:alice")
+                .await
+                .expect("replaced share"),
+            vec![9, 9, 9],
+        );
+        // Bob's share from the aborted attempt is gone.
+        assert!(matches!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:bob")
+                .await
+                .unwrap_err(),
+            StorageError::EpochKeyShareNotFound
+        ));
+
+        // Pruning clears shares at or below an epoch.
+        storage
+            .prune_epoch_key_shares(space_id, 2)
+            .await
+            .expect("prune");
+        assert!(matches!(
+            storage
+                .get_epoch_key_share(space_id, 2, "did:key:alice")
+                .await
+                .unwrap_err(),
+            StorageError::EpochKeyShareNotFound
+        ));
     }
 }

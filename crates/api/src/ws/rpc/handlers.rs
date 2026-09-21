@@ -150,6 +150,7 @@ pub(super) struct SubscribeContext<'a> {
     pub(super) realtime: Option<&'a RealtimeSession>,
     pub(super) presence_registry: Option<&'a PresenceRegistry>,
     pub(super) federation_forwarder: Option<&'a dyn crate::FederationForwarder>,
+    pub(super) session_registry: Option<&'a crate::ws::sessions::SessionRegistry>,
 }
 
 pub(super) async fn handle_subscribe_request(
@@ -164,6 +165,7 @@ pub(super) async fn handle_subscribe_request(
         realtime,
         presence_registry,
         federation_forwarder,
+        session_registry,
     } = context;
 
     let params = match decode_frame_params::<SubscribeParams>(payload) {
@@ -225,7 +227,8 @@ pub(super) async fn handle_subscribe_request(
                         continue;
                     }
                 }
-                added_spaces.push(requested.id.clone());
+                // Canonical form (parsed UUID) so revocation-keyed lookups join regardless of client casing.
+                added_spaces.push(space_id.to_string());
                 let peers = if requested.presence {
                     if let (Some(presence_registry), Some(realtime)) = (presence_registry, realtime)
                     {
@@ -260,6 +263,21 @@ pub(super) async fn handle_subscribe_request(
 
     if let Some(realtime) = realtime {
         let _ = realtime.add_spaces(&added_spaces).await;
+    }
+
+    // AUD-024: track this connection under (space, member DID) so revocation
+    // can detach the subscription (the connection stays open for the
+    // member's other spaces; re-subscribe attempts are rejected by
+    // authorization).
+    if let Some(session_registry) = session_registry {
+        if let Some(realtime) = realtime {
+            let detach = realtime.detach_sender();
+            for space in &added_spaces {
+                session_registry
+                    .register(space, &auth.did, outbound.clone(), detach.clone())
+                    .await;
+            }
+        }
     }
 
     send_result_response(outbound, id, &SubscribeResult { spaces, errors }).await;

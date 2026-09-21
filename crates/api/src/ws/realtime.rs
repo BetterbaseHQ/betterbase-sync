@@ -30,6 +30,10 @@ pub(crate) struct RealtimeSession {
     subscriber_id: SubscriberId,
     exclude_id: String,
     subscribed_spaces: Arc<RwLock<HashSet<String>>>,
+    /// Sends a "detach this space" command to the connection's main loop
+    /// (revocation teardown — AUD-024 — removes subscriptions without
+    /// closing the connection the member still uses for other spaces).
+    detach_tx: mpsc::Sender<String>,
 }
 
 impl RealtimeSession {
@@ -90,6 +94,11 @@ impl RealtimeSession {
 
     pub(crate) fn peer_id(&self) -> &str {
         &self.exclude_id
+    }
+
+    /// Clone of the detach-command sender (registry use, AUD-024).
+    pub(crate) fn detach_sender(&self) -> mpsc::Sender<String> {
+        self.detach_tx.clone()
     }
 
     pub(crate) async fn broadcast_sync(
@@ -246,6 +255,7 @@ pub(crate) async fn register_session(
     connection_id: &str,
     outbound: OutboundSender,
     closed: Arc<AtomicBool>,
+    detach_tx: mpsc::Sender<String>,
 ) -> Result<Option<RealtimeSession>, CloseDirective> {
     let Some(broker) = broker else {
         return Ok(None);
@@ -271,6 +281,7 @@ pub(crate) async fn register_session(
         subscriber_id,
         exclude_id: connection_id.to_owned(),
         subscribed_spaces: Arc::new(RwLock::new(HashSet::new())),
+        detach_tx,
     }))
 }
 

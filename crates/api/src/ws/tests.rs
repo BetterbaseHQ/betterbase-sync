@@ -776,6 +776,32 @@ impl SyncStorage for StubSyncStorage {
         Ok(())
     }
 
+    async fn put_epoch_key_shares(
+        &self,
+        _space_id: Uuid,
+        _epoch: i32,
+        _shares: &[betterbase_sync_storage::EpochKeyShare],
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
+        Ok(())
+    }
+
+    async fn get_epoch_key_share(
+        &self,
+        _space_id: Uuid,
+        _epoch: i32,
+        _member_did: &str,
+    ) -> Result<Vec<u8>, betterbase_sync_storage::StorageError> {
+        Err(betterbase_sync_storage::StorageError::EpochKeyShareNotFound)
+    }
+
+    async fn prune_epoch_key_shares(
+        &self,
+        _space_id: Uuid,
+        _epoch: i32,
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
+        Ok(())
+    }
+
     async fn get_file_deks(
         &self,
         _space_id: Uuid,
@@ -5520,6 +5546,7 @@ fn test_auth_context_with_did(scope: &str, did: &str) -> AuthContext {
         did: did.to_owned(),
         mailbox_id: TEST_MAILBOX_ID.to_owned(),
         scope: scope.to_owned(),
+        expires_at: None,
     }
 }
 
@@ -7033,6 +7060,256 @@ async fn websocket_membership_revoke_with_admin_ucan_succeeds() {
     let response: RpcResultResponse<serde_json::Value> = read_result_response(&mut socket).await;
     assert_eq!(response.id, "revoke-admin-1");
     assert_eq!(response.result, serde_json::json!({}));
+
+    server.handle.abort();
+}
+
+// ─── AUD-024: fresh-key shares and revocation teardown ──────────────────────
+
+#[tokio::test]
+async fn websocket_epoch_keys_put_requires_admin_and_get_returns_own_share() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let admin = TestIssuer::new();
+    let member = TestIssuer::new();
+    let admin_ucan = root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Admin);
+    let member_ucan = root_issuer.issue_space_ucan(&member.did, shared_space_id, Permission::Read);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "admin-token".to_owned(),
+        test_auth_context_with_did("sync", &admin.did),
+    );
+    tokens.insert(
+        "member-token".to_owned(),
+        test_auth_context_with_did("sync", &member.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut admin_socket, _) = connect_async(request).await.expect("connect admin");
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut member_socket, _) = connect_async(request).await.expect("connect member");
+
+    send_auth_with_token(&mut admin_socket, "admin-token").await;
+    send_auth_with_token(&mut member_socket, "member-token").await;
+
+    // A read-level member cannot distribute shares. (Typed params: the
+    // wrapped key is serde_bytes and must be a CBOR byte string, which
+    // json!-built frames cannot express.)
+    let member_put = betterbase_sync_core::protocol::EpochKeysPutParams {
+        space: shared_space_id.to_string(),
+        ucan: member_ucan,
+        epoch: 2,
+        keys: vec![betterbase_sync_core::protocol::EpochKeyShareEntry {
+            member_did: "did:x".to_owned(),
+            wrapped_key: vec![1, 2, 3],
+        }],
+    };
+    send_rpc_request(
+        &mut member_socket,
+        "keys-put-read",
+        "epochKeys.put",
+        &member_put,
+    )
+    .await;
+    let response = read_error_response(&mut member_socket).await;
+    assert_eq!(response.id, "keys-put-read");
+    assert_eq!(response.error.code, "forbidden");
+
+    // The admin stores a share for the member.
+    let admin_put = betterbase_sync_core::protocol::EpochKeysPutParams {
+        space: shared_space_id.to_string(),
+        ucan: admin_ucan,
+        epoch: 2,
+        keys: vec![betterbase_sync_core::protocol::EpochKeyShareEntry {
+            member_did: member.did,
+            wrapped_key: vec![7, 7, 7],
+        }],
+    };
+    send_rpc_request(
+        &mut admin_socket,
+        "keys-put-admin",
+        "epochKeys.put",
+        &admin_put,
+    )
+    .await;
+    let put: RpcResultResponse<serde_json::Value> = read_result_response(&mut admin_socket).await;
+    assert_eq!(put.id, "keys-put-admin");
+    assert_eq!(put.result["count"], 1);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_revocation_detaches_the_removed_members_subscription() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let admin = TestIssuer::new();
+    let member = TestIssuer::new();
+    let admin_ucan = root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Admin);
+    let member_ucan = root_issuer.issue_space_ucan(&member.did, shared_space_id, Permission::Read);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "admin-token".to_owned(),
+        test_auth_context_with_did("sync", &admin.did),
+    );
+    tokens.insert(
+        "member-token".to_owned(),
+        test_auth_context_with_did("sync", &member.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(60), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+
+    // Member connects and subscribes to the shared space.
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut member_socket, _) = connect_async(request).await.expect("connect member");
+    send_auth_with_token(&mut member_socket, "member-token").await;
+    send_binary_frame(
+        &mut member_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "member-sub",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": member_ucan }]
+            }
+        }),
+    )
+    .await;
+    let sub: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut member_socket).await;
+    assert!(sub.result.errors.is_empty());
+
+    // Admin removes the member, naming their DID.
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut admin_socket, _) = connect_async(request).await.expect("connect admin");
+    send_auth_with_token(&mut admin_socket, "admin-token").await;
+    send_binary_frame(
+        &mut admin_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "revoke-1",
+            "method": "membership.revoke",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": admin_ucan,
+                "ucan_cid": "bafytestcid",
+                "member_did": member.did
+            }
+        }),
+    )
+    .await;
+    let revoke: RpcResultResponse<serde_json::Value> =
+        read_result_response(&mut admin_socket).await;
+    assert_eq!(revoke.result, serde_json::json!({}));
+
+    // The member's subscription is DETACHED, not the connection closed
+    // (AUD-024): a push to the space must not reach the revoked socket,
+    // but the connection stays open for other spaces.
+    let mut next = member_socket.next();
+    let nothing = tokio::time::timeout(Duration::from_millis(300), &mut next).await;
+    assert!(
+        nothing.is_err(),
+        "revoked member must not receive space data"
+    );
+
+    server.handle.abort();
+}
+
+// ─── AUD-031: connections close at token expiry ─────────────────────────────
+
+#[tokio::test]
+async fn websocket_connection_closes_at_token_expiry() {
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "short-lived-token".to_owned(),
+        AuthContext {
+            issuer: "https://accounts.betterbase.dev".to_owned(),
+            user_id: "user-1".to_owned(),
+            client_id: "client-1".to_owned(),
+            personal_space_id: test_personal_space_id(),
+            did: "did:key:zDnaStub".to_owned(),
+            mailbox_id: TEST_MAILBOX_ID.to_owned(),
+            scope: "sync".to_owned(),
+            // Token expires one second from now.
+            expires_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_secs()
+                    + 1,
+            ),
+        },
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::healthy());
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(60), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth_with_token(&mut socket, "short-lived-token").await;
+
+    // The connection must close shortly after the token expires (5s grace),
+    // well before the 60s max lifetime, with the token-expired close code.
+    // (Read with a timeout above the grace window.)
+    let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
+        .await
+        .expect("close within grace window")
+        .expect("socket open")
+        .expect("websocket read");
+    match frame {
+        WsMessage::Close(Some(close)) => {
+            assert_eq!(
+                u16::from(close.code),
+                betterbase_sync_core::protocol::CLOSE_TOKEN_EXPIRED as u16
+            );
+        }
+        other => panic!("expected close frame, got {other:?}"),
+    }
 
     server.handle.abort();
 }

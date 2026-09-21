@@ -17,6 +17,7 @@ pub(super) async fn handle_request(
     outbound: &OutboundSender,
     sync_storage: &dyn SyncStorage,
     realtime: Option<&RealtimeSession>,
+    session_registry: Option<&crate::ws::sessions::SessionRegistry>,
     auth: &AuthContext,
     id: &str,
     payload: &[u8],
@@ -77,6 +78,25 @@ pub(super) async fn handle_request(
     {
         send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal".to_owned()).await;
         return;
+    }
+
+    // AUD-024: detach the removed member's subscription for this space from
+    // every open connection, so no further ciphertext/DEK broadcasts reach a
+    // revoked socket. The connections themselves stay open (the member may
+    // hold other spaces); re-subscribe attempts are rejected by authorization.
+    if !params.member_did.is_empty() {
+        if let Some(session_registry) = session_registry {
+            let detached = session_registry
+                .kick_member(&space_id.to_string(), &params.member_did)
+                .await;
+            if detached > 0 {
+                tracing::info!(
+                    space = %space_id,
+                    detached,
+                    "detached revoked member subscriptions"
+                );
+            }
+        }
     }
 
     if let Some(realtime) = realtime {

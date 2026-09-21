@@ -1657,6 +1657,7 @@ mod tests {
             did: did.to_owned(),
             mailbox_id: "mailbox".to_owned(),
             scope: scope.to_owned(),
+            expires_at: None,
         }
     }
 

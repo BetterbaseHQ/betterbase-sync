@@ -482,6 +482,13 @@ pub struct MembershipRevokeParams {
     pub ucan: String,
     #[serde(rename = "ucan_cid")]
     pub ucan_cid: String,
+    /// Optional: the DID of the removed member. When present, the server
+    /// detaches that member's subscriptions for this space (the connection
+    /// stays open for their other spaces; re-subscribe attempts are rejected
+    /// by authorization) so no further ciphertext/DEK broadcasts reach a
+    /// revoked socket (AUD-024).
+    #[serde(rename = "member_did", skip_serializing_if = "is_empty", default)]
+    pub member_did: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +531,50 @@ pub struct EpochCompleteParams {
     pub ucan: String,
     #[serde(rename = "epoch")]
     pub epoch: i32,
+}
+
+// ─── Epoch key shares (fresh-key rotation, AUD-024 / D-005) ─────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochKeyShareEntry {
+    #[serde(rename = "member_did")]
+    pub member_did: String,
+    #[serde(rename = "wrapped_key", with = "serde_bytes")]
+    pub wrapped_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochKeysPutParams {
+    #[serde(rename = "space")]
+    pub space: String,
+    #[serde(rename = "ucan", skip_serializing_if = "is_empty", default)]
+    pub ucan: String,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
+    #[serde(rename = "keys")]
+    pub keys: Vec<EpochKeyShareEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochKeysPutResult {
+    #[serde(rename = "count")]
+    pub count: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochKeysGetParams {
+    #[serde(rename = "space")]
+    pub space: String,
+    #[serde(rename = "ucan", skip_serializing_if = "is_empty", default)]
+    pub ucan: String,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EpochKeysGetResult {
+    #[serde(rename = "wrapped_key", with = "serde_bytes")]
+    pub wrapped_key: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

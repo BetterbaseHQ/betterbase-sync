@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 
 mod deks;
 mod epoch;
+mod epoch_keys;
 mod federation;
 mod federation_auth;
 mod federation_subscribe;
@@ -31,6 +32,7 @@ pub(crate) struct RequestContext<'a> {
     pub federation_forwarder: Option<&'a dyn crate::FederationForwarder>,
     pub federation_trusted_domains: &'a [String],
     pub identity_hash_key: Option<&'a [u8]>,
+    pub session_registry: Option<&'a crate::ws::sessions::SessionRegistry>,
 }
 
 pub(crate) enum RequestMode<'a> {
@@ -97,6 +99,7 @@ async fn handle_client_request(
         federation_forwarder,
         federation_trusted_domains,
         identity_hash_key,
+        session_registry,
     } = context;
 
     match method {
@@ -162,8 +165,16 @@ async fn handle_client_request(
                 .await;
                 return;
             };
-            membership_revoke::handle_request(outbound, sync_storage, realtime, auth, id, payload)
-                .await;
+            membership_revoke::handle_request(
+                outbound,
+                sync_storage,
+                realtime,
+                session_registry,
+                auth,
+                id,
+                payload,
+            )
+            .await;
         }
         "invitation.create" => {
             let Some(sync_storage) = sync_storage else {
@@ -254,6 +265,32 @@ async fn handle_client_request(
             };
             epoch::handle_complete_request(outbound, sync_storage, auth, id, payload).await;
         }
+        "epochKeys.put" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            epoch_keys::handle_put_request(outbound, sync_storage, auth, id, payload).await;
+        }
+        "epochKeys.get" => {
+            let Some(sync_storage) = sync_storage else {
+                frames::send_error_response(
+                    outbound,
+                    id,
+                    ERR_CODE_INTERNAL,
+                    "sync storage is not configured".to_owned(),
+                )
+                .await;
+                return;
+            };
+            epoch_keys::handle_get_request(outbound, sync_storage, auth, id, payload).await;
+        }
         "deks.get" => {
             let Some(sync_storage) = sync_storage else {
                 frames::send_error_response(
@@ -324,6 +361,7 @@ async fn handle_client_request(
                     realtime,
                     presence_registry,
                     federation_forwarder,
+                    session_registry,
                 },
                 auth,
                 id,

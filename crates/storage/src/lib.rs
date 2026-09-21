@@ -42,6 +42,8 @@ pub enum StorageError {
     SpaceNotFound,
     #[error("space already exists")]
     SpaceExists,
+    #[error("epoch key share not found")]
+    EpochKeyShareNotFound,
     #[error("file not found")]
     FileNotFound,
     #[error("invitation not found")]
@@ -446,6 +448,31 @@ pub trait EpochStorage: Send + Sync {
     async fn complete_rewrap(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
     async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError>;
     async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError>;
+    /// Store wrapped fresh-epoch-key shares for members (AUD-024 / D-005).
+    /// Replaces any shares previously stored for the same (space, epoch).
+    async fn put_epoch_key_shares(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        shares: &[EpochKeyShare],
+    ) -> Result<(), StorageError>;
+    /// Fetch a member's own wrapped share for an epoch.
+    async fn get_epoch_key_share(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        member_did: &str,
+    ) -> Result<Vec<u8>, StorageError>;
+    /// Delete shares at or below an epoch once the space has fully advanced
+    /// past them (hygiene; members have already installed the newer key).
+    async fn prune_epoch_key_shares(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
+}
+
+/// One member's wrapped copy of a fresh epoch key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpochKeyShare {
+    pub member_did: String,
+    pub wrapped_key: Vec<u8>,
 }
 
 #[async_trait]

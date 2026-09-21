@@ -4,10 +4,10 @@ use betterbase_sync_core::protocol::Space;
 use std::time::SystemTime;
 
 use betterbase_sync_storage::{
-    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochStorage,
-    FileDekRecord, FileStorage as FileStorageTrait, Invitation, InvitationStorage, MembersLogEntry,
-    MembershipStorage, PullStream, PushResult, RateLimitStorage, RecordStorage, RevocationStorage,
-    SpaceStorage, Storage, StorageError,
+    AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochKeyShare,
+    EpochStorage, FileDekRecord, FileStorage as FileStorageTrait, Invitation, InvitationStorage,
+    MembersLogEntry, MembershipStorage, PullStream, PushResult, RateLimitStorage, RecordStorage,
+    RevocationStorage, SpaceStorage, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -80,6 +80,23 @@ pub(crate) trait SyncStorage: Send + Sync {
     async fn get_deks(&self, space_id: Uuid, since: i64) -> Result<Vec<DekRecord>, StorageError>;
 
     async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError>;
+
+    async fn put_epoch_key_shares(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        shares: &[EpochKeyShare],
+    ) -> Result<(), StorageError>;
+
+    async fn get_epoch_key_share(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        member_did: &str,
+    ) -> Result<Vec<u8>, StorageError>;
+
+    #[allow(dead_code)]
+    async fn prune_epoch_key_shares(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError>;
 
     async fn get_file_deks(
         &self,
@@ -208,6 +225,29 @@ where
 
     async fn rewrap_deks(&self, space_id: Uuid, deks: &[DekRecord]) -> Result<(), StorageError> {
         EpochStorage::rewrap_deks(self, space_id, deks).await
+    }
+
+    async fn put_epoch_key_shares(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        shares: &[EpochKeyShare],
+    ) -> Result<(), StorageError> {
+        EpochStorage::put_epoch_key_shares(self, space_id, epoch, shares).await
+    }
+
+    async fn get_epoch_key_share(
+        &self,
+        space_id: Uuid,
+        epoch: i32,
+        member_did: &str,
+    ) -> Result<Vec<u8>, StorageError> {
+        EpochStorage::get_epoch_key_share(self, space_id, epoch, member_did).await
+    }
+
+    #[allow(dead_code)]
+    async fn prune_epoch_key_shares(&self, space_id: Uuid, epoch: i32) -> Result<(), StorageError> {
+        EpochStorage::prune_epoch_key_shares(self, space_id, epoch).await
     }
 
     async fn get_file_deks(

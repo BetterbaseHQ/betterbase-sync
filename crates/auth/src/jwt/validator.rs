@@ -67,6 +67,8 @@ pub struct TokenInfo {
     pub personal_space_id: String,
     pub did: String,
     pub mailbox_id: String,
+    /// Token expiry (unix seconds), surfaced so WS connections can close at exp.
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -166,6 +168,7 @@ impl MultiValidator {
             personal_space_id: claims.personal_space_id,
             did: claims.did,
             mailbox_id: claims.mailbox_id,
+            expires_at: Some(exp),
         })
     }
 }
@@ -184,6 +187,7 @@ impl TokenValidator for MultiValidator {
             did: token_info.did,
             mailbox_id: token_info.mailbox_id,
             scope: token_info.scope,
+            expires_at: token_info.expires_at,
         })
     }
 }

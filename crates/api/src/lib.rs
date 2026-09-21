@@ -74,6 +74,7 @@ pub struct ApiState {
 pub(crate) struct WebSocketState {
     pub validator: Arc<dyn TokenValidator + Send + Sync>,
     pub auth_timeout: Duration,
+    pub session_registry: Arc<ws::sessions::SessionRegistry>,
 }
 
 impl ApiState {
@@ -113,6 +114,7 @@ impl ApiState {
         self.websocket = Some(WebSocketState {
             validator,
             auth_timeout,
+            session_registry: ws::sessions::SessionRegistry::new(),
         });
         self
     }
@@ -268,6 +270,13 @@ impl ApiState {
 
     pub(crate) fn identity_hash_key(&self) -> Option<Arc<[u8]>> {
         self.identity_hash_key.clone()
+    }
+
+    pub(crate) fn session_registry(&self) -> Arc<ws::sessions::SessionRegistry> {
+        self.websocket
+            .as_ref()
+            .map(|ws| Arc::clone(&ws.session_registry))
+            .unwrap_or_default()
     }
 }
 
@@ -531,6 +540,7 @@ mod tests {
                     did: "did:key:z6Mkexample".to_owned(),
                     mailbox_id: "mailbox-1".to_owned(),
                     scope: "sync".to_owned(),
+                    expires_at: None,
                 })
             } else {
                 Err(AuthError::InvalidToken)

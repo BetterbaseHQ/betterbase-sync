@@ -42,6 +42,9 @@ pub struct AuthContext {
     pub did: String,
     pub mailbox_id: String,
     pub scope: String,
+    /// Access-token expiry (unix seconds). WS connections close at this time
+    /// so session authorization cannot outlive the token (AUD-031).
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]

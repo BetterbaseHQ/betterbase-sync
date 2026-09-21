@@ -31,6 +31,7 @@ mod authz;
 mod presence;
 mod realtime;
 mod rpc;
+pub(crate) mod sessions;
 mod storage;
 
 pub use presence::PresenceRegistry;
@@ -54,6 +55,7 @@ struct WebSocketRuntimeContext {
     federation_trusted_domains: Vec<String>,
     federation_quota_tracker: Arc<crate::FederationQuotaTracker>,
     identity_hash_key: Option<Arc<[u8]>>,
+    session_registry: Arc<sessions::SessionRegistry>,
 }
 
 pub(crate) async fn websocket_upgrade(
@@ -105,6 +107,7 @@ pub(crate) async fn federation_websocket_upgrade(
         federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
         identity_hash_key: state.identity_hash_key(),
+        session_registry: state.session_registry(),
     };
     ws.protocols([WS_SUBPROTOCOL])
         .max_frame_size(WS_MAX_MESSAGE_SIZE)
@@ -137,6 +140,7 @@ async fn websocket_upgrade_with_mode(
         federation_trusted_domains: state.federation_trusted_domains(),
         federation_quota_tracker: state.federation_quota_tracker(),
         identity_hash_key: state.identity_hash_key(),
+        session_registry: state.session_registry(),
     };
 
     ws.protocols([WS_SUBPROTOCOL])
@@ -309,12 +313,16 @@ async fn serve_websocket(
     };
 
     let connection_id = Uuid::new_v4().to_string();
+    // Detach commands (revocation teardown — AUD-024) flow from the session
+    // registry to this connection's main loop.
+    let (detach_tx, mut detach_rx) = tokio::sync::mpsc::channel::<String>(16);
     let realtime_session = match realtime::register_session(
         runtime_context.realtime_broker.clone(),
         &auth_context,
         &connection_id,
         outbound.clone(),
         Arc::clone(&closed),
+        detach_tx,
     )
     .await
     {
@@ -330,7 +338,23 @@ async fn serve_websocket(
         }
     };
 
-    let lifetime = jittered_lifetime(WS_MAX_LIFETIME);
+    // Connections live at most the jittered lifetime — and never past the
+    // access token's expiry (AUD-031): session authorization must not outlive
+    // the token that established it. A small grace covers clock skew between
+    // validation and the deadline comparison.
+    let mut lifetime = jittered_lifetime(WS_MAX_LIFETIME);
+    if let Some(expires_at) = auth_context.expires_at {
+        const EXPIRY_GRACE_SECS: u64 = 5;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        lifetime = lifetime.min(Duration::from_secs(
+            expires_at
+                .saturating_sub(now)
+                .saturating_add(EXPIRY_GRACE_SECS),
+        ));
+    }
     let deadline = tokio::time::sleep(lifetime);
     tokio::pin!(deadline);
 
@@ -341,6 +365,18 @@ async fn serve_websocket(
                     Some(Ok(message)) => message,
                     Some(Err(_)) | None => break,
                 }
+            }
+            detached = detach_rx.recv() => {
+                // Revocation teardown: drop this connection's subscription
+                // for the space. The connection itself stays open — the
+                // member may still use other spaces, and any re-subscribe
+                // attempt is rejected by authorization.
+                if let Some(space) = detached {
+                    if let Some(session) = realtime_session.as_ref() {
+                        session.remove_spaces(&[space]).await;
+                    }
+                }
+                continue;
             }
             _ = &mut deadline => {
                 realtime::send_close(
@@ -379,6 +415,7 @@ async fn serve_websocket(
                             federation_forwarder: runtime_context.federation_forwarder.as_deref(),
                             federation_trusted_domains: &runtime_context.federation_trusted_domains,
                             identity_hash_key: runtime_context.identity_hash_key.as_deref(),
+                            session_registry: Some(&runtime_context.session_registry),
                         },
                         request_mode,
                         &mut auth_context,
@@ -447,6 +484,11 @@ async fn serve_websocket(
             }
         }
         session.unregister().await;
+        // Drop this connection's revocation-registry entries (AUD-024).
+        runtime_context
+            .session_registry
+            .unregister_connection(&session.detach_sender())
+            .await;
     }
     if federation_connection_tracked {
         release_federation_quotas(&runtime_context, realtime_session.as_ref()).await;
