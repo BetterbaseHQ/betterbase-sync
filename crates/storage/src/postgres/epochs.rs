@@ -105,6 +105,7 @@ impl EpochStorage for PostgresStorage {
                 id: row.id.to_string(),
                 wrapped_dek: row.wrapped_dek,
                 cursor: row.cursor,
+                observed_dek: None,
             })
             .collect())
     }
@@ -138,16 +139,28 @@ impl EpochStorage for PostgresStorage {
             }
 
             let record_id = Uuid::parse_str(&dek.id).map_err(|_| StorageError::InvalidRecordId)?;
-            let result =
-                sqlx::query("UPDATE records SET wrapped_dek = $1 WHERE id = $2 AND space_id = $3")
-                    .bind(&dek.wrapped_dek)
-                    .bind(record_id)
-                    .bind(space_id)
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err(|error| StorageError::Database(error.to_string()))?;
+            // Compare-and-set: when the client reports the wrapper it observed,
+            // only replace a wrapper that is still that value. A concurrent
+            // push installs a fresh random DEK; overwriting its wrapper with a
+            // rewrap of the stale one would make the record undecryptable
+            // (AUD-026).
+            let result = sqlx::query(
+                "UPDATE records SET wrapped_dek = $1 \
+                 WHERE id = $2 AND space_id = $3 \
+                 AND ($4::bytea IS NULL OR wrapped_dek = $4)",
+            )
+            .bind(&dek.wrapped_dek)
+            .bind(record_id)
+            .bind(space_id)
+            .bind(&dek.observed_dek)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
             if result.rows_affected() != 1 {
-                return Err(StorageError::DekRecordNotFound);
+                return Err(match dek.observed_dek {
+                    Some(_) => StorageError::DekConflict,
+                    None => StorageError::DekRecordNotFound,
+                });
             }
         }
 
@@ -321,6 +334,7 @@ mod tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -334,6 +348,7 @@ mod tests {
                     id: "not-a-uuid".to_owned(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xbb),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -347,6 +362,7 @@ mod tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xcc),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -365,6 +381,7 @@ mod tests {
                     id: uuid::Uuid::new_v4().to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xdd),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -382,5 +399,72 @@ mod tests {
             .await
             .expect_err("advance on missing space should fail");
         assert_eq!(error, StorageError::SpaceNotFound);
+    }
+}
+
+#[cfg(test)]
+mod cas_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    #[tokio::test]
+    async fn rewrap_with_stale_observed_dek_is_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id =
+            create_record_with_dek(&storage, space_id, wrapped_dek_with_epoch(1, 0xaa)).await;
+        storage
+            .advance_epoch(space_id, 2, None)
+            .await
+            .expect("advance epoch");
+
+        // The rewrapper read the old wrapper...
+        let observed = wrapped_dek_with_epoch(1, 0xaa);
+        // ...but a concurrent writer already replaced it with a fresh DEK.
+        let concurrent = wrapped_dek_with_epoch(2, 0x99);
+        sqlx::query("UPDATE records SET wrapped_dek = $1 WHERE id = $2")
+            .bind(&concurrent)
+            .bind(record_id)
+            .execute(storage.pool())
+            .await
+            .expect("simulate concurrent replacement");
+
+        // A stale rewrap must not overwrite the newer wrapper (AUD-026).
+        let stale = storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: record_id.to_string(),
+                    wrapped_dek: wrapped_dek_with_epoch(2, 0xbb),
+                    cursor: 0,
+                    observed_dek: Some(observed),
+                }],
+            )
+            .await
+            .expect_err("stale observed DEK must fail");
+        assert_eq!(stale, StorageError::DekConflict);
+
+        // The concurrently installed wrapper is intact.
+        let current = storage.get_deks(space_id, 0).await.expect("get DEKs");
+        assert_eq!(current[0].wrapped_dek, concurrent);
+
+        // A rewrap carrying the up-to-date observation still succeeds.
+        storage
+            .rewrap_deks(
+                space_id,
+                &[DekRecord {
+                    id: record_id.to_string(),
+                    wrapped_dek: wrapped_dek_with_epoch(2, 0xcc),
+                    cursor: 0,
+                    observed_dek: Some(concurrent),
+                }],
+            )
+            .await
+            .expect("rewrap with current observation");
+        let updated = storage.get_deks(space_id, 0).await.expect("get DEKs");
+        assert_eq!(updated[0].wrapped_dek, wrapped_dek_with_epoch(2, 0xcc));
     }
 }

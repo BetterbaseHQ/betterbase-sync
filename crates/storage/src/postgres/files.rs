@@ -40,6 +40,27 @@ impl FileStorage for PostgresStorage {
             _ => StorageError::Database(error.to_string()),
         })?;
 
+        // AUD-029 (files): enforce the space's minimum key generation on file
+        // DEKs too — a stale-but-authorized device must not land wrappers the
+        // post-rotation key hierarchy cannot decrypt. The space row is locked
+        // by the cursor UPDATE above, so the check races no rotation.
+        {
+            let row = sqlx::query_as::<_, SpaceGenRow>(
+                "SELECT root_public_key, min_key_generation FROM spaces WHERE id = $1",
+            )
+            .bind(space_id)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+            if row.root_public_key.is_some() {
+                if let Some(epoch) = super::parse_dek_epoch(wrapped_dek) {
+                    if epoch < row.min_key_generation {
+                        return Err(StorageError::KeyGenerationStale);
+                    }
+                }
+            }
+        }
+
         let result = sqlx::query(
             r#"
             INSERT INTO files (space_id, id, record_id, size, wrapped_dek, cursor)
@@ -139,6 +160,7 @@ impl FileStorage for PostgresStorage {
                 id: row.id,
                 wrapped_dek: row.wrapped_dek,
                 cursor: row.cursor,
+                observed_dek: None,
             })
             .collect())
     }
@@ -177,17 +199,26 @@ impl FileStorage for PostgresStorage {
         }
 
         for dek in deks {
-            let result =
-                sqlx::query("UPDATE files SET wrapped_dek = $1 WHERE id = $2 AND space_id = $3")
-                    .bind(&dek.wrapped_dek)
-                    .bind(dek.id)
-                    .bind(space_id)
-                    .execute(tx.as_mut())
-                    .await
-                    .map_err(|error| StorageError::Database(error.to_string()))?;
+            // Compare-and-set on the observed wrapper (AUD-026), matching the
+            // record-DEK rewrap path.
+            let result = sqlx::query(
+                "UPDATE files SET wrapped_dek = $1 \
+                 WHERE id = $2 AND space_id = $3 \
+                 AND ($4::bytea IS NULL OR wrapped_dek = $4)",
+            )
+            .bind(&dek.wrapped_dek)
+            .bind(dek.id)
+            .bind(space_id)
+            .bind(&dek.observed_dek)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
 
             if result.rows_affected() != 1 {
-                return Err(StorageError::FileDekNotFound);
+                return Err(match dek.observed_dek {
+                    Some(_) => StorageError::DekConflict,
+                    None => StorageError::FileDekNotFound,
+                });
             }
         }
 
@@ -215,6 +246,12 @@ impl FileStorage for PostgresStorage {
         .await
         .map_err(|error| StorageError::Database(error.to_string()))
     }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SpaceGenRow {
+    root_public_key: Option<Vec<u8>>,
+    min_key_generation: i32,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -436,6 +473,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: new_dek.clone(),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -482,6 +520,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xcc),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -504,6 +543,7 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xcc),
                     cursor: 0,
+                    observed_dek: None,
                 }],
             )
             .await
@@ -579,5 +619,60 @@ mod tests {
             .await
             .expect("empty delete");
         assert!(deleted.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod min_generation_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    #[tokio::test]
+    async fn record_file_below_min_key_generation_is_rejected_for_shared_spaces() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        // Shared space with the minimum generation raised by a rotation.
+        storage
+            .create_space(space_id, "client-1", Some(&[0xAB; 33]))
+            .await
+            .expect("create shared space");
+        storage
+            .advance_epoch(
+                space_id,
+                2,
+                Some(&crate::AdvanceEpochOptions {
+                    set_min_key_generation: true,
+                }),
+            )
+            .await
+            .expect("raise min generation");
+        let record_id = create_record(&storage, space_id).await;
+
+        // A stale device's file DEK wrapped at the old epoch is rejected.
+        let stale = storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                10,
+                &wrapped_dek_with_epoch(1, 0x01),
+            )
+            .await
+            .expect_err("stale-epoch file DEK must be rejected");
+        assert_eq!(stale, StorageError::KeyGenerationStale);
+
+        // A current-epoch file DEK is accepted.
+        storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                10,
+                &wrapped_dek_with_epoch(2, 0x02),
+            )
+            .await
+            .expect("current-epoch file DEK accepted");
     }
 }

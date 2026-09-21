@@ -49,7 +49,7 @@ pub(super) async fn handle_begin_request(
         }
     };
 
-    match authz::authorize_write_space(sync_storage, auth, space_id, &params.ucan).await {
+    match authz::authorize_admin_space(sync_storage, auth, space_id, &params.ucan).await {
         Ok(_) => {}
         Err(SpaceAuthzError::Forbidden) => {
             send_error_response(outbound, id, ERR_CODE_FORBIDDEN, "forbidden".to_owned()).await;
@@ -139,7 +139,7 @@ pub(super) async fn handle_complete_request(
         }
     };
 
-    match authz::authorize_write_space(sync_storage, auth, space_id, &params.ucan).await {
+    match authz::authorize_admin_space(sync_storage, auth, space_id, &params.ucan).await {
         Ok(_) => {}
         Err(SpaceAuthzError::Forbidden) => {
             send_error_response(outbound, id, ERR_CODE_FORBIDDEN, "forbidden".to_owned()).await;

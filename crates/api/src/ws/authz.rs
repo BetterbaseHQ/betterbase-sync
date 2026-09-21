@@ -33,6 +33,20 @@ pub(crate) async fn authorize_write_space(
     authorize_space(sync_storage, auth, space_id, ucan, Permission::Write).await
 }
 
+/// Administrator capability gate for space lifecycle operations (member
+/// revocation, epoch rotation). The SDK's role model reserves these actions
+/// for admins; the server must enforce the same boundary (AUD-028) — a
+/// write-capable member must not be able to revoke other members or change
+/// rotation state.
+pub(crate) async fn authorize_admin_space(
+    sync_storage: &dyn SyncStorage,
+    auth: &AuthContext,
+    space_id: Uuid,
+    ucan: &str,
+) -> Result<SubscribedSpaceState, SpaceAuthzError> {
+    authorize_space(sync_storage, auth, space_id, ucan, Permission::Admin).await
+}
+
 async fn authorize_space(
     sync_storage: &dyn SyncStorage,
     auth: &AuthContext,

@@ -60,6 +60,8 @@ pub enum StorageError {
     DekEpochMismatch,
     #[error("DEK record not found")]
     DekRecordNotFound,
+    #[error("DEK concurrently replaced")]
+    DekConflict,
     #[error("file DEK record not found")]
     FileDekNotFound,
     #[error("record not found")]
@@ -108,6 +110,9 @@ pub struct FileDekRecord {
     pub id: Uuid,
     pub wrapped_dek: Vec<u8>,
     pub cursor: i64,
+    /// Wrapper value the client observed when reading (rewrap inputs only;
+    /// compare-and-set guard, AUD-026). `None` for listing results.
+    pub observed_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +323,9 @@ pub struct DekRecord {
     pub id: String,
     pub wrapped_dek: Vec<u8>,
     pub cursor: i64,
+    /// Wrapper value the client observed when reading (rewrap inputs only;
+    /// compare-and-set guard, AUD-026). `None` for listing results.
+    pub observed_dek: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------

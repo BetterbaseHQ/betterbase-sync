@@ -558,6 +558,18 @@ pub struct DekRewrapEntry {
     pub id: String,
     #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
+    /// The wrapped DEK the client observed when it read this record. When
+    /// present, the server only applies the update if the stored wrapper is
+    /// still this value — a concurrent push replaces the wrapper, and a
+    /// stale rewrap must not overwrite the newer key (AUD-026). Optional so
+    /// older clients interoperate (they get the legacy unconditional path).
+    #[serde(
+        rename = "observed_dek",
+        with = "serde_bytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub observed_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -610,6 +622,14 @@ pub struct FileDekRewrapEntry {
     pub id: String,
     #[serde(rename = "dek", with = "serde_bytes")]
     pub dek: Vec<u8>,
+    /// Observed wrapped DEK for compare-and-set rewrap (see DekRewrapEntry).
+    #[serde(
+        rename = "observed_dek",
+        with = "serde_bytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub observed_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

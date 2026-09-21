@@ -270,6 +270,36 @@ impl RecordStorage for PostgresStorage {
             }
         }
 
+        // AUD-029: enforce the space's minimum key generation for every push,
+        // including network pushes whose callers pass no PushOptions. The
+        // epoch embedded in each new wrapped DEK is the wire-visible key
+        // generation of the writer; a stale-but-authorized device must not
+        // commit ciphertext the post-rotation key hierarchy cannot decrypt.
+        // Tombstone-only changes carry no wrapped DEK and remain allowed.
+        {
+            let row = sqlx::query_as::<_, SpaceAuthRow>(
+                "SELECT root_public_key, min_key_generation FROM spaces WHERE id = $1",
+            )
+            .bind(space_id)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })?;
+            if row.root_public_key.is_some() {
+                for change in changes {
+                    if let Some(dek) = change.wrapped_dek.as_ref() {
+                        if let Some(epoch) = super::parse_dek_epoch(dek) {
+                            if epoch < row.min_key_generation {
+                                return Err(StorageError::KeyGenerationStale);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let existing_rows = sqlx::query_as::<_, ExistingRecordRow>(
             "SELECT id, cursor FROM records WHERE space_id = $1 AND id = ANY($2)",
         )
@@ -1186,5 +1216,107 @@ mod tests {
         let fetched = backend.get_space(space_id).await.expect("get via trait");
         assert_eq!(fetched.id, space_id.to_string());
         assert_eq!(fetched.client_id, "client-trait");
+    }
+}
+
+#[cfg(test)]
+mod min_generation_tests {
+    use super::super::test_support::*;
+    use super::*;
+
+    #[tokio::test]
+    async fn push_below_min_key_generation_is_rejected_for_shared_spaces() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        // Shared space (root public key present) with the minimum generation
+        // raised by a revocation rotation.
+        storage
+            .create_space(space_id, "client-1", Some(&[0xAB; 33]))
+            .await
+            .expect("create shared space");
+        storage
+            .advance_epoch(
+                space_id,
+                2,
+                Some(&crate::AdvanceEpochOptions {
+                    set_min_key_generation: true,
+                }),
+            )
+            .await
+            .expect("raise min generation");
+
+        // A stale-but-authorized writer pushes a DEK still at epoch 1.
+        let stale_push = storage
+            .push(
+                space_id,
+                &[Change {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    blob: Some(b"stale".to_vec()),
+                    cursor: 0,
+                    wrapped_dek: Some(wrapped_dek_with_epoch(1, 0x01)),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect_err("stale-epoch push must be rejected");
+        assert_eq!(stale_push, StorageError::KeyGenerationStale);
+
+        // A current-epoch push is accepted.
+        storage
+            .push(
+                space_id,
+                &[Change {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    blob: Some(b"current".to_vec()),
+                    cursor: 0,
+                    wrapped_dek: Some(wrapped_dek_with_epoch(2, 0x02)),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("current-epoch push accepted");
+    }
+
+    #[tokio::test]
+    async fn push_below_min_generation_allows_tombstones() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        storage
+            .create_space(space_id, "client-1", Some(&[0xAB; 33]))
+            .await
+            .expect("create shared space");
+        storage
+            .advance_epoch(
+                space_id,
+                2,
+                Some(&crate::AdvanceEpochOptions {
+                    set_min_key_generation: true,
+                }),
+            )
+            .await
+            .expect("raise min generation");
+
+        // Tombstone-only changes carry no wrapped DEK and must pass even from
+        // a stale device — deletes do not need the new key hierarchy.
+        storage
+            .push(
+                space_id,
+                &[Change {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    blob: None,
+                    cursor: 0,
+                    wrapped_dek: None,
+                    deleted: true,
+                }],
+                None,
+            )
+            .await
+            .expect("tombstone push accepted");
     }
 }

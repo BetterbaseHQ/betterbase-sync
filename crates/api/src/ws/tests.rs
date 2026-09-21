@@ -348,11 +348,13 @@ impl StubSyncStorage {
                 id: Uuid::new_v4().to_string(),
                 wrapped_dek: vec![0xAA; 44],
                 cursor: 6,
+                observed_dek: None,
             }],
             file_deks_result: vec![betterbase_sync_storage::FileDekRecord {
                 id: Uuid::new_v4(),
                 wrapped_dek: vec![0xBB; 44],
                 cursor: 8,
+                observed_dek: None,
             }],
             deks_rewrap_error: None,
             file_deks_rewrap_error: None,
@@ -3130,6 +3132,7 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 44],
+                observed_dek: None,
             }],
         },
     )
@@ -3170,6 +3173,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: String::new(),
                 dek: vec![9; 44],
+                observed_dek: None,
             }],
         },
     )
@@ -3210,6 +3214,7 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 43],
+                observed_dek: None,
             }],
         },
     )
@@ -3366,6 +3371,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
                 dek: vec![9; 44],
+                observed_dek: None,
             }],
         },
     )
@@ -3406,6 +3412,7 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
                 dek: vec![9; 44],
+                observed_dek: None,
             }],
         },
     )
@@ -3446,6 +3453,7 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 43],
+                observed_dek: None,
             }],
         },
     )
@@ -3488,6 +3496,7 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
                 dek: vec![9; 44],
+                observed_dek: None,
             }],
         },
     )
@@ -6746,5 +6755,284 @@ async fn websocket_subscribe_empty_space_list_returns_empty_result() {
     assert_eq!(response.id, "sub-empty");
     assert!(response.result.spaces.is_empty());
     assert!(response.result.errors.is_empty());
+    server.handle.abort();
+}
+
+// ─── AUD-028: admin-only lifecycle RPCs ─────────────────────────────────────
+
+#[tokio::test]
+async fn websocket_membership_revoke_with_write_ucan_is_forbidden() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    // A write-capable member must not be able to revoke members (AUD-028).
+    let write_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "revoke-write-1",
+            "method": "membership.revoke",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "ucan_cid": "bafytestcid"
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "revoke-write-1");
+    assert_eq!(response.error.code, "forbidden");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_begin_with_write_ucan_is_forbidden() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let write_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-write-1",
+            "method": "epoch.begin",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-write-1");
+    assert_eq!(response.error.code, "forbidden");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_begin_with_admin_ucan_succeeds() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let admin_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Admin);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-admin-1",
+            "method": "epoch.begin",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": admin_ucan,
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<betterbase_sync_core::protocol::EpochBeginResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-admin-1");
+    assert_eq!(response.result.epoch, 2);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_epoch_complete_with_write_ucan_is_forbidden() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let write_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Write);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "epoch-complete-write-1",
+            "method": "epoch.complete",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": write_ucan,
+                "epoch": 2
+            }
+        }),
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "epoch-complete-write-1");
+    assert_eq!(response.error.code, "forbidden");
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_membership_revoke_with_admin_ucan_succeeds() {
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let bearer_issuer = TestIssuer::new();
+    let admin_ucan =
+        root_issuer.issue_space_ucan(&bearer_issuer.did, shared_space_id, Permission::Admin);
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "valid-token".to_owned(),
+        test_auth_context_with_did("sync", &bearer_issuer.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(1), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_binary_frame(
+        &mut socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "revoke-admin-1",
+            "method": "membership.revoke",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": admin_ucan,
+                "ucan_cid": "bafytestcid"
+            }
+        }),
+    )
+    .await;
+
+    let response: RpcResultResponse<serde_json::Value> = read_result_response(&mut socket).await;
+    assert_eq!(response.id, "revoke-admin-1");
+    assert_eq!(response.result, serde_json::json!({}));
+
     server.handle.abort();
 }

@@ -150,6 +150,15 @@ pub(super) async fn handle_rewrap_request(
             )
             .await;
         }
+        Err(StorageError::DekConflict) => {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_CONFLICT,
+                "DEK concurrently replaced: refetch and retry".to_owned(),
+            )
+            .await;
+        }
         Err(_) => {
             send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal".to_owned()).await;
         }
@@ -291,6 +300,15 @@ pub(super) async fn handle_file_rewrap_request(
             )
             .await;
         }
+        Err(StorageError::DekConflict) => {
+            send_error_response(
+                outbound,
+                id,
+                ERR_CODE_CONFLICT,
+                "DEK concurrently replaced: refetch and retry".to_owned(),
+            )
+            .await;
+        }
         Err(_) => {
             send_error_response(outbound, id, ERR_CODE_INTERNAL, "internal".to_owned()).await;
         }
@@ -370,6 +388,7 @@ async fn decode_rewrap_deks(
             id: dek.id,
             wrapped_dek: dek.dek,
             cursor: 0,
+            observed_dek: dek.observed_dek,
         });
     }
 
@@ -412,6 +431,7 @@ async fn decode_rewrap_file_deks(
             id: file_id,
             wrapped_dek: dek.dek,
             cursor: 0,
+            observed_dek: dek.observed_dek,
         });
     }
 
