@@ -315,7 +315,7 @@ async fn serve_websocket(
     let connection_id = Uuid::new_v4().to_string();
     // Detach commands (revocation teardown — AUD-024) flow from the session
     // registry to this connection's main loop.
-    let (detach_tx, mut detach_rx) = tokio::sync::mpsc::channel::<String>(16);
+    let (detach_tx, detach_rx) = tokio::sync::mpsc::channel::<String>(16);
     let realtime_session = match realtime::register_session(
         runtime_context.realtime_broker.clone(),
         &auth_context,
@@ -358,6 +358,15 @@ async fn serve_websocket(
     let deadline = tokio::time::sleep(lifetime);
     tokio::pin!(deadline);
 
+    // Broker-less connections have no detach channel (register_session
+    // drops the sender); park the arm instead of hot-spinning on a closed
+    // channel.
+    let mut detach_rx = if realtime_session.is_some() {
+        Some(detach_rx)
+    } else {
+        None
+    };
+
     loop {
         let message = tokio::select! {
             msg = socket_receiver.next() => {
@@ -366,15 +375,23 @@ async fn serve_websocket(
                     Some(Err(_)) | None => break,
                 }
             }
-            detached = detach_rx.recv() => {
+            detached = async {
+                match detach_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Option<String>>().await,
+                }
+            } => {
                 // Revocation teardown: drop this connection's subscription
                 // for the space. The connection itself stays open — the
                 // member may still use other spaces, and any re-subscribe
                 // attempt is rejected by authorization.
-                if let Some(space) = detached {
-                    if let Some(session) = realtime_session.as_ref() {
-                        session.remove_spaces(&[space]).await;
+                match detached {
+                    Some(space) => {
+                        if let Some(session) = realtime_session.as_ref() {
+                            session.remove_spaces(&[space]).await;
+                        }
                     }
+                    None => break,
                 }
                 continue;
             }

@@ -3175,6 +3175,100 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
 }
 
 #[tokio::test]
+async fn websocket_deks_rewrap_returns_conflict_on_stale_observed_wrapper() {
+    // The client retry loop keys on this exact error code (AUD-026): a
+    // concurrently replaced wrapper must surface as "conflict", not an
+    // unknown/internal error.
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_deks_rewrap_error(
+            betterbase_sync_storage::StorageError::DekConflict,
+        )),
+    ))
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_rpc_request(
+        &mut socket,
+        "deks-rewrap-stale",
+        "deks.rewrap",
+        &betterbase_sync_core::protocol::DeksRewrapParams {
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
+                id: Uuid::new_v4().to_string(),
+                dek: vec![9; 44],
+                observed_dek: Some(vec![1; 44]),
+            }],
+        },
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "deks-rewrap-stale");
+    assert_eq!(
+        response.error.code,
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+    assert!(
+        response.error.message.contains("retry"),
+        "message should tell the client to refetch and retry: {}",
+        response.error.message
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_file_deks_rewrap_returns_conflict_on_stale_observed_wrapper() {
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync files",
+        Arc::new(StubSyncStorage::with_file_deks_rewrap_error(
+            betterbase_sync_storage::StorageError::DekConflict,
+        )),
+    ))
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+
+    send_auth(&mut socket).await;
+    send_rpc_request(
+        &mut socket,
+        "file-deks-rewrap-stale",
+        "file.deks.rewrap",
+        &betterbase_sync_core::protocol::FileDeksRewrapParams {
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
+                id: Uuid::new_v4().to_string(),
+                dek: vec![9; 44],
+                observed_dek: Some(vec![1; 44]),
+            }],
+        },
+    )
+    .await;
+
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(response.id, "file-deks-rewrap-stale");
+    assert_eq!(
+        response.error.code,
+        betterbase_sync_core::protocol::ERR_CODE_CONFLICT
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
@@ -5898,7 +5992,7 @@ struct RpcErrorPayload {
     #[serde(rename = "code")]
     code: String,
     #[serde(rename = "message")]
-    _message: String,
+    message: String,
 }
 
 async fn read_error_response(socket: &mut TestSocket) -> RpcErrorResponse {
@@ -7160,13 +7254,17 @@ async fn websocket_epoch_keys_put_requires_admin_and_get_returns_own_share() {
 
 #[tokio::test]
 async fn websocket_revocation_detaches_the_removed_members_subscription() {
+    // Broker-backed so registration, kick, and broadcast all actually run;
+    // the friend socket is a positive control proving delivery works.
     let shared_space_id =
         Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
     let root_issuer = TestIssuer::new();
     let admin = TestIssuer::new();
     let member = TestIssuer::new();
+    let friend = TestIssuer::new();
     let admin_ucan = root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Admin);
     let member_ucan = root_issuer.issue_space_ucan(&member.did, shared_space_id, Permission::Read);
+    let friend_ucan = root_issuer.issue_space_ucan(&friend.did, shared_space_id, Permission::Read);
 
     let mut tokens = HashMap::new();
     tokens.insert(
@@ -7177,6 +7275,10 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
         "member-token".to_owned(),
         test_auth_context_with_did("sync", &member.did),
     );
+    tokens.insert(
+        "friend-token".to_owned(),
+        test_auth_context_with_did("sync", &friend.did),
+    );
     let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
     let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
         shared_space_id,
@@ -7184,18 +7286,22 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
         HashSet::new(),
     ));
 
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let server = spawn_server(
         base_state_with_ws_validator(Duration::from_secs(60), validator)
-            .with_sync_storage_adapter(storage),
+            .with_sync_storage_adapter(storage)
+            .with_realtime_broker(broker),
     )
     .await;
 
-    // Member connects and subscribes to the shared space.
+    // Member and friend connect and subscribe to the shared space.
     let request = ws_request(
         server.addr,
         Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
     );
-    let (mut member_socket, _) = connect_async(request).await.expect("connect member");
+    let (mut member_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect member");
     send_auth_with_token(&mut member_socket, "member-token").await;
     send_binary_frame(
         &mut member_socket,
@@ -7211,6 +7317,24 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
     .await;
     let sub: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
         read_result_response(&mut member_socket).await;
+    assert!(sub.result.errors.is_empty());
+
+    let (mut friend_socket, _) = connect_async(request).await.expect("connect friend");
+    send_auth_with_token(&mut friend_socket, "friend-token").await;
+    send_binary_frame(
+        &mut friend_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "friend-sub",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": friend_ucan }]
+            }
+        }),
+    )
+    .await;
+    let sub: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut friend_socket).await;
     assert!(sub.result.errors.is_empty());
 
     // Admin removes the member, naming their DID.
@@ -7239,9 +7363,51 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
         read_result_response(&mut admin_socket).await;
     assert_eq!(revoke.result, serde_json::json!({}));
 
+    // Positive control: the remaining member is notified of the revocation.
+    let revoked: RpcNotificationResponse<betterbase_sync_core::protocol::WsRevokedData> =
+        read_notification_response(&mut friend_socket).await;
+    assert_eq!(revoked.method, "revoked");
+    assert_eq!(revoked.params.reason, "ucan_revoked");
+    assert_eq!(revoked.params.space, shared_space_id.to_string());
+
+    // Drain the revoked member's own copy of the notice so later reads see
+    // only frames that would violate the detach.
+    let member_notice: RpcNotificationResponse<betterbase_sync_core::protocol::WsRevokedData> =
+        read_notification_response(&mut member_socket).await;
+    assert_eq!(member_notice.method, "revoked");
+    assert_eq!(member_notice.params.reason, "ucan_revoked");
+
     // The member's subscription is DETACHED, not the connection closed
-    // (AUD-024): a push to the space must not reach the revoked socket,
-    // but the connection stays open for other spaces.
+    // (AUD-024): a push to the space reaches the friend but not the
+    // revoked socket.
+    let record_id = Uuid::new_v4().to_string();
+    send_rpc_request(
+        &mut admin_socket,
+        "push-after-revoke",
+        "push",
+        &betterbase_sync_core::protocol::PushParams {
+            space: shared_space_id.to_string(),
+            ucan: root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Write),
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
+                id: record_id.clone(),
+                blob: Some(vec![7, 8, 9]),
+                expected_cursor: 0,
+                wrapped_dek: Some(vec![170; 44]),
+            }],
+        },
+    )
+    .await;
+    let push: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut admin_socket).await;
+    assert_eq!(push.id, "push-after-revoke");
+    assert!(push.result.ok);
+
+    let notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsSyncData> =
+        read_notification_response(&mut friend_socket).await;
+    assert_eq!(notification.method, "sync");
+    assert_eq!(notification.params.space, shared_space_id.to_string());
+    assert_eq!(notification.params.records[0].id, record_id);
+
     let mut next = member_socket.next();
     let nothing = tokio::time::timeout(Duration::from_millis(300), &mut next).await;
     assert!(
@@ -7342,8 +7508,10 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
     let root_issuer = TestIssuer::new();
     let admin = TestIssuer::new();
     let member = TestIssuer::new();
+    let friend = TestIssuer::new();
     let admin_ucan = root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Admin);
     let member_ucan = root_issuer.issue_space_ucan(&member.did, shared_space_id, Permission::Read);
+    let friend_ucan = root_issuer.issue_space_ucan(&friend.did, shared_space_id, Permission::Read);
     let uppercase_space = shared_space_id.to_string().to_uppercase();
 
     let mut tokens = HashMap::new();
@@ -7355,6 +7523,10 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
         "member-token".to_owned(),
         test_auth_context_with_did("sync", &member.did),
     );
+    tokens.insert(
+        "friend-token".to_owned(),
+        test_auth_context_with_did("sync", &friend.did),
+    );
     let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
     let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
         shared_space_id,
@@ -7362,18 +7534,23 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
         HashSet::new(),
     ));
 
+    let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let server = spawn_server(
         base_state_with_ws_validator(Duration::from_secs(60), validator)
-            .with_sync_storage_adapter(storage),
+            .with_sync_storage_adapter(storage)
+            .with_realtime_broker(broker),
     )
     .await;
 
-    // Member subscribes with the uppercase form.
+    // Member subscribes with the uppercase form; friend with the canonical
+    // lowercase form (positive control for both kick and broadcast joins).
     let request = ws_request(
         server.addr,
         Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
     );
-    let (mut member_socket, _) = connect_async(request).await.expect("connect member");
+    let (mut member_socket, _) = connect_async(request.clone())
+        .await
+        .expect("connect member");
     send_auth_with_token(&mut member_socket, "member-token").await;
     send_binary_frame(
         &mut member_socket,
@@ -7391,7 +7568,27 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
         read_result_response(&mut member_socket).await;
     assert!(sub.result.errors.is_empty());
 
-    // Admin revokes with the canonical (lowercase) form.
+    let (mut friend_socket, _) = connect_async(request).await.expect("connect friend");
+    send_auth_with_token(&mut friend_socket, "friend-token").await;
+    send_binary_frame(
+        &mut friend_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "friend-sub",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": friend_ucan }]
+            }
+        }),
+    )
+    .await;
+    let sub: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut friend_socket).await;
+    assert!(sub.result.errors.is_empty());
+
+    // Admin revokes with the UPPERCASE form: the kick must join across
+    // casing (registry keys are canonical) AND the revocation broadcast
+    // must reach the canonically-subscribed friend.
     let request = ws_request(
         server.addr,
         Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
@@ -7405,7 +7602,7 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
             "id": "revoke-upper",
             "method": "membership.revoke",
             "params": {
-                "space": shared_space_id.to_string(),
+                "space": uppercase_space,
                 "ucan": admin_ucan,
                 "ucan_cid": "bafytestcid",
                 "member_did": member.did
@@ -7417,7 +7614,47 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
         read_result_response(&mut admin_socket).await;
     assert_eq!(revoke.result, serde_json::json!({}));
 
-    // Detached despite the casing difference: no space data arrives.
+    // Broadcast joined across casing: the friend is notified.
+    let revoked: RpcNotificationResponse<betterbase_sync_core::protocol::WsRevokedData> =
+        read_notification_response(&mut friend_socket).await;
+    assert_eq!(revoked.method, "revoked");
+    assert_eq!(revoked.params.reason, "ucan_revoked");
+    assert_eq!(revoked.params.space, shared_space_id.to_string());
+
+    // Kick joined across casing: a push reaches the friend but not the
+    // uppercase-subscribed revoked member.
+    send_rpc_request(
+        &mut admin_socket,
+        "push-after-revoke",
+        "push",
+        &betterbase_sync_core::protocol::PushParams {
+            space: shared_space_id.to_string(),
+            ucan: root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Write),
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
+                id: Uuid::new_v4().to_string(),
+                blob: Some(vec![1, 2, 3]),
+                expected_cursor: 0,
+                wrapped_dek: Some(vec![170; 44]),
+            }],
+        },
+    )
+    .await;
+    let push: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut admin_socket).await;
+    assert!(push.result.ok);
+
+    let notification: RpcNotificationResponse<betterbase_sync_core::protocol::WsSyncData> =
+        read_notification_response(&mut friend_socket).await;
+    assert_eq!(notification.method, "sync");
+    assert_eq!(notification.params.space, shared_space_id.to_string());
+
+    // Drain the revoked member's own copy of the notice so later reads see
+    // only frames that would violate the detach.
+    let member_notice: RpcNotificationResponse<betterbase_sync_core::protocol::WsRevokedData> =
+        read_notification_response(&mut member_socket).await;
+    assert_eq!(member_notice.method, "revoked");
+    assert_eq!(member_notice.params.reason, "ucan_revoked");
+
     let mut next = member_socket.next();
     let nothing = tokio::time::timeout(Duration::from_millis(300), &mut next).await;
     assert!(

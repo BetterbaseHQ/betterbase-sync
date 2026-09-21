@@ -96,7 +96,7 @@ impl RealtimeSession {
         &self.exclude_id
     }
 
-    /// This connection's registry identity (used for teardown cleanup). */
+    /// This connection's registry identity (used for teardown cleanup).
     pub(crate) fn connection_id(&self) -> &str {
         &self.exclude_id
     }

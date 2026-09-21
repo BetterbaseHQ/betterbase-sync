@@ -100,8 +100,11 @@ pub(super) async fn handle_request(
     }
 
     if let Some(realtime) = realtime {
+        // Canonical (lowercase) form — subscriptions are registered under
+        // the canonical key, so an admin revoking with an uppercase UUID
+        // must not silently drop the notification.
         realtime
-            .broadcast_revocation(&params.space, "ucan_revoked")
+            .broadcast_revocation(&space_id.to_string(), "ucan_revoked")
             .await;
     }
 

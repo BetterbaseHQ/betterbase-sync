@@ -529,6 +529,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rewrap_file_deks_with_stale_observed_wrapper_is_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id = create_record(&storage, space_id).await;
+        let file_id = uuid::Uuid::new_v4();
+
+        storage
+            .record_file(
+                space_id,
+                file_id,
+                record_id,
+                100,
+                &wrapped_dek_with_epoch(1, 0xaa),
+            )
+            .await
+            .expect("record file");
+
+        // The rewrapper read the old wrapper...
+        let observed = wrapped_dek_with_epoch(1, 0xaa);
+        // ...but a concurrent writer already replaced it.
+        let concurrent = wrapped_dek_with_epoch(1, 0x99);
+        sqlx::query("UPDATE files SET wrapped_dek = $1 WHERE id = $2")
+            .bind(&concurrent)
+            .bind(file_id)
+            .execute(storage.pool())
+            .await
+            .expect("simulate concurrent replacement");
+
+        // A stale rewrap must not overwrite the newer wrapper (AUD-026).
+        let stale = storage
+            .rewrap_file_deks(
+                space_id,
+                &[FileDekRecord {
+                    id: file_id,
+                    wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
+                    cursor: 0,
+                    observed_dek: Some(observed),
+                }],
+            )
+            .await
+            .expect_err("stale observed DEK must fail");
+        assert_eq!(stale, StorageError::DekConflict);
+
+        // The concurrently installed wrapper is intact.
+        let deks = storage
+            .get_file_deks(space_id, 0)
+            .await
+            .expect("get file DEKs");
+        assert!(deks.iter().any(|d| d.wrapped_dek == concurrent));
+
+        // A rewrap carrying the up-to-date observation still succeeds.
+        storage
+            .rewrap_file_deks(
+                space_id,
+                &[FileDekRecord {
+                    id: file_id,
+                    wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
+                    cursor: 0,
+                    observed_dek: Some(concurrent),
+                }],
+            )
+            .await
+            .expect("rewrap with fresh observation");
+    }
+
+    #[tokio::test]
     async fn rewrap_file_deks_missing_file() {
         let Some(storage) = test_storage().await else {
             return;

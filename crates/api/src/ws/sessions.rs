@@ -50,8 +50,8 @@ impl SessionRegistry {
         connection_id: &str,
     ) {
         let key = (space.to_owned(), did.to_owned());
+        let mut inner = self.inner.write().await;
         {
-            let mut inner = self.inner.write().await;
             let entry = inner.entry(key.clone()).or_default();
             entry.retain(|conn| !conn.outbound.is_closed());
             if !entry.iter().any(|conn| conn.detach.same_channel(&detach)) {
@@ -59,11 +59,16 @@ impl SessionRegistry {
                     outbound,
                     detach: detach.clone(),
                 });
-                let mut by_connection = self.by_connection.write().await;
-                let keys = by_connection.entry(connection_id.to_owned()).or_default();
-                if !keys.iter().any(|(k, _)| *k == key) {
-                    keys.push((key, detach));
-                }
+            }
+        }
+        if inner
+            .get(&key)
+            .is_some_and(|list| list.iter().any(|conn| conn.detach.same_channel(&detach)))
+        {
+            let mut by_connection = self.by_connection.write().await;
+            let keys = by_connection.entry(connection_id.to_owned()).or_default();
+            if !keys.iter().any(|(k, _)| *k == key) {
+                keys.push((key, detach));
             }
         }
     }
