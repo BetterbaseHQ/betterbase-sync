@@ -216,6 +216,37 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
     }
 }
 
+enum FileCommitError {
+    /// The wrapped DEK's epoch is below the space's minimum key
+    /// generation — the client must re-encrypt under the current epoch.
+    KeyGenerationStale,
+    Storage,
+}
+
+/// Metadata commit shared by first attempts and retries (AUD-027).
+///
+/// `record_file` is idempotent: `Ok(None)` means the file was already
+/// recorded (full replay — acknowledge with 204 and no broadcast);
+/// `Ok(Some(cursor))` means this call committed the metadata, whether or
+/// not the object bytes were newly stored. Returning an error must never
+/// be acknowledged as success.
+async fn commit_uploaded_file<S: FileSyncStorage + ?Sized>(
+    storage: &S,
+    space_id: Uuid,
+    file_id: Uuid,
+    record_id: Uuid,
+    file_size: i64,
+    wrapped_dek: &[u8],
+) -> Result<Option<i64>, FileCommitError> {
+    storage
+        .record_file(space_id, file_id, record_id, file_size, wrapped_dek)
+        .await
+        .map_err(|error| match error {
+            StorageError::KeyGenerationStale => FileCommitError::KeyGenerationStale,
+            _ => FileCommitError::Storage,
+        })
+}
+
 pub(crate) async fn put_file(
     State(state): State<ApiState>,
     Extension(auth): Extension<AuthContext>,
@@ -272,7 +303,10 @@ pub(crate) async fn put_file(
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 
-    let created = match file_storage.store(space_id, file_id, &body).await {
+    // Returns whether the object was newly created; the AUD-027 flow below
+    // no longer branches on it — both first attempts and retries of an
+    // interrupted upload run the same idempotent metadata commit.
+    let _created = match file_storage.store(space_id, file_id, &body).await {
         Ok(created) => created,
         Err(FileBlobStorageError::TooLarge) => {
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
@@ -284,17 +318,33 @@ pub(crate) async fn put_file(
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
-    if !created {
-        return StatusCode::NO_CONTENT.into_response();
-    }
-
-    let cursor = match sync_storage
-        .record_file(space_id, file_id, record_id, file_size, &wrapped_dek)
-        .await
+    // AUD-027: an existing object may be the only survivor of an
+    // interrupted attempt — bytes stored, process lost before metadata
+    // committed. `!created` must NOT be acknowledged early: fall through
+    // to the idempotent commit, which distinguishes "this call newly
+    // committed metadata" (Some(cursor) — acknowledge and broadcast) from
+    // "already fully recorded" (None — plain idempotent replay).
+    let cursor = match commit_uploaded_file(
+        sync_storage.as_ref(),
+        space_id,
+        file_id,
+        record_id,
+        file_size,
+        &wrapped_dek,
+    )
+    .await
     {
         Ok(Some(cursor)) => cursor,
         Ok(None) => return StatusCode::NO_CONTENT.into_response(),
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        Err(FileCommitError::KeyGenerationStale) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "file key generation stale — re-encrypt under the current epoch",
+            );
+        }
+        Err(FileCommitError::Storage) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+        }
     };
 
     if let Some(broker) = state.realtime_broker() {
@@ -730,6 +780,9 @@ mod tests {
         personal_spaces: [Uuid; 2],
         shared_spaces: HashMap<Uuid, Vec<u8>>,
         revoked_ucans: HashMap<Uuid, HashSet<String>>,
+        /// When set, record_file fails with this error — simulates the
+        /// interrupted first attempt (crash / SQL failure) of AUD-027.
+        fail_record_file: Mutex<Option<StorageError>>,
     }
 
     #[async_trait]
@@ -798,6 +851,13 @@ mod tests {
             size: i64,
             wrapped_dek: &[u8],
         ) -> Result<Option<i64>, StorageError> {
+            if let Some(error) = self.fail_record_file.lock().expect("fail lock").clone() {
+                return Err(error);
+            }
+            let mut guard = self.metadata.lock().expect("metadata lock");
+            if guard.contains_key(&(space_id, file_id)) {
+                return Ok(None);
+            }
             let metadata = FileMetadata {
                 id: file_id,
                 record_id,
@@ -805,10 +865,7 @@ mod tests {
                 wrapped_dek: wrapped_dek.to_vec(),
                 cursor: 1,
             };
-            self.metadata
-                .lock()
-                .expect("metadata lock")
-                .insert((space_id, file_id), metadata);
+            guard.insert((space_id, file_id), metadata);
             Ok(Some(1))
         }
 
@@ -1551,6 +1608,35 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
+    fn file_app_with_handles(
+        record_exists: bool,
+    ) -> (
+        axum::Router,
+        Arc<StubFileSyncStorage>,
+        Arc<StubFileBlobStorage>,
+    ) {
+        let sync_storage = Arc::new(StubFileSyncStorage {
+            record_exists,
+            metadata: Mutex::new(HashMap::new()),
+            personal_spaces: [personal_space_user1(), personal_space_user2()],
+            shared_spaces: HashMap::new(),
+            revoked_ucans: HashMap::new(),
+            fail_record_file: Mutex::new(None),
+        });
+        let blob_storage = Arc::new(StubFileBlobStorage::default());
+        let app = router(
+            ApiState::new(Arc::new(StubHealth))
+                .with_websocket(Arc::new(build_validator()))
+                .with_file_sync_storage_adapter(
+                    Arc::clone(&sync_storage) as Arc<dyn FileSyncStorage>
+                )
+                .with_file_blob_storage_adapter(
+                    Arc::clone(&blob_storage) as Arc<dyn FileBlobStorage>
+                ),
+        );
+        (app, sync_storage, blob_storage)
+    }
+
     fn file_app(record_exists: bool) -> axum::Router {
         file_app_with(
             record_exists,
@@ -1610,6 +1696,7 @@ mod tests {
             personal_spaces: [personal_space_user1(), personal_space_user2()],
             shared_spaces,
             revoked_ucans,
+            fail_record_file: Mutex::new(None),
         });
         let blob_storage = Arc::new(StubFileBlobStorage::default());
 
@@ -1734,6 +1821,131 @@ mod tests {
         let signature: Signature = key.sign(signing_input.as_bytes());
         let signature = URL_SAFE_NO_PAD.encode(signature.to_bytes());
         format!("{signing_input}.{signature}")
+    }
+
+    /// AUD-027: an interrupted first attempt (object stored, process lost
+    /// before metadata commit) must not be falsely acknowledged on retry —
+    /// the retry commits the missing metadata.
+    #[tokio::test]
+    async fn retry_of_interrupted_upload_commits_metadata() {
+        let (app, sync_storage, blob_storage) = file_app_with_handles(true);
+        let space_id = personal_space_user1();
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+        let payload = b"survivor of interrupted attempt";
+
+        // Attempt 1: bytes land in the object store, metadata commit fails.
+        *sync_storage.fail_record_file.lock().expect("fail lock") =
+            Some(StorageError::Database("simulated crash".to_owned()));
+        let first = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, payload))
+            .await
+            .expect("dispatch request");
+        assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(blob_storage
+            .files
+            .lock()
+            .expect("blob lock")
+            .contains_key(&(space_id, file_id)));
+
+        // Attempt 2 (retry): object already exists — must still commit
+        // metadata instead of acknowledging with a bare 204.
+        *sync_storage.fail_record_file.lock().expect("fail lock") = None;
+        let retry = app
+            .oneshot(put_file_request(space_id, file_id, record_id, payload))
+            .await
+            .expect("dispatch request");
+        assert_eq!(retry.status(), StatusCode::CREATED);
+        assert!(sync_storage
+            .metadata
+            .lock()
+            .expect("metadata lock")
+            .contains_key(&(space_id, file_id)));
+    }
+
+    /// AUD-027: a fully-recorded file replays to 204 with no duplicate
+    /// metadata write (idempotency preserved — not a behavior change).
+    #[tokio::test]
+    async fn replay_of_fully_recorded_upload_returns_204() {
+        let (app, sync_storage, _blob_storage) = file_app_with_handles(true);
+        let space_id = personal_space_user1();
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+        let payload = b"recorded once";
+
+        let first = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, payload))
+            .await
+            .expect("dispatch request");
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let recorded = sync_storage
+            .metadata
+            .lock()
+            .expect("metadata lock")
+            .get(&(space_id, file_id))
+            .cloned()
+            .expect("metadata recorded");
+        let original_cursor = recorded.cursor;
+
+        let replay = app
+            .oneshot(put_file_request(space_id, file_id, record_id, payload))
+            .await
+            .expect("dispatch request");
+        assert_eq!(replay.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            sync_storage
+                .metadata
+                .lock()
+                .expect("metadata lock")
+                .get(&(space_id, file_id))
+                .expect("metadata still present")
+                .cursor,
+            original_cursor
+        );
+    }
+
+    /// AUD-027: a retry whose DEK is stale relative to the space's minimum
+    /// key generation fails honestly (409) rather than acknowledging.
+    #[tokio::test]
+    async fn retry_with_stale_generation_conflicts() {
+        let (app, sync_storage, _blob_storage) = file_app_with_handles(true);
+        let space_id = personal_space_user1();
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+        let payload = b"stale dek";
+
+        *sync_storage.fail_record_file.lock().expect("fail lock") =
+            Some(StorageError::KeyGenerationStale);
+        let response = app
+            .oneshot(put_file_request(space_id, file_id, record_id, payload))
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!sync_storage
+            .metadata
+            .lock()
+            .expect("metadata lock")
+            .contains_key(&(space_id, file_id)));
+    }
+
+    fn put_file_request(
+        space_id: Uuid,
+        file_id: Uuid,
+        record_id: Uuid,
+        payload: &[u8],
+    ) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/v1/spaces/{space_id}/files/{file_id}"))
+            .header(AUTHORIZATION, "Bearer files-user1")
+            .header(CONTENT_LENGTH, payload.len().to_string())
+            .header("X-Record-ID", record_id.to_string())
+            .header("X-Wrapped-DEK", STANDARD.encode([9u8; WRAPPED_DEK_LENGTH]))
+            .body(Body::from(payload.to_vec()))
+            .expect("build request")
     }
 
     fn personal_space_user1() -> Uuid {
