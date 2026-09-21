@@ -7249,6 +7249,25 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
         "revoked member must not receive space data"
     );
 
+    // The connection itself remains usable for the member's other spaces:
+    // a personal-space subscribe still gets a normal response.
+    send_binary_frame(
+        &mut member_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "member-still-alive",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": test_personal_space_id(), "since": 0 }]
+            }
+        }),
+    )
+    .await;
+    let still_alive: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut member_socket).await;
+    assert_eq!(still_alive.id, "member-still-alive");
+    assert!(still_alive.result.errors.is_empty());
+
     server.handle.abort();
 }
 
@@ -7310,6 +7329,101 @@ async fn websocket_connection_closes_at_token_expiry() {
         }
         other => panic!("expected close frame, got {other:?}"),
     }
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_revocation_detach_joins_across_uuid_casing() {
+    // Canonical registry keys: a client subscribing with an uppercase UUID
+    // and an admin revoking with lowercase must still join (AUD-024).
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let admin = TestIssuer::new();
+    let member = TestIssuer::new();
+    let admin_ucan = root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Admin);
+    let member_ucan = root_issuer.issue_space_ucan(&member.did, shared_space_id, Permission::Read);
+    let uppercase_space = shared_space_id.to_string().to_uppercase();
+
+    let mut tokens = HashMap::new();
+    tokens.insert(
+        "admin-token".to_owned(),
+        test_auth_context_with_did("sync", &admin.did),
+    );
+    tokens.insert(
+        "member-token".to_owned(),
+        test_auth_context_with_did("sync", &member.did),
+    );
+    let validator: Arc<dyn TokenValidator + Send + Sync> = Arc::new(StubValidator { tokens });
+    let storage = Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+        shared_space_id,
+        root_issuer.compressed_public_key().to_vec(),
+        HashSet::new(),
+    ));
+
+    let server = spawn_server(
+        base_state_with_ws_validator(Duration::from_secs(60), validator)
+            .with_sync_storage_adapter(storage),
+    )
+    .await;
+
+    // Member subscribes with the uppercase form.
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut member_socket, _) = connect_async(request).await.expect("connect member");
+    send_auth_with_token(&mut member_socket, "member-token").await;
+    send_binary_frame(
+        &mut member_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "member-sub-upper",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": uppercase_space, "since": 0, "ucan": member_ucan }]
+            }
+        }),
+    )
+    .await;
+    let sub: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut member_socket).await;
+    assert!(sub.result.errors.is_empty());
+
+    // Admin revokes with the canonical (lowercase) form.
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut admin_socket, _) = connect_async(request).await.expect("connect admin");
+    send_auth_with_token(&mut admin_socket, "admin-token").await;
+    send_binary_frame(
+        &mut admin_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "revoke-upper",
+            "method": "membership.revoke",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "ucan": admin_ucan,
+                "ucan_cid": "bafytestcid",
+                "member_did": member.did
+            }
+        }),
+    )
+    .await;
+    let revoke: RpcResultResponse<serde_json::Value> =
+        read_result_response(&mut admin_socket).await;
+    assert_eq!(revoke.result, serde_json::json!({}));
+
+    // Detached despite the casing difference: no space data arrives.
+    let mut next = member_socket.next();
+    let nothing = tokio::time::timeout(Duration::from_millis(300), &mut next).await;
+    assert!(
+        nothing.is_err(),
+        "revoked member must not receive space data across uuid casing"
+    );
 
     server.handle.abort();
 }

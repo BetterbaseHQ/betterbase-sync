@@ -96,6 +96,11 @@ impl RealtimeSession {
         &self.exclude_id
     }
 
+    /// This connection's registry identity (used for teardown cleanup). */
+    pub(crate) fn connection_id(&self) -> &str {
+        &self.exclude_id
+    }
+
     /// Clone of the detach-command sender (registry use, AUD-024).
     pub(crate) fn detach_sender(&self) -> mpsc::Sender<String> {
         self.detach_tx.clone()

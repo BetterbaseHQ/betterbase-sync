@@ -274,7 +274,13 @@ pub(super) async fn handle_subscribe_request(
             let detach = realtime.detach_sender();
             for space in &added_spaces {
                 session_registry
-                    .register(space, &auth.did, outbound.clone(), detach.clone())
+                    .register(
+                        space,
+                        &auth.did,
+                        outbound.clone(),
+                        detach.clone(),
+                        realtime.connection_id(),
+                    )
                     .await;
             }
         }

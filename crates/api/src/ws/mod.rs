@@ -487,7 +487,7 @@ async fn serve_websocket(
         // Drop this connection's revocation-registry entries (AUD-024).
         runtime_context
             .session_registry
-            .unregister_connection(&session.detach_sender())
+            .unregister_connection(session.connection_id())
             .await;
     }
     if federation_connection_tracked {
