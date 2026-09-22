@@ -305,6 +305,11 @@ where
 /// re-check guards the re-upload race: a client re-creating the same
 /// (space, file_id) after its tombstone re-inserted metadata, making the
 /// object live again.
+///
+/// Residual (documented): metadata recreated between the existence check
+/// and the object deletion leaves a live row over a deleted object — a
+/// millisecond window, once per file, ≥24h after its tombstone; the
+/// failure mode is a recoverable GET miss.
 pub async fn sweep_file_deletions<S: FileDeletionQueue + ?Sized>(
     storage: &S,
     blobs: &dyn FileBlobStorage,

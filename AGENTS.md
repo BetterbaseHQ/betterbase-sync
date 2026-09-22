@@ -131,7 +131,11 @@ File routes are only registered when file storage is configured.
 - `FEDERATION_TRUSTED_DOMAINS` -- Comma-separated peer domains
 - `FEDERATION_TRUSTED_KEYS` -- Peer public keys
 - `FEDERATION_FST_SECRET`, `FEDERATION_FST_PREVIOUS_SECRET` -- FST HMAC secrets
+- `FEDERATION_TRUST_FORWARDED_PROTO` -- Honor `X-Forwarded-Proto` when rebuilding the federated upgrade URI for signature verification (set when behind a TLS-terminating proxy; default off)
 - `FEDERATION_MAX_CONNECTIONS`, `FEDERATION_MAX_SPACES`, `FEDERATION_MAX_RECORDS_PER_HOUR`, `FEDERATION_MAX_BYTES_PER_HOUR`, `FEDERATION_MAX_INVITATIONS_PER_HOUR` -- Quota limits
+
+**File GC:**
+- `FILE_DELETION_GRACE_SECS` -- Delay between a record tombstone and physical file-object removal (default 86400 = 24h; must be > 0)
 
 ## Conventions
 

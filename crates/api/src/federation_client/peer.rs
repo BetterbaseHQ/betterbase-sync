@@ -155,17 +155,32 @@ impl PeerConnection {
             .pending
             .insert(request_id.to_owned(), Arc::clone(&call));
 
-        let send_failed = match state.sink.as_mut() {
-            Some(sink) => sink.send(Message::Binary(frame.into())).await.is_err(),
-            None => true,
+        // Register interest BEFORE sending: `Notify::notify_waiters` wakes
+        // only already-registered waiters, so a peer answering within the
+        // send/await gap must find a waiter armed. `enable()` arms the
+        // future without polling it.
+        let mut notified = std::pin::pin!(call.done.notified());
+        notified.as_mut().enable();
+
+        // The write is deadline-bounded too: a trusted peer that stops
+        // reading (TCP backpressure) would otherwise wedge the send while
+        // the state mutex is held, starving the reader and `close()`.
+        let send_result = match state.sink.as_mut() {
+            Some(sink) => {
+                tokio::time::timeout(RESPONSE_TIMEOUT, sink.send(Message::Binary(frame.into())))
+                    .await
+                    .ok()
+            }
+            None => None,
         };
+        let send_failed = !matches!(send_result, Some(Ok(())));
         if send_failed {
             teardown(&mut state).await;
             return Err(FederationPeerError::Closed);
         }
         drop(state);
 
-        let wait = tokio::time::timeout(RESPONSE_TIMEOUT, call.done.notified()).await;
+        let wait = tokio::time::timeout(RESPONSE_TIMEOUT, notified).await;
         let mut state = self.state.lock().await;
         state.pending.remove(request_id);
         match wait {
@@ -179,8 +194,15 @@ impl PeerConnection {
                 result
             }
             Err(_) => {
-                // Deadline elapsed: the peer stalled. Reset the connection so
-                // the next call reconnects instead of queuing behind it.
+                // Deadline elapsed — but the reader may have completed the
+                // call in the final instants (lost wakeup / late frame).
+                // Prefer a stored outcome over tearing down a healthy
+                // connection.
+                if let Ok(done) = call.take() {
+                    return Ok(done);
+                }
+                // The peer stalled. Reset the connection so the next call
+                // reconnects instead of queuing behind it.
                 teardown(&mut state).await;
                 Err(FederationPeerError::Closed)
             }
@@ -191,6 +213,13 @@ impl PeerConnection {
         let mut spaces = self.spaces.write().await;
         for (space, token) in token_by_space {
             spaces.insert(space, token);
+        }
+    }
+
+    pub(super) async fn remove_space_tokens(&self, space_ids: &[String]) {
+        let mut spaces = self.spaces.write().await;
+        for space_id in space_ids {
+            spaces.remove(space_id);
         }
     }
 

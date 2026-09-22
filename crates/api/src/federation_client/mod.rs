@@ -168,6 +168,16 @@ impl FederationPeerManager {
                     failed = result.errors.len(),
                     "peer rejected some subscribe requests"
                 );
+                // Pre-registered (requested) spaces the peer refused must
+                // not stay in the notification gate: the gate admits
+                // notifications, and an unvalidated space widening it is
+                // asymmetric with the incoming rebroadcast gate.
+                let rejected: Vec<String> = result
+                    .errors
+                    .iter()
+                    .map(|error| error.space.clone())
+                    .collect();
+                peer.remove_space_tokens(&rejected).await;
             }
             let mut token_by_space = HashMap::with_capacity(result.spaces.len());
             for space in &result.spaces {
@@ -354,7 +364,14 @@ impl FederationPeerManager {
             Ok(result) => Ok(result),
             Err(error) if should_retry(&error) => {
                 peer.close().await;
-                peer.call_raw(&self.key_id, &self.signing_key, request_id, method, params)
+                // A fresh id per attempt: the torn-down connection's reader
+                // may still drain a late frame, and id-only routing must
+                // not let it complete the new attempt's slot.
+                let retry_id = format!(
+                    "fed-{}",
+                    self.request_id_counter.fetch_add(1, Ordering::Relaxed)
+                );
+                peer.call_raw(&self.key_id, &self.signing_key, &retry_id, method, params)
                     .await
             }
             Err(error) => Err(error),

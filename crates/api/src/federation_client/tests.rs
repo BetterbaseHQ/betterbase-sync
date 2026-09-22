@@ -429,7 +429,9 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
     let second = peer.require_request().await;
     assert_eq!(first.method, "push");
     assert_eq!(second.method, "push");
-    assert_eq!(first.id, second.id);
+    // A fresh request id per attempt keeps the old reader's late frames
+    // from completing the new attempt's slot.
+    assert_ne!(first.id, second.id);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 
     manager.close().await;
