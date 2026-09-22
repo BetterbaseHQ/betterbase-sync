@@ -140,14 +140,28 @@ impl JwksClient {
     }
 
     async fn refresh(&self) -> Result<(), JwksError> {
-        let response = self.http_client.get(&self.url).send().await?;
+        let mut response = self.http_client.get(&self.url).send().await?;
         if response.status() != StatusCode::OK {
             return Err(JwksError::Status(response.status()));
         }
 
-        let payload = response.bytes().await?;
-        if payload.len() > MAX_JWKS_SIZE {
-            return Err(JwksError::PayloadTooLarge(payload.len()));
+        // Enforce the limit while reading, including chunked responses with
+        // no Content-Length. Checking after bytes() would buffer an unbounded
+        // response before rejecting it.
+        if let Some(length) = response.content_length() {
+            if length > MAX_JWKS_SIZE as u64 {
+                return Err(JwksError::PayloadTooLarge(
+                    usize::try_from(length).unwrap_or(usize::MAX),
+                ));
+            }
+        }
+        let mut payload = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            let length = payload.len().saturating_add(chunk.len());
+            if length > MAX_JWKS_SIZE {
+                return Err(JwksError::PayloadTooLarge(length));
+            }
+            payload.extend_from_slice(&chunk);
         }
 
         let jwks: JWKS = serde_json::from_slice(&payload)?;

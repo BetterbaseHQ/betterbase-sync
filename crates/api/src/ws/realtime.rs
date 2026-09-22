@@ -10,8 +10,8 @@ use betterbase_sync_realtime::broker::{BrokerError, MultiBroker, Subscriber, Sub
 use betterbase_sync_realtime::ws::CloseDirective;
 use serde::Serialize;
 use std::collections::HashSet;
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio::sync::{mpsc, Notify};
 
 const OUTBOUND_CHANNEL_SIZE: usize = 64;
 
@@ -22,6 +22,22 @@ pub(crate) type OutboundReceiver = mpsc::Receiver<OutboundFrame>;
 pub(crate) enum OutboundFrame {
     Binary(Arc<[u8]>),
     Close(CloseDirective),
+}
+
+#[derive(Default)]
+pub(super) struct ConnectionState {
+    closed: AtomicBool,
+    slow_consumer: Notify,
+}
+
+impl ConnectionState {
+    pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
+
+    pub(super) async fn slow_consumer(&self) {
+        self.slow_consumer.notified().await;
+    }
 }
 
 #[derive(Clone)]
@@ -259,7 +275,7 @@ pub(crate) async fn register_session(
     auth: &AuthContext,
     connection_id: &str,
     outbound: OutboundSender,
-    closed: Arc<AtomicBool>,
+    state: Arc<ConnectionState>,
     detach_tx: mpsc::Sender<String>,
 ) -> Result<Option<RealtimeSession>, CloseDirective> {
     let Some(broker) = broker else {
@@ -274,7 +290,7 @@ pub(crate) async fn register_session(
         },
         exclude_id: connection_id.to_owned(),
         outbound,
-        closed,
+        state,
     });
     let subscriber_id = broker
         .register_subscriber(subscriber, &[])
@@ -307,14 +323,26 @@ struct ConnectionSubscriber {
     mailbox_id: String,
     exclude_id: String,
     outbound: OutboundSender,
-    closed: Arc<AtomicBool>,
+    state: Arc<ConnectionState>,
 }
 
 impl Subscriber for ConnectionSubscriber {
     fn send(&self, payload: Arc<[u8]>) -> bool {
-        self.outbound
-            .try_send(OutboundFrame::Binary(payload))
-            .is_ok()
+        if self.is_closed() {
+            return false;
+        }
+        match self.outbound.try_send(OutboundFrame::Binary(payload)) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // A missed notification invalidates this connection's sync
+                // state. Signal outside the full queue so the writer can
+                // close it and the client can reconnect and pull its cursor.
+                self.state.close();
+                self.state.slow_consumer.notify_one();
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
     }
 
     fn exclude_id(&self) -> &str {
@@ -326,7 +354,7 @@ impl Subscriber for ConnectionSubscriber {
     }
 
     fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Relaxed) || self.outbound.is_closed()
+        self.state.closed.load(Ordering::Relaxed) || self.outbound.is_closed()
     }
 }
 
@@ -361,4 +389,80 @@ pub(crate) async fn broadcast_to_space<T: Serialize>(
         return;
     };
     broker.broadcast_space(space_id, "", &encoded).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::ws::Message;
+    use betterbase_sync_core::protocol::CLOSE_SLOW_CONSUMER;
+    use betterbase_sync_realtime::broker::BrokerConfig;
+    use std::convert::Infallible;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn full_queue_closes_slow_consumer_without_disrupting_other_subscribers() {
+        let broker = MultiBroker::new(BrokerConfig::default());
+        let (slow_tx, slow_rx) = outbound_channel();
+        let state = Arc::new(ConnectionState::default());
+        let slow = Arc::new(ConnectionSubscriber {
+            mailbox_id: "slow".to_owned(),
+            exclude_id: "slow".to_owned(),
+            outbound: slow_tx.clone(),
+            state: Arc::clone(&state),
+        });
+        let (fast_tx, mut fast_rx) = outbound_channel();
+        let fast = Arc::new(ConnectionSubscriber {
+            mailbox_id: "fast".to_owned(),
+            exclude_id: "fast".to_owned(),
+            outbound: fast_tx,
+            state: Arc::new(ConnectionState::default()),
+        });
+        broker
+            .register_subscriber(slow.clone(), &["space".to_owned()])
+            .await
+            .expect("register slow subscriber");
+        broker
+            .register_subscriber(fast, &["space".to_owned()])
+            .await
+            .expect("register fast subscriber");
+
+        for _ in 0..OUTBOUND_CHANNEL_SIZE {
+            assert_eq!(broker.broadcast_space("space", "", b"update").await, 2);
+            fast_rx
+                .recv()
+                .await
+                .expect("fast subscriber receives update");
+        }
+        assert_eq!(broker.broadcast_space("space", "", b"overflow").await, 1);
+        assert!(slow.is_closed());
+        assert_eq!(broker.connection_count("slow").await, 0);
+        assert_eq!(broker.connection_count("fast").await, 1);
+        fast_rx
+            .recv()
+            .await
+            .expect("fast subscriber receives overflow update");
+
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Box::pin(futures_util::sink::unfold(
+            Arc::clone(&messages),
+            |messages, message| async move {
+                messages.lock().expect("messages lock").push(message);
+                Ok::<_, Infallible>(messages)
+            },
+        ));
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            super::super::writer::write_frames(sink, slow_rx, state, Duration::from_secs(1)),
+        )
+        .await
+        .expect("writer closes despite full queue");
+        assert!(slow_tx.is_closed());
+        let messages = messages.lock().expect("messages lock");
+        assert_eq!(messages.len(), 1, "close takes priority over queued data");
+        assert!(matches!(
+            &messages[0],
+            Message::Close(Some(close)) if close.code == CLOSE_SLOW_CONSUMER as u16
+        ));
+    }
 }

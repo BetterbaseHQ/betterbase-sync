@@ -269,6 +269,7 @@ mod tests {
     use p256::ecdsa::signature::Signer;
     use p256::ecdsa::{Signature, SigningKey};
     use p256::elliptic_curve::Generate;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
     use tokio::time::sleep;
@@ -742,6 +743,90 @@ mod tests {
             .await
             .expect("cached key should still validate");
         assert_eq!(info.user_id, "user-123");
+    }
+
+    // Keep the response connection open after writing. Rejection must happen
+    // as soon as the limit is exceeded, without waiting for EOF or a timeout.
+    async fn mock_unfinished_jwks_response(response: Vec<u8>) -> TestServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            socket.write_all(&response).await.expect("write response");
+            let _ = rx.await;
+        });
+        TestServer {
+            url: format!("http://{addr}"),
+            stop: Some(tx),
+        }
+    }
+
+    #[tokio::test]
+    async fn jwks_rejects_oversized_content_length_before_reading_body() {
+        let size = super::super::jwks::MAX_JWKS_SIZE + 1;
+        let server = mock_unfinished_jwks_response(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\n\r\n").into_bytes(),
+        )
+        .await;
+        let client = JwksClient::new(&server.url, Duration::from_secs(60));
+        let error = tokio::time::timeout(Duration::from_secs(1), client.get_key("missing"))
+            .await
+            .expect("reject headers without waiting for body")
+            .expect_err("oversized response must fail");
+        assert!(matches!(
+            error,
+            super::super::jwks::JwksError::PayloadTooLarge(length) if length == size
+        ));
+    }
+
+    #[tokio::test]
+    async fn jwks_rejects_oversized_chunked_body_before_end_of_stream() {
+        let size = super::super::jwks::MAX_JWKS_SIZE;
+        let mut response =
+            format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{size:x}\r\n")
+                .into_bytes();
+        response.extend(vec![b' '; size]);
+        response.extend_from_slice(b"\r\n1\r\n \r\n");
+        let server = mock_unfinished_jwks_response(response).await;
+        let client = JwksClient::new(&server.url, Duration::from_secs(60));
+        let error = tokio::time::timeout(Duration::from_secs(1), client.get_key("missing"))
+            .await
+            .expect("reject oversized body without waiting for EOF")
+            .expect_err("oversized response must fail");
+        assert!(matches!(
+            error,
+            super::super::jwks::JwksError::PayloadTooLarge(length) if length > size
+        ));
+    }
+
+    #[tokio::test]
+    async fn jwks_accepts_chunked_body_at_size_limit() {
+        let size = super::super::jwks::MAX_JWKS_SIZE;
+        let mut payload = br#"{"keys":[]}"#.to_vec();
+        payload.resize(size, b' ');
+        let mut response =
+            format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{size:x}\r\n")
+                .into_bytes();
+        response.extend(payload);
+        response.extend_from_slice(b"\r\n0\r\n\r\n");
+        let server = mock_unfinished_jwks_response(response).await;
+        let client = JwksClient::new(&server.url, Duration::from_secs(60));
+        let error = tokio::time::timeout(Duration::from_secs(1), client.get_key("missing"))
+            .await
+            .expect("read response")
+            .expect_err("empty JWKS has no matching key");
+        assert!(matches!(
+            error,
+            super::super::jwks::JwksError::KeyNotFound(_)
+        ));
     }
 
     #[test]

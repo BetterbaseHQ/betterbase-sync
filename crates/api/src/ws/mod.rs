@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,17 +12,15 @@ use betterbase_sync_realtime::ws::{
     authenticate_first_message, parse_client_binary_frame, ClientFrame, CloseDirective,
     FirstMessage, WS_SUBPROTOCOL,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 use crate::ApiState;
 
 /// Maximum duration of a WebSocket connection.
 const WS_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60); // 1 hour
-/// Interval between keepalive frames (CBOR null).
-const WS_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-/// CBOR null (0xF6), used as keepalive.
-const CBOR_NULL: &[u8] = &[0xF6];
+/// Maximum time a stalled client may hold an individual socket write.
+const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum size of a single inbound WebSocket message (4 MiB).
 const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
@@ -33,6 +30,7 @@ mod realtime;
 mod rpc;
 pub(crate) mod sessions;
 mod storage;
+mod writer;
 
 pub use presence::PresenceRegistry;
 pub(crate) use realtime::broadcast_to_space;
@@ -243,51 +241,15 @@ async fn serve_websocket(
             false
         };
 
-    let (mut socket_sender, mut socket_receiver) = socket.split();
-    let (outbound, mut outbound_rx) = realtime::outbound_channel();
-    let closed = Arc::new(AtomicBool::new(false));
-    let writer_closed = Arc::clone(&closed);
-
-    let writer = tokio::spawn(async move {
-        let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
-        keepalive.tick().await; // first tick fires immediately, skip it
-        loop {
-            tokio::select! {
-                frame = outbound_rx.recv() => {
-                    let Some(frame) = frame else { break };
-                    match frame {
-                        realtime::OutboundFrame::Binary(payload) => {
-                            if socket_sender
-                                .send(Message::Binary(payload.to_vec().into()))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        realtime::OutboundFrame::Close(close) => {
-                            let frame = CloseFrame {
-                                code: close.code as u16,
-                                reason: close.reason.into(),
-                            };
-                            let _ = socket_sender.send(Message::Close(Some(frame))).await;
-                            break;
-                        }
-                    }
-                }
-                _ = keepalive.tick() => {
-                    if socket_sender
-                        .send(Message::Binary(CBOR_NULL.to_vec().into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        writer_closed.store(true, Ordering::Relaxed);
-    });
+    let (socket_sender, mut socket_receiver) = socket.split();
+    let (outbound, outbound_rx) = realtime::outbound_channel();
+    let connection_state = Arc::new(realtime::ConnectionState::default());
+    let writer = tokio::spawn(writer::write_frames(
+        socket_sender,
+        outbound_rx,
+        Arc::clone(&connection_state),
+        WS_WRITE_TIMEOUT,
+    ));
 
     let mut auth_context = if let Some(context) = initial_auth_context {
         context
@@ -356,7 +318,7 @@ async fn serve_websocket(
         &auth_context,
         &connection_id,
         outbound.clone(),
-        Arc::clone(&closed),
+        Arc::clone(&connection_state),
         detach_tx,
     )
     .await
@@ -404,6 +366,7 @@ async fn serve_websocket(
 
     loop {
         let message = tokio::select! {
+            _ = outbound.closed() => break,
             msg = socket_receiver.next() => {
                 match msg {
                     Some(Ok(message)) => message,
@@ -545,7 +508,7 @@ async fn serve_websocket(
     if federation_connection_tracked {
         release_federation_quotas(&runtime_context, realtime_session.as_ref()).await;
     }
-    closed.store(true, Ordering::Relaxed);
+    connection_state.close();
     drop(outbound);
     let _ = writer.await;
 }
