@@ -399,6 +399,32 @@ pub trait FileStorage: Send + Sync {
         space_id: Uuid,
         record_ids: &[Uuid],
     ) -> Result<Vec<Uuid>, StorageError>;
+    /// Queue file objects for physical removal (AUD-039). Called in the
+    /// same transaction as the tombstone that orphaned them. Idempotent.
+    async fn schedule_file_deletions(
+        &self,
+        space_id: Uuid,
+        file_ids: &[Uuid],
+    ) -> Result<(), StorageError>;
+    /// Deletions whose grace period (caller-supplied cutoff) has elapsed.
+    async fn pending_file_deletions(
+        &self,
+        cutoff: SystemTime,
+        limit: usize,
+    ) -> Result<Vec<PendingFileDeletion>, StorageError>;
+    /// Remove a queued deletion once the object is gone (or was re-created).
+    async fn complete_file_deletion(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError>;
+}
+
+/// A file object queued for physical removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingFileDeletion {
+    pub space_id: Uuid,
+    pub file_id: Uuid,
 }
 
 #[async_trait]

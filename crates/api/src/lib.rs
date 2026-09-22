@@ -32,9 +32,11 @@ pub use federation::{
     FederationAuthError, FederationAuthenticator, FederationJwk, FederationJwks,
     FederationTokenKeys, HttpSignatureFederationAuthenticator,
 };
-pub use federation_client::{FederationForwarder, FederationPeerError, FederationPeerManager};
+pub use federation_client::{
+    FederationForwarder, FederationPeerError, FederationPeerManager, PeerNotificationHandler,
+};
 pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
-pub use files::ObjectStoreFileBlobStorage;
+pub use files::{sweep_file_deletions, FileBlobStorage, ObjectStoreFileBlobStorage};
 pub use ws::PresenceRegistry;
 
 #[async_trait]
@@ -61,6 +63,10 @@ pub struct ApiState {
     federation_token_keys: Option<FederationTokenKeys>,
     federation_jwks: FederationJwks,
     federation_trusted_domains: Vec<String>,
+    /// Honor `X-Forwarded-Proto` when reconstructing the federated upgrade
+    /// URI for signature verification (AUD-040). Off unless the operator
+    /// states the server sits behind a TLS-terminating proxy.
+    federation_trust_forwarded_proto: bool,
     federation_quota_tracker: Arc<FederationQuotaTracker>,
     sync_storage: Option<Arc<dyn ws::SyncStorage>>,
     file_sync_storage: Option<Arc<dyn files::FileSyncStorage>>,
@@ -88,6 +94,7 @@ impl ApiState {
             federation_token_keys: None,
             federation_jwks: FederationJwks::default(),
             federation_trusted_domains: Vec::new(),
+            federation_trust_forwarded_proto: false,
             federation_quota_tracker: Arc::new(FederationQuotaTracker::new(
                 FederationQuotaLimits::default(),
             )),
@@ -183,6 +190,16 @@ impl ApiState {
     }
 
     #[must_use]
+    pub fn with_federation_trust_forwarded_proto(mut self, trust: bool) -> Self {
+        self.federation_trust_forwarded_proto = trust;
+        self
+    }
+
+    pub(crate) fn federation_trust_forwarded_proto(&self) -> bool {
+        self.federation_trust_forwarded_proto
+    }
+
+    #[must_use]
     pub fn with_federation_quota_limits(mut self, limits: FederationQuotaLimits) -> Self {
         self.federation_quota_tracker = Arc::new(FederationQuotaTracker::new(limits));
         self
@@ -243,7 +260,7 @@ impl ApiState {
         self
     }
 
-    pub(crate) fn file_blob_storage(&self) -> Option<Arc<dyn files::FileBlobStorage>> {
+    pub fn file_blob_storage(&self) -> Option<Arc<dyn files::FileBlobStorage>> {
         self.file_blob_storage.clone()
     }
 

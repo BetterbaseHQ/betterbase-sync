@@ -445,7 +445,7 @@ pub(crate) async fn handle_notification(
                 }
             }
             "sync" | "membership" | "file" | "revoked" => {
-                handle_federation_rebroadcast(realtime, method, payload).await;
+                handle_federation_rebroadcast(realtime, peer_domain, method, payload).await;
             }
             _ => {}
         },
@@ -478,8 +478,14 @@ async fn handle_client_notification(
 }
 
 /// Re-broadcast notifications received from a federation peer to local space subscribers.
+///
+/// AUD-038: the peer may only rebroadcast into spaces it holds a validated
+/// subscription for on this connection. Subscriptions are granted by the
+/// federation subscribe RPC after UCAN/FST validation, so this gate restores
+/// the per-space authorization the raw dispatch bypassed.
 async fn handle_federation_rebroadcast(
     realtime: Option<&RealtimeSession>,
+    peer_domain: &str,
     method: &str,
     payload: &[u8],
 ) {
@@ -487,40 +493,69 @@ async fn handle_federation_rebroadcast(
         return;
     };
 
+    let space_id = match rebroadcast_space(method, payload) {
+        Some(space_id) => space_id,
+        None => return,
+    };
+
+    if !realtime.is_subscribed(&space_id).await {
+        tracing::warn!(
+            peer = peer_domain,
+            method,
+            space = %space_id,
+            "dropping federation rebroadcast for an unsubscribed space"
+        );
+        return;
+    }
+
     match method {
         "sync" => {
-            let Ok(params) = decode_frame_params::<WsSyncData>(payload) else {
-                return;
-            };
-            if params.records.is_empty() {
-                return;
+            if let Ok(params) = decode_frame_params::<WsSyncData>(payload) {
+                // Broadcast the full struct to preserve key_generation and rewrap_epoch.
+                realtime
+                    .broadcast_notification(&params.space, "sync", &params)
+                    .await;
             }
-            // Broadcast the full struct to preserve key_generation and rewrap_epoch.
-            realtime
-                .broadcast_notification(&params.space, "sync", &params)
-                .await;
         }
         "membership" => {
-            let Ok(params) = decode_frame_params::<WsMembershipData>(payload) else {
-                return;
-            };
-            realtime.broadcast_membership(&params.space, &params).await;
+            if let Ok(params) = decode_frame_params::<WsMembershipData>(payload) {
+                realtime.broadcast_membership(&params.space, &params).await;
+            }
         }
         "file" => {
-            let Ok(params) = decode_frame_params::<WsFileData>(payload) else {
-                return;
-            };
-            realtime.broadcast_file(&params.space, &params).await;
+            if let Ok(params) = decode_frame_params::<WsFileData>(payload) {
+                realtime.broadcast_file(&params.space, &params).await;
+            }
         }
         "revoked" => {
-            let Ok(params) = decode_frame_params::<WsRevokedData>(payload) else {
-                return;
-            };
-            realtime
-                .broadcast_revocation(&params.space, &params.reason)
-                .await;
+            if let Ok(params) = decode_frame_params::<WsRevokedData>(payload) {
+                realtime
+                    .broadcast_revocation(&params.space, &params.reason)
+                    .await;
+            }
         }
         _ => {}
+    }
+}
+
+/// Extract the target space from a rebroadcast payload (None when the frame
+/// is undecodable or carries no records — nothing to authorize or deliver).
+fn rebroadcast_space(method: &str, payload: &[u8]) -> Option<String> {
+    match method {
+        "sync" => {
+            let params = decode_frame_params::<WsSyncData>(payload).ok()?;
+            (!params.records.is_empty()).then_some(params.space)
+        }
+        "membership" => decode_frame_params::<WsMembershipData>(payload)
+            .ok()
+            .map(|params| params.space),
+        "file" => decode_frame_params::<WsFileData>(payload)
+            .ok()
+            .map(|params| params.space),
+        "revoked" => decode_frame_params::<WsRevokedData>(payload)
+            .ok()
+            .map(|params| params.space),
+        _ => None,
     }
 }
 

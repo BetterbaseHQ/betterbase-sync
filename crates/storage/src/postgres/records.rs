@@ -388,6 +388,21 @@ impl RecordStorage for PostgresStorage {
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
             deleted_file_ids.extend(rows);
+
+            // Queue the orphaned objects for physical removal in the same
+            // transaction (AUD-039): a crash between tombstone and queue
+            // insert would otherwise leak the object forever.
+            for file_id in &deleted_file_ids {
+                sqlx::query(
+                    "INSERT INTO pending_file_deletions (space_id, file_id) VALUES ($1, $2)
+                     ON CONFLICT (space_id, file_id) DO NOTHING",
+                )
+                .bind(space_id)
+                .bind(file_id)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|error| StorageError::Database(error.to_string()))?;
+            }
         }
 
         tx.commit()
@@ -877,6 +892,111 @@ mod tests {
             .await
             .expect("conflict push");
         assert!(!result.ok);
+    }
+
+    #[tokio::test]
+    async fn push_tombstone_queues_file_deletion_in_transaction() {
+        // AUD-039: the tombstone that orphans a file must queue its physical
+        // removal atomically — and the queue methods drive the sweep.
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+
+        let record_id = uuid::Uuid::new_v4();
+        let record_id_str = record_id.to_string();
+        let dek = wrapped_dek(0xdd);
+        storage
+            .push(
+                space_id,
+                &[Change {
+                    id: record_id_str.clone(),
+                    blob: Some(b"data".to_vec()),
+                    cursor: 0,
+                    wrapped_dek: Some(dek.clone()),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("push live record");
+
+        let file_id = uuid::Uuid::new_v4();
+        storage
+            .record_file(space_id, file_id, record_id, 100, &dek)
+            .await
+            .expect("record file");
+
+        let result = storage
+            .push(
+                space_id,
+                &[Change {
+                    id: record_id_str,
+                    blob: None,
+                    cursor: 1,
+                    wrapped_dek: Some(dek),
+                    deleted: false,
+                }],
+                None,
+            )
+            .await
+            .expect("push tombstone");
+        assert!(result.ok);
+        assert_eq!(result.deleted_file_ids, vec![file_id]);
+
+        // Queued immediately, not yet due (scheduled_at is now; cutoff in
+        // the past returns nothing).
+        let before = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(1),
+                100,
+            )
+            .await
+            .expect("pending before");
+        assert!(before.is_empty());
+        // A future cutoff (grace elapsed) surfaces the row.
+        let due = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                100,
+            )
+            .await
+            .expect("pending due");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].file_id, file_id);
+
+        // Metadata is gone → not live; completing removes the queue entry.
+        assert!(!storage
+            .file_exists(space_id, file_id)
+            .await
+            .expect("exists"));
+        storage
+            .complete_file_deletion(space_id, file_id)
+            .await
+            .expect("complete");
+        let after = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                100,
+            )
+            .await
+            .expect("pending after");
+        assert!(after.is_empty());
+
+        // Re-scheduling an already-queued id is a no-op (idempotent).
+        storage
+            .schedule_file_deletions(space_id, &[file_id])
+            .await
+            .expect("re-schedule");
+        let once = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                100,
+            )
+            .await
+            .expect("pending once");
+        assert_eq!(once.len(), 1);
     }
 
     #[tokio::test]

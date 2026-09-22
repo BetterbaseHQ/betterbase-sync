@@ -19,6 +19,14 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
+/// Receives notifications pushed by a remote peer on an outgoing federation
+/// socket (AUD-037). Invoked from the peer reader task; handlers that need
+/// async work must spawn it themselves. `params` is the decoded notification
+/// payload; only notifications for spaces this manager subscribed to on the
+/// peer are delivered here.
+pub type PeerNotificationHandler =
+    Arc<dyn Fn(&str, &betterbase_sync_core::protocol::CborValue) + Send + Sync>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum FederationPeerError {
     #[error("invalid peer websocket url {url:?}: {message}")]
@@ -44,6 +52,7 @@ pub struct FederationPeerManager {
     signing_key: SigningKey,
     peers: Mutex<HashMap<String, Arc<peer::PeerConnection>>>,
     request_id_counter: AtomicU64,
+    notification_handler: PeerNotificationHandler,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,7 +106,25 @@ impl FederationPeerManager {
             signing_key,
             peers: Mutex::new(HashMap::new()),
             request_id_counter: AtomicU64::new(1),
+            notification_handler: Arc::new(|_, _| {}),
         }
+    }
+
+    /// Set the sink for notifications the remote peer pushes on outgoing
+    /// sockets (AUD-037). Must be called before the first peer call.
+    #[must_use]
+    pub fn with_notification_handler(mut self, handler: PeerNotificationHandler) -> Self {
+        self.notification_handler = handler;
+        self
+    }
+
+    /// Best-effort extraction of the target space from a notification's
+    /// params — every federation notification shape carries `space` there.
+    #[must_use]
+    pub fn notification_space(
+        params: &betterbase_sync_core::protocol::CborValue,
+    ) -> Option<String> {
+        wire::notification_space(params)
     }
 
     pub async fn subscribe(
@@ -107,6 +134,21 @@ impl FederationPeerManager {
         spaces: &[WsSubscribeSpace],
     ) -> Result<(), FederationPeerError> {
         let peer = self.get_or_create_peer(peer_domain, peer_ws_url).await;
+
+        // Register requested spaces before the call: the peer's server may
+        // start pushing notifications for them the moment its subscribe
+        // processing lands, which can beat our response bookkeeping. Empty
+        // tokens mirror the decode-failure fallback below; rejected spaces
+        // only widen the notification gate, never the UCAN-validated
+        // subscription itself.
+        {
+            let mut requested = HashMap::with_capacity(spaces.len());
+            for space in spaces {
+                requested.insert(space.id.clone(), String::new());
+            }
+            peer.set_space_tokens(requested).await;
+        }
+
         let value = self
             .call_method(
                 &peer,
@@ -120,6 +162,13 @@ impl FederationPeerManager {
         // Keep parity with Go behavior: if the response can't be decoded,
         // still track subscribed spaces with empty FST tokens.
         if let Ok(result) = decode_cbor_value::<SubscribeResult>(value) {
+            if !result.errors.is_empty() {
+                tracing::warn!(
+                    peer = peer_domain,
+                    failed = result.errors.len(),
+                    "peer rejected some subscribe requests"
+                );
+            }
             let mut token_by_space = HashMap::with_capacity(result.spaces.len());
             for space in &result.spaces {
                 token_by_space.insert(space.id.clone(), space.token.clone());
@@ -234,6 +283,7 @@ impl FederationPeerManager {
         let peer = Arc::new(peer::PeerConnection::new(
             domain.to_owned(),
             ws_url.to_owned(),
+            Arc::clone(&self.notification_handler),
         ));
         peers.insert(domain.to_owned(), Arc::clone(&peer));
         peer

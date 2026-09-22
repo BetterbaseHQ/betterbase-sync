@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use betterbase_sync_api::ApiState;
 use betterbase_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
@@ -26,6 +27,9 @@ pub struct AppConfig {
     pub trusted_issuers: HashMap<String, String>,
     pub audiences: Vec<String>,
     pub file_storage: FileStorageConfig,
+    /// Grace period between a record tombstone and physical file-object
+    /// removal (AUD-039). Covers in-flight downloads and re-upload races.
+    pub file_deletion_grace: Duration,
     pub identity_hash_key: Option<Vec<u8>>,
     federation: federation::FederationRuntimeConfig,
 }
@@ -86,6 +90,8 @@ impl AppConfig {
             std::env::var("AUDIENCES").ok(),
         )?;
         config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
+        config.file_deletion_grace =
+            parse_deletion_grace(std::env::var("FILE_DELETION_GRACE_SECS").ok())?;
         config.identity_hash_key =
             parse_identity_hash_key(std::env::var("IDENTITY_HASH_KEY").ok())?;
         config.federation =
@@ -111,10 +117,29 @@ impl AppConfig {
             trusted_issuers,
             audiences,
             file_storage: FileStorageConfig::Disabled,
+            file_deletion_grace: DEFAULT_FILE_DELETION_GRACE,
             identity_hash_key: None,
             federation: federation::FederationRuntimeConfig::default(),
         })
     }
+}
+
+/// Default tombstone-to-erasure window: 24 hours.
+const DEFAULT_FILE_DELETION_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn parse_deletion_grace(value: Option<String>) -> anyhow::Result<Duration> {
+    let Some(raw) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
+        return Ok(DEFAULT_FILE_DELETION_GRACE);
+    };
+    let secs: u64 = raw.parse().map_err(|error| {
+        anyhow::anyhow!("invalid FILE_DELETION_GRACE_SECS value {raw:?}: {error}")
+    })?;
+    if secs == 0 {
+        return Err(anyhow::anyhow!(
+            "FILE_DELETION_GRACE_SECS must be greater than zero"
+        ));
+    }
+    Ok(Duration::from_secs(secs))
 }
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
@@ -136,7 +161,17 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     }
 
     if let Some(file_storage) = build_file_object_store(&config.file_storage)? {
+        let blob_storage: Arc<dyn betterbase_sync_api::FileBlobStorage> = Arc::new(
+            betterbase_sync_api::ObjectStoreFileBlobStorage::new(Arc::clone(&file_storage)),
+        );
         api_state = api_state.with_file_object_store(file_storage);
+        // AUD-039: tombstoned records queue their encrypted objects for
+        // removal; this sweep honors the grace period.
+        tokio::spawn(file_gc_loop(
+            storage.clone(),
+            blob_storage,
+            config.file_deletion_grace,
+        ));
     }
     api_state =
         federation::apply_federation_runtime_config(api_state, storage, &config.federation).await?;
@@ -151,6 +186,33 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     tracing::info!(addr = %config.listen_addr, "server listening");
     axum::serve(listener, betterbase_sync_api::router(api_state)).await?;
     Ok(())
+}
+
+/// Background erasure of file objects orphaned by record tombstones
+/// (AUD-039). Each pass deletes objects whose grace period elapsed and
+/// clears their queue entries; failures retry on the next pass.
+async fn file_gc_loop(
+    storage: Arc<PostgresStorage>,
+    blobs: Arc<dyn betterbase_sync_api::FileBlobStorage>,
+    grace: Duration,
+) {
+    const SWEEP_INTERVAL: Duration = Duration::from_secs(15 * 60);
+    const SWEEP_BATCH: usize = 500;
+    let mut interval = tokio::time::interval(SWEEP_INTERVAL);
+    interval.tick().await; // first tick fires immediately, skip it
+    loop {
+        interval.tick().await;
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(grace) else {
+            continue;
+        };
+        match betterbase_sync_api::sweep_file_deletions(&*storage, &*blobs, cutoff, SWEEP_BATCH)
+            .await
+        {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "file gc removed objects"),
+            Err(error) => tracing::error!(%error, "file gc sweep failed"),
+        }
+    }
 }
 
 /// Periodically remove stale presence entries and broadcast leave notifications.
@@ -650,5 +712,27 @@ mod tests {
         assert!(super::parse_identity_hash_key(Some(String::new()))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn parse_deletion_grace_defaults_to_24_hours() {
+        assert_eq!(
+            super::parse_deletion_grace(None).expect("default grace"),
+            std::time::Duration::from_secs(24 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn parse_deletion_grace_accepts_explicit_seconds() {
+        assert_eq!(
+            super::parse_deletion_grace(Some("3600".to_owned())).expect("explicit grace"),
+            std::time::Duration::from_secs(3600)
+        );
+    }
+
+    #[test]
+    fn parse_deletion_grace_rejects_zero_and_garbage() {
+        assert!(super::parse_deletion_grace(Some("0".to_owned())).is_err());
+        assert!(super::parse_deletion_grace(Some("soon".to_owned())).is_err());
     }
 }

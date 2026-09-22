@@ -82,7 +82,8 @@ pub(crate) async fn federation_websocket_upgrade(
     let Some(federation_authenticator) = state.federation_authenticator() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let auth_request = build_federation_auth_request(&uri, &headers);
+    let auth_request =
+        build_federation_auth_request(&uri, &headers, state.federation_trust_forwarded_proto());
     let auth_context = match federation_authenticator.authenticate_request(&auth_request) {
         Ok(context) => context,
         Err(error) => return (error.status, error.message).into_response(),
@@ -162,11 +163,29 @@ fn requested_subprotocol(headers: &HeaderMap) -> bool {
         })
 }
 
-fn build_federation_auth_request(uri: &Uri, headers: &HeaderMap) -> Request<()> {
+/// Reconstruct the absolute target URI the peer signed. Origin-form
+/// requests carry no scheme, so it is rebuilt from the Host header.
+///
+/// AUD-040: behind a TLS-terminating proxy the peer signs its configured
+/// `wss://` URL while the plain backend connection arrives as `ws://`. When
+/// the operator trusts the proxy (`FEDERATION_TRUST_FORWARDED_PROTO`), the
+/// first `X-Forwarded-Proto` hop overrides the reconstruction so both sides
+/// derive the same signature base. Unrecognized values fall back to `ws`.
+fn build_federation_auth_request(
+    uri: &Uri,
+    headers: &HeaderMap,
+    trust_forwarded_proto: bool,
+) -> Request<()> {
+    let scheme = if trust_forwarded_proto {
+        forwarded_ws_scheme(headers).unwrap_or("ws")
+    } else {
+        "ws"
+    };
+
     let request_uri = if uri.scheme().is_some() && uri.authority().is_some() {
         uri.to_string()
     } else if let Some(host) = headers.get("host").and_then(|value| value.to_str().ok()) {
-        format!("ws://{host}{uri}")
+        format!("{scheme}://{host}{uri}")
     } else {
         uri.to_string()
     };
@@ -178,6 +197,22 @@ fn build_federation_auth_request(uri: &Uri, headers: &HeaderMap) -> Request<()> 
         .expect("federation auth request should be constructible");
     *request.headers_mut() = headers.clone();
     request
+}
+
+/// Map the first `X-Forwarded-Proto` value onto a websocket scheme.
+fn forwarded_ws_scheme(headers: &HeaderMap) -> Option<&'static str> {
+    let forwarded = headers
+        .get("x-forwarded-proto")?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()?
+        .trim();
+    match forwarded {
+        "https" | "wss" => Some("wss"),
+        "http" | "ws" => Some("ws"),
+        _ => None,
+    }
 }
 
 async fn serve_websocket(

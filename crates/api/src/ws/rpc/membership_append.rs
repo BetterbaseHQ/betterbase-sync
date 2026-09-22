@@ -9,9 +9,9 @@ use super::decode_frame_params;
 use super::frames::{send_error_response, send_result_response};
 use betterbase_sync_auth::AuthContext;
 use betterbase_sync_core::protocol::{
-    MembershipAppendParams, MembershipAppendResult, WsMembershipData, WsMembershipEntry,
-    ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
-    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_RATE_LIMITED,
+    MembershipAppendKind, MembershipAppendParams, MembershipAppendResult, WsMembershipData,
+    WsMembershipEntry, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN,
+    ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_RATE_LIMITED,
 };
 use betterbase_sync_storage::{MembersLogEntry, StorageError};
 use uuid::Uuid;
@@ -124,7 +124,19 @@ pub(super) async fn handle_request(
         return;
     }
 
-    match authz::authorize_write_space(sync_storage, auth, space_id, &params.ucan).await {
+    // Authorization (AUD-033). The payload is opaque to the server, so the
+    // write gate is anti-spam/abuse defense — privileged effect is decided
+    // by the client-side signed hash chain. Within that model:
+    //   - declared self statements (accept/decline) may use a read-level
+    //     UCAN — read-only invitees must be able to answer invitations;
+    //   - everything else (including all pre-existing unlabelled callers)
+    //     still requires write.
+    let authorized = if MembershipAppendKind::is_self_statement(params.kind) {
+        authz::authorize_read_space(sync_storage, auth, space_id, &params.ucan).await
+    } else {
+        authz::authorize_write_space(sync_storage, auth, space_id, &params.ucan).await
+    };
+    match authorized {
         Ok(_) => {}
         Err(SpaceAuthzError::Forbidden) => {
             send_error_response(outbound, id, ERR_CODE_FORBIDDEN, "forbidden".to_owned()).await;

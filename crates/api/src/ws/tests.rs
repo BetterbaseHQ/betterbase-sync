@@ -969,6 +969,139 @@ async fn websocket_federation_route_supports_ucan_and_fst_subscribe_flow() {
 }
 
 #[tokio::test]
+async fn websocket_federation_rebroadcast_requires_subscription() {
+    // AUD-038: a trusted peer may only rebroadcast notifications into spaces
+    // it holds a validated subscription for. A rebroadcast aimed at an
+    // unrelated (unsubscribed) space must be dropped, not fanned out.
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let peer_issuer = TestIssuer::new();
+    let peer_read_ucan =
+        root_issuer.issue_space_ucan(&peer_issuer.did, shared_space_id, Permission::Read);
+    // The local client subscribes to the shared space with its own read UCAN
+    // (audience is the stub auth DID).
+    let client_read_ucan =
+        root_issuer.issue_space_ucan("did:key:zDnaStub", shared_space_id, Permission::Read);
+
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws_storage_and_broker(
+            Duration::from_secs(1),
+            "sync",
+            Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+                shared_space_id,
+                root_issuer.compressed_public_key().to_vec(),
+                HashSet::new(),
+            )),
+            Arc::new(MultiBroker::new(BrokerConfig::default())),
+        ),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+
+    // Local client subscribes to the shared space and its personal space.
+    let client_request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut client_socket, _) = connect_async(client_request).await.expect("connect client");
+    send_auth(&mut client_socket).await;
+    send_binary_frame(
+        &mut client_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "client-sub-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [
+                    { "id": test_personal_space_id(), "since": 0 },
+                    { "id": shared_space_id.to_string(), "since": 0, "ucan": client_read_ucan }
+                ]
+            }
+        }),
+    )
+    .await;
+    let subscribed: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut client_socket).await;
+    assert_eq!(subscribed.result.spaces.len(), 2);
+    assert!(subscribed.result.errors.is_empty());
+
+    // Federation peer subscribes only to the shared space.
+    let peer_request = signed_federation_ws_request(server.addr, &signing_key, key_id);
+    let (mut peer_socket, _) = connect_async(peer_request).await.expect("connect peer");
+    send_binary_frame(
+        &mut peer_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_REQUEST,
+            "id": "fed-sub-1",
+            "method": "subscribe",
+            "params": {
+                "spaces": [{ "id": shared_space_id.to_string(), "since": 0, "ucan": peer_read_ucan }]
+            }
+        }),
+    )
+    .await;
+    let peer_subscribed: RpcResultResponse<betterbase_sync_core::protocol::SubscribeResult> =
+        read_result_response(&mut peer_socket).await;
+    assert!(peer_subscribed.result.errors.is_empty());
+
+    // Peer rebroadcasts into the client's personal space — a space the peer
+    // has no subscription for. Must be dropped.
+    send_binary_frame(
+        &mut peer_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "sync",
+            "params": {
+                "space": test_personal_space_id(),
+                "prev": 0,
+                "cursor": 1,
+                "key_generation": 0,
+                "records": [
+                    { "id": "record-forged", "cursor": 1 }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    let leaked = tokio::time::timeout(Duration::from_millis(250), client_socket.next()).await;
+    assert!(
+        leaked.is_err(),
+        "rebroadcast into an unsubscribed space must not reach local subscribers"
+    );
+
+    // Peer rebroadcasts into its subscribed shared space — must be delivered.
+    send_binary_frame(
+        &mut peer_socket,
+        serde_json::json!({
+            "type": betterbase_sync_core::protocol::RPC_NOTIFICATION,
+            "method": "sync",
+            "params": {
+                "space": shared_space_id.to_string(),
+                "prev": 0,
+                "cursor": 1,
+                "key_generation": 0,
+                "records": [
+                    { "id": "record-legit", "cursor": 1 }
+                ]
+            }
+        }),
+    )
+    .await;
+
+    let delivered: RpcNotificationResponse<betterbase_sync_core::protocol::WsSyncData> =
+        read_notification_response(&mut client_socket).await;
+    assert_eq!(delivered.method, "sync");
+    assert_eq!(delivered.params.space, shared_space_id.to_string());
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_federation_subscribe_rejects_too_many_spaces() {
     let signing_key = Ed25519SigningKey::generate(&mut OsRng);
     let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
@@ -1557,6 +1690,122 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
 }
 
 #[tokio::test]
+async fn websocket_federation_route_accepts_wss_signature_behind_trusted_proxy() {
+    // AUD-040: behind a TLS-terminating proxy the peer signs its configured
+    // wss:// URL while the backend sees a plain ws connection. With the
+    // forwarded-proto trust flag set and X-Forwarded-Proto: https, the
+    // reconstruction must match the signed target.
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(
+        with_federation_auth(
+            base_state_with_ws(Duration::from_secs(1), "sync"),
+            &signing_key,
+            key_id,
+        )
+        .with_federation_trust_forwarded_proto(true),
+    )
+    .await;
+
+    let mut request = ws_request_path(
+        server.addr,
+        "/api/v1/federation/ws",
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    // Sign the proxy-facing absolute URL, then strip it back to origin form
+    // the way a reverse proxy would deliver the upgrade.
+    let signed_target = format!("wss://{}/api/v1/federation/ws", server.addr);
+    let mut signature_request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(&signed_target)
+        .body(())
+        .expect("signature request");
+    signature_request.headers_mut().insert(
+        "host",
+        HeaderValue::from_str(&server.addr.to_string()).expect("host header"),
+    );
+    sign_http_request(&mut signature_request, &signing_key, key_id);
+    for header_name in ["host", "Signature-Input", "Signature"] {
+        if let Some(value) = signature_request.headers().get(header_name) {
+            request.headers_mut().insert(header_name, value.clone());
+        }
+    }
+    request
+        .headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+
+    let (_socket, response) = connect_async(request)
+        .await
+        .expect("wss-signed upgrade accepted");
+    assert_eq!(
+        response
+            .headers()
+            .get(SEC_WEBSOCKET_PROTOCOL)
+            .and_then(|v| v.to_str().ok()),
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL)
+    );
+
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_federation_route_rejects_wss_signature_without_forwarded_trust() {
+    // Without the trust flag the reconstruction stays ws://, so a wss-signed
+    // target must fail verification — the flag must be an explicit opt-in.
+    let signing_key = Ed25519SigningKey::generate(&mut OsRng);
+    let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
+    let server = spawn_server(with_federation_auth(
+        base_state_with_ws(Duration::from_secs(1), "sync"),
+        &signing_key,
+        key_id,
+    ))
+    .await;
+
+    let mut request = ws_request_path(
+        server.addr,
+        "/api/v1/federation/ws",
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let signed_target = format!("wss://{}/api/v1/federation/ws", server.addr);
+    let mut signature_request = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(&signed_target)
+        .body(())
+        .expect("signature request");
+    signature_request.headers_mut().insert(
+        "host",
+        HeaderValue::from_str(&server.addr.to_string()).expect("host header"),
+    );
+    sign_http_request(&mut signature_request, &signing_key, key_id);
+    for header_name in ["host", "Signature-Input", "Signature"] {
+        if let Some(value) = signature_request.headers().get(header_name) {
+            request.headers_mut().insert(header_name, value.clone());
+        }
+    }
+    request
+        .headers_mut()
+        .insert("x-forwarded-proto", HeaderValue::from_static("https"));
+
+    let error = connect_async(request)
+        .await
+        .expect_err("wss-signed upgrade without trust must be rejected");
+    assert_http_status(error, StatusCode::UNAUTHORIZED);
+
+    server.handle.abort();
+}
+
+#[test]
+fn forwarded_ws_scheme_maps_recognized_protocols() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("https, http"));
+    assert_eq!(super::forwarded_ws_scheme(&headers), Some("wss"));
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+    assert_eq!(super::forwarded_ws_scheme(&headers), Some("ws"));
+    headers.insert("x-forwarded-proto", HeaderValue::from_static("gopher"));
+    assert_eq!(super::forwarded_ws_scheme(&headers), None);
+}
+
+#[tokio::test]
 async fn websocket_federation_route_requires_signature() {
     let signing_key = Ed25519SigningKey::generate(&mut OsRng);
     let key_id = "https://peer.example.com/.well-known/jwks.json#fed-1";
@@ -2123,6 +2372,96 @@ async fn websocket_space_create_without_sync_storage_returns_internal_error() {
 }
 
 #[tokio::test]
+async fn websocket_membership_append_self_statement_allows_read_ucan() {
+    // AUD-033: a read-only invitee must be able to append their signed
+    // acceptance/decline — previously the write gate made both paths
+    // impossible for read invitations.
+    let shared_space_id =
+        Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("valid shared space id");
+    let root_issuer = TestIssuer::new();
+    let read_ucan =
+        root_issuer.issue_space_ucan("did:key:zDnaStub", shared_space_id, Permission::Read);
+    let write_ucan =
+        root_issuer.issue_space_ucan("did:key:zDnaStub", shared_space_id, Permission::Write);
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        Arc::new(StubSyncStorage::with_shared_space_and_revocations(
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            HashSet::new(),
+        )),
+    ))
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    let test_payload = vec![7, 8, 9];
+    let test_entry_hash = Sha256::digest(&test_payload).to_vec();
+    let base_params = betterbase_sync_core::protocol::MembershipAppendParams {
+        space: shared_space_id.to_string(),
+        ucan: read_ucan,
+        expected_version: 1,
+        prev_hash: None,
+        entry_hash: test_entry_hash.clone(),
+        payload: test_payload.clone(),
+        kind: None,
+    };
+
+    // Read UCAN + unlabelled append → forbidden (pre-existing boundary).
+    send_rpc_request(
+        &mut socket,
+        "membership-append-unlabelled",
+        "membership.append",
+        &betterbase_sync_core::protocol::MembershipAppendParams {
+            ..base_params.clone()
+        },
+    )
+    .await;
+    let response = read_error_response(&mut socket).await;
+    assert_eq!(
+        response.error.code,
+        betterbase_sync_core::protocol::ERR_CODE_FORBIDDEN
+    );
+
+    // Read UCAN + self statement → accepted.
+    send_rpc_request(
+        &mut socket,
+        "membership-append-accept",
+        "membership.append",
+        &betterbase_sync_core::protocol::MembershipAppendParams {
+            kind: Some(betterbase_sync_core::protocol::MembershipAppendKind::Accept),
+            ..base_params.clone()
+        },
+    )
+    .await;
+    let accepted: RpcResultResponse<betterbase_sync_core::protocol::MembershipAppendResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(accepted.result.chain_seq, 11);
+
+    // Write UCAN without a label → still accepted (back-compat).
+    send_rpc_request(
+        &mut socket,
+        "membership-append-write",
+        "membership.append",
+        &betterbase_sync_core::protocol::MembershipAppendParams {
+            ucan: write_ucan,
+            ..base_params
+        },
+    )
+    .await;
+    let written: RpcResultResponse<betterbase_sync_core::protocol::MembershipAppendResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(written.result.chain_seq, 11);
+
+    server.handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
@@ -2150,6 +2489,7 @@ async fn websocket_membership_append_returns_chain_seq_and_metadata_version() {
             prev_hash: Some(vec![1, 2, 3]),
             entry_hash: test_entry_hash,
             payload: test_payload,
+            kind: None,
         },
     )
     .await;
@@ -2193,6 +2533,7 @@ async fn websocket_membership_append_conflict_maps_to_conflict_error() {
             prev_hash: None,
             entry_hash: test_entry_hash,
             payload: test_payload,
+            kind: None,
         },
     )
     .await;
@@ -6445,6 +6786,7 @@ async fn websocket_membership_append_invalid_space_id_returns_bad_request() {
             prev_hash: None,
             entry_hash: vec![0; 32],
             payload: vec![1, 2, 3],
+            kind: None,
         },
     )
     .await;

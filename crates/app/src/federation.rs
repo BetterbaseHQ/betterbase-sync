@@ -19,6 +19,7 @@ pub(crate) struct FederationRuntimeConfig {
     pub trusted_keys: HashMap<String, [u8; 32]>,
     pub fst_secret: Option<String>,
     pub fst_previous_secret: Option<String>,
+    pub trust_forwarded_proto: bool,
     pub quota_limits: FederationQuotaLimits,
 }
 
@@ -33,6 +34,7 @@ pub(crate) struct FederationEnv {
     pub max_bytes_per_hour: Option<String>,
     pub max_invitations_per_hour: Option<String>,
     pub max_connections: Option<String>,
+    pub trust_forwarded_proto: Option<String>,
 }
 
 impl FederationEnv {
@@ -47,6 +49,7 @@ impl FederationEnv {
             max_bytes_per_hour: std::env::var("FEDERATION_MAX_BYTES_PER_HOUR").ok(),
             max_invitations_per_hour: std::env::var("FEDERATION_MAX_INVITATIONS_PER_HOUR").ok(),
             max_connections: std::env::var("FEDERATION_MAX_CONNECTIONS").ok(),
+            trust_forwarded_proto: std::env::var("FEDERATION_TRUST_FORWARDED_PROTO").ok(),
         }
     }
 }
@@ -88,6 +91,7 @@ pub(crate) fn parse_federation_runtime_config(
         trusted_keys,
         fst_secret: normalize_optional_secret(env.fst_secret),
         fst_previous_secret: normalize_optional_secret(env.fst_previous_secret),
+        trust_forwarded_proto: parse_bool_flag(env.trust_forwarded_proto.as_deref()),
         quota_limits,
     })
 }
@@ -99,13 +103,19 @@ pub(crate) async fn apply_federation_runtime_config(
 ) -> anyhow::Result<ApiState> {
     api_state = api_state
         .with_federation_quota_limits(config.quota_limits)
-        .with_federation_trusted_domains(config.trusted_domains.clone());
+        .with_federation_trusted_domains(config.trusted_domains.clone())
+        .with_federation_trust_forwarded_proto(config.trust_forwarded_proto);
 
     let jwks = load_jwks(storage.as_ref()).await?;
     api_state = api_state.with_federation_jwks(jwks);
 
     if let Some((key_id, signing_key)) = load_primary_signing_key(storage.as_ref()).await? {
-        let forwarder = FederationPeerManager::new(key_id, signing_key);
+        let mut forwarder = FederationPeerManager::new(key_id, signing_key);
+        // AUD-037: notifications the remote peer pushes on our outgoing
+        // sockets fan out to local subscribers instead of being discarded.
+        if let Some(broker) = api_state.realtime_broker() {
+            forwarder = forwarder.with_notification_handler(broadcast_peer_notification(broker));
+        }
         api_state = api_state.with_federation_forwarder(Arc::new(forwarder));
     }
 
@@ -239,6 +249,17 @@ fn parse_nonzero_u64(value: Option<&str>, name: &str) -> anyhow::Result<Option<u
     Ok(Some(parsed))
 }
 
+fn parse_bool_flag(value: Option<&str>) -> bool {
+    value
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn normalize_optional_secret(value: Option<String>) -> Option<String> {
     value.and_then(|secret| {
         let trimmed = secret.trim();
@@ -248,6 +269,43 @@ fn normalize_optional_secret(value: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+/// Fan peer notifications from outgoing federation sockets into the local
+/// broker so proxied clients receive realtime updates from their home
+/// server (AUD-037). The reader task already filtered the notification to
+/// spaces this server subscribed to on the peer.
+fn broadcast_peer_notification(
+    broker: Arc<betterbase_sync_realtime::broker::MultiBroker>,
+) -> betterbase_sync_api::PeerNotificationHandler {
+    Arc::new(
+        move |method: &str, params: &betterbase_sync_core::protocol::CborValue| {
+            let Some(space_id) =
+                betterbase_sync_api::FederationPeerManager::notification_space(params)
+            else {
+                return;
+            };
+            #[derive(serde::Serialize)]
+            struct NotificationFrame<'a> {
+                #[serde(rename = "type")]
+                frame_type: i32,
+                method: &'a str,
+                params: &'a betterbase_sync_core::protocol::CborValue,
+            }
+            let frame = NotificationFrame {
+                frame_type: betterbase_sync_core::protocol::RPC_NOTIFICATION,
+                method,
+                params,
+            };
+            let Ok(encoded) = minicbor_serde::to_vec(&frame) else {
+                return;
+            };
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move {
+                broker.broadcast_space(&space_id, "", &encoded).await;
+            });
+        },
+    )
 }
 
 async fn load_jwks(storage: &PostgresStorage) -> anyhow::Result<FederationJwks> {
@@ -343,6 +401,7 @@ mod tests {
             max_bytes_per_hour: Some("13".to_owned()),
             max_invitations_per_hour: Some("14".to_owned()),
             max_connections: Some("15".to_owned()),
+            trust_forwarded_proto: Some("true".to_owned()),
         })
         .expect("parse federation");
 
@@ -361,6 +420,7 @@ mod tests {
         assert_eq!(config.quota_limits.max_bytes_per_hour, 13);
         assert_eq!(config.quota_limits.max_invitations_per_hour, 14);
         assert_eq!(config.quota_limits.max_connections, 15);
+        assert!(config.trust_forwarded_proto);
     }
 
     #[test]

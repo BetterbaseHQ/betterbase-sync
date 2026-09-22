@@ -117,14 +117,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileBlobStorageError {
+pub enum FileBlobStorageError {
     NotFound,
     TooLarge,
     Internal,
 }
 
 #[async_trait]
-pub(crate) trait FileBlobStorage: Send + Sync {
+pub trait FileBlobStorage: Send + Sync {
     async fn store(
         &self,
         space_id: Uuid,
@@ -132,6 +132,8 @@ pub(crate) trait FileBlobStorage: Send + Sync {
         payload: &[u8],
     ) -> Result<bool, FileBlobStorageError>;
     async fn get(&self, space_id: Uuid, file_id: Uuid) -> Result<Vec<u8>, FileBlobStorageError>;
+    /// Remove the object. Returns `Ok(false)` when it was already gone.
+    async fn delete(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, FileBlobStorageError>;
 }
 
 pub struct ObjectStoreFileBlobStorage {
@@ -214,6 +216,20 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
             .map_err(|_| FileBlobStorageError::Internal)?;
         Ok(bytes.to_vec())
     }
+
+    async fn delete(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, FileBlobStorageError> {
+        let location = file_object_path(space_id, file_id);
+        match object_store::ObjectStoreExt::delete(&*self.store, &location).await {
+            Ok(_) => Ok(true),
+            Err(error) => {
+                if matches!(error, object_store::Error::NotFound { .. }) {
+                    Ok(false)
+                } else {
+                    Err(FileBlobStorageError::Internal)
+                }
+            }
+        }
+    }
 }
 
 enum FileCommitError {
@@ -221,6 +237,108 @@ enum FileCommitError {
     /// generation — the client must re-encrypt under the current epoch.
     KeyGenerationStale,
     Storage,
+}
+
+/// Deletion-queue view over file storage (AUD-039). Separated from
+/// [`FileSyncStorage`] because only the background sweep consumes it.
+#[async_trait]
+pub trait FileDeletionQueue: Send + Sync {
+    /// File objects past their deletion grace period.
+    async fn pending_file_deletions(
+        &self,
+        cutoff: std::time::SystemTime,
+        limit: usize,
+    ) -> Result<
+        Vec<betterbase_sync_storage::PendingFileDeletion>,
+        betterbase_sync_storage::StorageError,
+    >;
+    async fn file_exists(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<bool, betterbase_sync_storage::StorageError>;
+    async fn complete_file_deletion(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), betterbase_sync_storage::StorageError>;
+}
+
+#[async_trait]
+impl<T> FileDeletionQueue for T
+where
+    T: betterbase_sync_storage::Storage + Send + Sync,
+{
+    async fn pending_file_deletions(
+        &self,
+        cutoff: std::time::SystemTime,
+        limit: usize,
+    ) -> Result<
+        Vec<betterbase_sync_storage::PendingFileDeletion>,
+        betterbase_sync_storage::StorageError,
+    > {
+        betterbase_sync_storage::FileStorage::pending_file_deletions(self, cutoff, limit).await
+    }
+
+    async fn file_exists(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<bool, betterbase_sync_storage::StorageError> {
+        betterbase_sync_storage::FileStorage::file_exists(self, space_id, file_id).await
+    }
+
+    async fn complete_file_deletion(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), betterbase_sync_storage::StorageError> {
+        betterbase_sync_storage::FileStorage::complete_file_deletion(self, space_id, file_id).await
+    }
+}
+
+/// One garbage-collection pass over the file-deletion queue (AUD-039).
+///
+/// Objects whose queued deletion has aged past `cutoff` are removed from
+/// the blob store; rows are completed (removed) only after the object is
+/// gone, so a failed deletion retries on the next pass. The metadata
+/// re-check guards the re-upload race: a client re-creating the same
+/// (space, file_id) after its tombstone re-inserted metadata, making the
+/// object live again.
+pub async fn sweep_file_deletions<S: FileDeletionQueue + ?Sized>(
+    storage: &S,
+    blobs: &dyn FileBlobStorage,
+    cutoff: std::time::SystemTime,
+    batch_limit: usize,
+) -> Result<usize, betterbase_sync_storage::StorageError> {
+    let pending = storage.pending_file_deletions(cutoff, batch_limit).await?;
+    let mut removed = 0;
+    for item in pending {
+        if storage.file_exists(item.space_id, item.file_id).await? {
+            // Re-uploaded after the tombstone — the object is live again.
+            storage
+                .complete_file_deletion(item.space_id, item.file_id)
+                .await?;
+            continue;
+        }
+        match blobs.delete(item.space_id, item.file_id).await {
+            Ok(_) => {
+                storage
+                    .complete_file_deletion(item.space_id, item.file_id)
+                    .await?;
+                removed += 1;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    space = %item.space_id,
+                    file = %item.file_id,
+                    "file object deletion failed; will retry next sweep"
+                );
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// Metadata commit shared by first attempts and retries (AUD-027).
@@ -923,6 +1041,151 @@ mod tests {
                 .cloned()
                 .ok_or(FileBlobStorageError::NotFound)
         }
+
+        async fn delete(
+            &self,
+            space_id: Uuid,
+            file_id: Uuid,
+        ) -> Result<bool, FileBlobStorageError> {
+            Ok(self
+                .files
+                .lock()
+                .expect("blob lock")
+                .remove(&(space_id, file_id))
+                .is_some())
+        }
+    }
+
+    #[derive(Default)]
+    struct StubDeletionQueue {
+        pending: Mutex<Vec<(Uuid, Uuid, std::time::SystemTime)>>,
+        live_files: Mutex<std::collections::HashSet<(Uuid, Uuid)>>,
+    }
+
+    #[async_trait]
+    impl FileDeletionQueue for StubDeletionQueue {
+        async fn pending_file_deletions(
+            &self,
+            cutoff: std::time::SystemTime,
+            limit: usize,
+        ) -> Result<Vec<betterbase_sync_storage::PendingFileDeletion>, StorageError> {
+            let pending = self.pending.lock().expect("lock pending");
+            Ok(pending
+                .iter()
+                .filter(|(_, _, scheduled_at)| scheduled_at <= &cutoff)
+                .take(limit)
+                .map(
+                    |(space_id, file_id, _)| betterbase_sync_storage::PendingFileDeletion {
+                        space_id: *space_id,
+                        file_id: *file_id,
+                    },
+                )
+                .collect())
+        }
+
+        async fn file_exists(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, StorageError> {
+            Ok(self
+                .live_files
+                .lock()
+                .expect("lock live files")
+                .contains(&(space_id, file_id)))
+        }
+
+        async fn complete_file_deletion(
+            &self,
+            space_id: Uuid,
+            file_id: Uuid,
+        ) -> Result<(), StorageError> {
+            self.pending
+                .lock()
+                .expect("lock pending")
+                .retain(|(space, file, _)| (*space, *file) != (space_id, file_id));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn sweep_removes_due_objects_and_completes_rows() {
+        // AUD-039: tombstoned records schedule their file objects for
+        // removal; the sweep deletes aged-out objects and clears the queue.
+        let storage = StubDeletionQueue::default();
+        let blobs = StubFileBlobStorage::default();
+        let space_id = Uuid::new_v4();
+        let due_file = Uuid::new_v4();
+        let future_file = Uuid::new_v4();
+
+        for file_id in [due_file, future_file] {
+            storage.pending.lock().expect("lock pending").push((
+                space_id,
+                file_id,
+                if file_id == due_file {
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(1)
+                } else {
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(3600)
+                },
+            ));
+            blobs
+                .store(space_id, file_id, b"bytes")
+                .await
+                .expect("store");
+        }
+
+        let removed = sweep_file_deletions(&storage, &blobs, std::time::SystemTime::now(), 100)
+            .await
+            .expect("sweep");
+        assert_eq!(removed, 1);
+        assert!(blobs.get(space_id, due_file).await.is_err());
+        // Not yet due — untouched.
+        assert!(blobs.get(space_id, future_file).await.is_ok());
+        // Completed rows are gone from the queue (only the not-yet-due
+        // entry remains).
+        let remaining = storage
+            .pending_file_deletions(cutoff_now(), 100)
+            .await
+            .expect("remaining");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].file_id, future_file);
+    }
+
+    #[tokio::test]
+    async fn sweep_spares_reuploaded_files() {
+        // The re-upload guard: a file id whose metadata was re-created after
+        // the tombstone queued it is live again — the object survives and
+        // the queue entry is dropped.
+        let storage = StubDeletionQueue::default();
+        let blobs = StubFileBlobStorage::default();
+        let space_id = Uuid::new_v4();
+        let file_id = Uuid::new_v4();
+
+        storage.pending.lock().expect("lock pending").push((
+            space_id,
+            file_id,
+            std::time::UNIX_EPOCH,
+        ));
+        blobs
+            .store(space_id, file_id, b"bytes")
+            .await
+            .expect("store");
+        storage
+            .live_files
+            .lock()
+            .expect("lock live files")
+            .insert((space_id, file_id));
+
+        let removed = sweep_file_deletions(&storage, &blobs, std::time::SystemTime::now(), 100)
+            .await
+            .expect("sweep");
+        assert_eq!(removed, 0);
+        assert!(blobs.get(space_id, file_id).await.is_ok());
+        let remaining = storage
+            .pending_file_deletions(cutoff_now(), 100)
+            .await
+            .expect("remaining");
+        assert!(remaining.is_empty());
+    }
+
+    fn cutoff_now() -> std::time::SystemTime {
+        std::time::SystemTime::now() + std::time::Duration::from_secs(3600)
     }
 
     #[tokio::test]

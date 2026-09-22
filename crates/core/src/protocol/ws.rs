@@ -446,6 +446,29 @@ pub struct MembershipAppendParams {
     pub entry_hash: Vec<u8>,
     #[serde(rename = "payload", with = "serde_bytes")]
     pub payload: Vec<u8>,
+    /// Declared entry class (AUD-033). Additive optional field: self
+    /// statements (`accept`/`decline`) may be appended with a read-level
+    /// UCAN; anything else — including the field's absence, which is every
+    /// pre-existing caller — still requires write. The payload itself stays
+    /// opaque; privileged effect is decided by client-side chain
+    /// verification, not by this label.
+    #[serde(rename = "kind", skip_serializing_if = "Option::is_none", default)]
+    pub kind: Option<MembershipAppendKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MembershipAppendKind {
+    #[serde(rename = "accept")]
+    Accept,
+    #[serde(rename = "decline")]
+    Decline,
+}
+
+impl MembershipAppendKind {
+    #[must_use]
+    pub fn is_self_statement(kind: Option<MembershipAppendKind>) -> bool {
+        matches!(kind, Some(Self::Accept) | Some(Self::Decline))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1074,6 +1097,7 @@ mod tests {
             prev_hash: None,
             entry_hash: vec![4, 5, 6],
             payload: vec![7, 8, 9],
+            kind: None,
         };
         let encoded = minicbor_serde::to_vec(&params).expect("encode");
         let decoded: MembershipAppendParams = minicbor_serde::from_slice(&encoded).expect("decode");

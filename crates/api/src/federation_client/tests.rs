@@ -51,6 +51,13 @@ enum MockPeerReply {
         result: betterbase_sync_core::protocol::CborValue,
         chunks: Vec<(String, betterbase_sync_core::protocol::CborValue)>,
     },
+    /// Push a notification frame before answering — mirrors a peer whose
+    /// subscribe landed server-side and started rebroadcasting immediately.
+    NotifyThenRespond {
+        method: &'static str,
+        params: betterbase_sync_core::protocol::CborValue,
+        result: betterbase_sync_core::protocol::CborValue,
+    },
     CloseConnection,
 }
 
@@ -513,6 +520,137 @@ async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
     manager.close().await;
 }
 
+#[tokio::test]
+async fn federation_peer_manager_delivers_notifications_during_call() {
+    // AUD-037: the old reader consumed the socket only while awaiting one
+    // RPC response and discarded every notification frame it saw. The
+    // dedicated reader must deliver notifications AND complete the call.
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::NotifyThenRespond {
+        method: "sync",
+        params: betterbase_sync_core::protocol::CborValue::from_serializable(&serde_json::json!({
+            "space": "space-1",
+            "prev": 0,
+            "cursor": 5,
+            "key_generation": 0,
+            "records": [{ "id": "record-1", "cursor": 5 }]
+        }))
+        .expect("encode notification params"),
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&SubscribeResult {
+            spaces: vec![betterbase_sync_core::protocol::WsSubscribedSpace {
+                id: "space-1".to_owned(),
+                cursor: 0,
+                key_generation: 0,
+                rewrap_epoch: None,
+                token: "fst-1".to_owned(),
+                peers: Vec::new(),
+            }],
+            errors: Vec::new(),
+        })
+        .expect("encode subscribe result"),
+    })
+    .await;
+
+    let (notifications_tx, mut notifications_rx) = mpsc::unbounded_channel();
+    let manager = test_manager(peer.addr()).with_notification_handler(Arc::new(
+        move |method: &str, params: &betterbase_sync_core::protocol::CborValue| {
+            notifications_tx
+                .send((method.to_owned(), params.clone()))
+                .expect("notification channel open");
+        },
+    ));
+
+    manager
+        .subscribe(
+            "peer.test",
+            &peer.ws_url,
+            &[WsSubscribeSpace {
+                id: "space-1".to_owned(),
+                since: 0,
+                ucan: String::new(),
+                token: String::new(),
+                presence: false,
+            }],
+        )
+        .await
+        .expect("subscribe completes despite interleaved notification");
+
+    let _ = peer.require_request().await;
+
+    let (method, params) = tokio::time::timeout(Duration::from_secs(3), notifications_rx.recv())
+        .await
+        .expect("notification must be delivered")
+        .expect("notification channel open");
+    assert_eq!(method, "sync");
+    let decoded: serde_json::Value = decode_params(params);
+    assert_eq!(decoded["space"], "space-1");
+    assert_eq!(decoded["cursor"], 5);
+
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn federation_peer_manager_drops_notifications_for_unsubscribed_spaces() {
+    // The outgoing counterpart of the incoming rebroadcast gate: a peer
+    // pushing notifications for spaces this manager never subscribed to
+    // must not reach the local broker.
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::NotifyThenRespond {
+        method: "sync",
+        params: betterbase_sync_core::protocol::CborValue::from_serializable(&serde_json::json!({
+            "space": "space-not-subscribed",
+            "prev": 0,
+            "cursor": 1,
+            "key_generation": 0,
+            "records": [{ "id": "record-x", "cursor": 1 }]
+        }))
+        .expect("encode notification params"),
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
+            ok: true,
+            cursor: 1,
+            error: String::new(),
+        })
+        .expect("encode push result"),
+    })
+    .await;
+
+    let (notifications_tx, mut notifications_rx) = mpsc::unbounded_channel();
+    let manager = test_manager(peer.addr()).with_notification_handler(Arc::new(
+        move |method: &str, params: &betterbase_sync_core::protocol::CborValue| {
+            notifications_tx
+                .send((method.to_owned(), params.clone()))
+                .expect("notification channel open");
+        },
+    ));
+
+    // forward_push opens the connection without any subscription.
+    let result = manager
+        .forward_push(
+            "peer.test",
+            &peer.ws_url,
+            &PushParams {
+                space: "space-1".to_owned(),
+                ucan: "ucan-write".to_owned(),
+                changes: vec![WsPushChange {
+                    id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                    blob: Some(vec![120]),
+                    expected_cursor: 0,
+                    wrapped_dek: None,
+                }],
+            },
+        )
+        .await
+        .expect("forward push");
+    assert!(result.ok);
+    let _ = peer.require_request().await;
+
+    let leaked = tokio::time::timeout(Duration::from_millis(250), notifications_rx.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "notification for an unsubscribed space must be dropped"
+    );
+
+    manager.close().await;
+}
+
 fn test_manager(addr: SocketAddr) -> FederationPeerManager {
     let signing_key = SigningKey::generate(&mut OsRng);
     let key_id = format!("https://{addr}/.well-known/jwks.json#fed-test");
@@ -573,6 +711,44 @@ async fn handle_socket(
                     if socket.send(Message::Binary(encoded.into())).await.is_err() {
                         return;
                     }
+                }
+
+                let response = OutboundResponseFrame {
+                    frame_type: RPC_RESPONSE,
+                    id: request.id,
+                    result,
+                };
+                let encoded = match minicbor_serde::to_vec(&response) {
+                    Ok(encoded) => encoded,
+                    Err(_) => return,
+                };
+                if socket.send(Message::Binary(encoded.into())).await.is_err() {
+                    return;
+                }
+            }
+            MockPeerReply::NotifyThenRespond {
+                method,
+                params,
+                result,
+            } => {
+                #[derive(serde::Serialize)]
+                struct OutboundNotificationFrame {
+                    #[serde(rename = "type")]
+                    frame_type: i32,
+                    method: &'static str,
+                    params: betterbase_sync_core::protocol::CborValue,
+                }
+                let notification = OutboundNotificationFrame {
+                    frame_type: betterbase_sync_core::protocol::RPC_NOTIFICATION,
+                    method,
+                    params,
+                };
+                let encoded = match minicbor_serde::to_vec(&notification) {
+                    Ok(encoded) => encoded,
+                    Err(_) => return,
+                };
+                if socket.send(Message::Binary(encoded.into())).await.is_err() {
+                    return;
                 }
 
                 let response = OutboundResponseFrame {

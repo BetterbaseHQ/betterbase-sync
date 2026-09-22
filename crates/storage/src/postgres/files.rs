@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::time::SystemTime;
 use uuid::Uuid;
 
 use super::PostgresStorage;
@@ -246,6 +247,73 @@ impl FileStorage for PostgresStorage {
         .await
         .map_err(|error| StorageError::Database(error.to_string()))
     }
+
+    async fn schedule_file_deletions(
+        &self,
+        space_id: Uuid,
+        file_ids: &[Uuid],
+    ) -> Result<(), StorageError> {
+        for file_id in file_ids {
+            sqlx::query(
+                "INSERT INTO pending_file_deletions (space_id, file_id) VALUES ($1, $2)
+                 ON CONFLICT (space_id, file_id) DO NOTHING",
+            )
+            .bind(space_id)
+            .bind(file_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn pending_file_deletions(
+        &self,
+        cutoff: SystemTime,
+        limit: usize,
+    ) -> Result<Vec<crate::PendingFileDeletion>, StorageError> {
+        let cutoff_us = cutoff
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_micros() as i64)
+            .unwrap_or(0);
+        let rows = sqlx::query_as::<_, PendingDeletionRow>(
+            "SELECT space_id, file_id FROM pending_file_deletions
+             WHERE (EXTRACT(EPOCH FROM scheduled_at) * 1000000)::BIGINT <= $1
+             ORDER BY scheduled_at LIMIT $2",
+        )
+        .bind(cutoff_us)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| crate::PendingFileDeletion {
+                space_id: row.space_id,
+                file_id: row.file_id,
+            })
+            .collect())
+    }
+
+    async fn complete_file_deletion(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2")
+            .bind(space_id)
+            .bind(file_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PendingDeletionRow {
+    space_id: Uuid,
+    file_id: Uuid,
 }
 
 #[derive(Debug, sqlx::FromRow)]

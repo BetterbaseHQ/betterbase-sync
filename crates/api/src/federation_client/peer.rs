@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use betterbase_sync_auth::sign_http_request;
 use betterbase_sync_realtime::ws::WS_SUBPROTOCOL;
@@ -7,16 +9,23 @@ use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, Method, Request};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
 use super::wire::{decode_inbound_frame, encode_request_frame, InboundFrame};
-use super::FederationPeerError;
+use super::{FederationPeerError, PeerNotificationHandler};
 
 type PeerSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type PeerSink = futures_util::stream::SplitSink<PeerSocket, Message>;
+type PeerStream = futures_util::stream::SplitStream<PeerSocket>;
+
+/// Upper bound for a single RPC call, chunks included. A stalled or
+/// flooding trusted peer previously held the per-peer mutex forever;
+/// the deadline converts that into a connection reset (AUD-037).
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ReceivedChunk {
@@ -26,16 +35,82 @@ pub(super) struct ReceivedChunk {
 
 pub(super) struct PeerConnection {
     ws_url: String,
-    socket: Mutex<Option<PeerSocket>>,
-    spaces: RwLock<HashMap<String, String>>,
+    spaces: Arc<RwLock<HashMap<String, String>>>,
+    notifications: PeerNotificationHandler,
+    state: Arc<Mutex<PeerState>>,
+}
+
+struct PeerState {
+    sink: Option<PeerSink>,
+    pending: HashMap<String, Arc<PendingCall>>,
+}
+
+struct PendingCall {
+    chunks: std::sync::Mutex<Vec<ReceivedChunk>>,
+    outcome: std::sync::Mutex<
+        Option<Result<betterbase_sync_core::protocol::CborValue, FederationPeerError>>,
+    >,
+    done: Notify,
+}
+
+impl PendingCall {
+    fn new() -> Self {
+        Self {
+            chunks: std::sync::Mutex::new(Vec::new()),
+            outcome: std::sync::Mutex::new(None),
+            done: Notify::new(),
+        }
+    }
+
+    fn push_chunk(&self, chunk: ReceivedChunk) {
+        self.chunks
+            .lock()
+            .expect("lock chunk accumulator")
+            .push(chunk);
+    }
+
+    fn complete(
+        &self,
+        outcome: Result<betterbase_sync_core::protocol::CborValue, FederationPeerError>,
+    ) {
+        *self.outcome.lock().expect("lock outcome") = Some(outcome);
+        self.done.notify_waiters();
+    }
+
+    fn take(
+        &self,
+    ) -> Result<
+        (
+            betterbase_sync_core::protocol::CborValue,
+            Vec<ReceivedChunk>,
+        ),
+        FederationPeerError,
+    > {
+        let outcome = self
+            .outcome
+            .lock()
+            .expect("lock outcome")
+            .take()
+            .unwrap_or(Err(FederationPeerError::Closed));
+        let chunks = std::mem::take(&mut *self.chunks.lock().expect("lock chunk accumulator"));
+        outcome.map(|value| (value, chunks))
+    }
 }
 
 impl PeerConnection {
-    pub(super) fn new(_domain: String, ws_url: String) -> Self {
+    pub(super) fn new(
+        _domain: String,
+        ws_url: String,
+        notifications: PeerNotificationHandler,
+    ) -> Self {
         Self {
             ws_url,
-            socket: Mutex::new(None),
-            spaces: RwLock::new(HashMap::new()),
+            spaces: Arc::new(RwLock::new(HashMap::new())),
+            notifications,
+            state: Arc::new(Mutex::new(PeerState {
+                sink: None,
+                pending: HashMap::new(),
+            })),
         }
     }
 
@@ -57,30 +132,59 @@ impl PeerConnection {
         P: serde::Serialize,
     {
         let frame = encode_request_frame(request_id, method, params)?;
-        let mut socket = self.socket.lock().await;
 
-        if socket.is_none() {
-            *socket = Some(connect_socket(&self.ws_url, key_id, signing_key).await?);
+        let mut state = self.state.lock().await;
+        if state.sink.is_none() {
+            match connect_socket(&self.ws_url, key_id, signing_key).await {
+                Ok(socket) => {
+                    let (sink, stream) = socket.split();
+                    tokio::spawn(read_peer_socket(
+                        stream,
+                        Arc::clone(&self.state),
+                        Arc::clone(&self.spaces),
+                        Arc::clone(&self.notifications),
+                    ));
+                    state.sink = Some(sink);
+                }
+                Err(error) => return Err(error),
+            }
         }
 
-        let active_socket = socket
-            .as_mut()
-            .ok_or_else(|| FederationPeerError::Connect("missing active socket".to_owned()))?;
+        let call = Arc::new(PendingCall::new());
+        state
+            .pending
+            .insert(request_id.to_owned(), Arc::clone(&call));
 
-        if active_socket
-            .send(Message::Binary(frame.into()))
-            .await
-            .is_err()
-        {
-            *socket = None;
+        let send_failed = match state.sink.as_mut() {
+            Some(sink) => sink.send(Message::Binary(frame.into())).await.is_err(),
+            None => true,
+        };
+        if send_failed {
+            teardown(&mut state).await;
             return Err(FederationPeerError::Closed);
         }
+        drop(state);
 
-        let result = read_response_for_request(active_socket, request_id).await;
-        if result.is_err() {
-            *socket = None;
+        let wait = tokio::time::timeout(RESPONSE_TIMEOUT, call.done.notified()).await;
+        let mut state = self.state.lock().await;
+        state.pending.remove(request_id);
+        match wait {
+            Ok(()) => {
+                let result = call.take();
+                if result.is_err() {
+                    // The reader reported a fatal condition for this call —
+                    // treat the connection as unhealthy.
+                    teardown(&mut state).await;
+                }
+                result
+            }
+            Err(_) => {
+                // Deadline elapsed: the peer stalled. Reset the connection so
+                // the next call reconnects instead of queuing behind it.
+                teardown(&mut state).await;
+                Err(FederationPeerError::Closed)
+            }
         }
-        result
     }
 
     pub(super) async fn set_space_tokens(&self, token_by_space: HashMap<String, String>) {
@@ -95,12 +199,111 @@ impl PeerConnection {
     }
 
     pub(super) async fn close(&self) {
-        let mut socket = self.socket.lock().await;
-        if let Some(active) = socket.as_mut() {
-            let _ = active.close(None).await;
-        }
-        *socket = None;
+        let mut state = self.state.lock().await;
+        teardown(&mut state).await;
     }
+}
+
+/// Fail every in-flight call and drop the socket so the next call
+/// reconnects from scratch. The reader task observes the closed stream and
+/// exits on its own.
+async fn teardown(state: &mut PeerState) {
+    if let Some(mut sink) = state.sink.take() {
+        let _ = sink.close().await;
+    }
+    let pending = std::mem::take(&mut state.pending);
+    for (_, call) in pending {
+        call.complete(Err(FederationPeerError::Closed));
+    }
+}
+
+/// Dedicated reader for an outgoing peer socket (AUD-037): responses and
+/// chunks route to their pending calls while notifications fan out to the
+/// local broker instead of being discarded mid-response.
+async fn read_peer_socket(
+    mut stream: PeerStream,
+    state: Arc<Mutex<PeerState>>,
+    spaces: Arc<RwLock<HashMap<String, String>>>,
+    notifications: PeerNotificationHandler,
+) {
+    loop {
+        let frame = match stream.next().await {
+            Some(Ok(frame)) => frame,
+            Some(Err(_)) | None => break,
+        };
+        match frame {
+            Message::Binary(payload) => {
+                if payload.len() == 1 && payload[0] == 0xF6 {
+                    continue;
+                }
+
+                let decoded = match decode_inbound_frame(payload.as_ref()) {
+                    Ok(decoded) => decoded,
+                    Err(_) => continue,
+                };
+                match decoded {
+                    InboundFrame::Response(response) => {
+                        if response.frame_type != betterbase_sync_core::protocol::RPC_RESPONSE {
+                            continue;
+                        }
+                        let state = state.lock().await;
+                        if let Some(call) = state.pending.get(&response.id) {
+                            let outcome = match response.error {
+                                Some(error) => Err(FederationPeerError::Rpc(error)),
+                                None => Ok(response
+                                    .result
+                                    .unwrap_or(betterbase_sync_core::protocol::CborValue::Null)),
+                            };
+                            call.complete(outcome);
+                        }
+                    }
+                    InboundFrame::Chunk(chunk) => {
+                        if chunk.frame_type != betterbase_sync_core::protocol::RPC_CHUNK {
+                            continue;
+                        }
+                        let state = state.lock().await;
+                        if let Some(call) = state.pending.get(&chunk.id) {
+                            call.push_chunk(ReceivedChunk {
+                                name: chunk.name,
+                                data: chunk.data,
+                            });
+                        }
+                    }
+                    InboundFrame::Notification(notification) => {
+                        if notification.frame_type
+                            != betterbase_sync_core::protocol::RPC_NOTIFICATION
+                        {
+                            continue;
+                        }
+                        // Only accept notifications for spaces this manager
+                        // actually subscribed to on the peer — the outgoing
+                        // counterpart of the incoming rebroadcast gate.
+                        let subscribed = {
+                            let spaces = spaces.read().await;
+                            notification
+                                .space
+                                .as_deref()
+                                .is_some_and(|space| spaces.contains_key(space))
+                        };
+                        if !subscribed {
+                            tracing::warn!(
+                                method = notification.method.as_str(),
+                                "dropping peer notification for an unsubscribed space"
+                            );
+                            continue;
+                        }
+                        notifications(notification.method.as_str(), &notification.params);
+                    }
+                    InboundFrame::Other => {}
+                }
+            }
+            Message::Close(_) => break,
+            Message::Ping(_) | Message::Pong(_) | Message::Text(_) | Message::Frame(_) => {}
+        }
+    }
+
+    let mut state = state.lock().await;
+    teardown(&mut state).await;
 }
 
 async fn connect_socket(
@@ -187,66 +390,4 @@ fn host_header_value(url: &Url) -> Option<String> {
         Some(port) => Some(format!("{host}:{port}")),
         None => Some(host.to_owned()),
     }
-}
-
-async fn read_response_for_request(
-    socket: &mut PeerSocket,
-    request_id: &str,
-) -> Result<
-    (
-        betterbase_sync_core::protocol::CborValue,
-        Vec<ReceivedChunk>,
-    ),
-    FederationPeerError,
-> {
-    let mut chunks = Vec::new();
-    while let Some(frame) = socket.next().await {
-        let frame = frame.map_err(|_| FederationPeerError::Closed)?;
-        match frame {
-            Message::Binary(payload) => {
-                if payload.len() == 1 && payload[0] == 0xF6 {
-                    continue;
-                }
-
-                match decode_inbound_frame(payload.as_ref())? {
-                    InboundFrame::Response(response) => {
-                        if response.frame_type != betterbase_sync_core::protocol::RPC_RESPONSE {
-                            continue;
-                        }
-                        if response.id != request_id {
-                            continue;
-                        }
-                        if let Some(error) = response.error {
-                            return Err(FederationPeerError::Rpc(error));
-                        }
-                        return Ok((
-                            response
-                                .result
-                                .unwrap_or(betterbase_sync_core::protocol::CborValue::Null),
-                            chunks,
-                        ));
-                    }
-                    InboundFrame::Chunk(chunk) => {
-                        if chunk.frame_type != betterbase_sync_core::protocol::RPC_CHUNK {
-                            continue;
-                        }
-                        if chunk.id != request_id {
-                            continue;
-                        }
-                        chunks.push(ReceivedChunk {
-                            name: chunk.name,
-                            data: chunk.data,
-                        });
-                    }
-                    InboundFrame::Other => {
-                        continue;
-                    }
-                }
-            }
-            Message::Close(_) => return Err(FederationPeerError::Closed),
-            Message::Ping(_) | Message::Pong(_) | Message::Text(_) | Message::Frame(_) => {}
-        }
-    }
-
-    Err(FederationPeerError::Closed)
 }
