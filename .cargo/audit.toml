@@ -1,0 +1,10 @@
+# cargo-audit configuration.
+#
+# RUSTSEC-2023-0071 (rsa "Marvin Attack" timing sidechannel) is accepted
+# with rationale: rsa reaches these binaries only through jsonwebtoken,
+# and every JWT operation in this codebase pins ES256 (no RSA key is
+# ever loaded, so there is no RSA private-key timing oracle to attack).
+# Upstream has no fixed release. Tracked in the platform audit as
+# AUD-059 — remove this ignore when a fixed rsa lands.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
