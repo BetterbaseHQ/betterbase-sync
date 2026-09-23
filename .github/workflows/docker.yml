@@ -152,10 +152,12 @@ jobs:
             echo "Expected 2 platform digests, found $count" >&2
             exit 1
           fi
-          # Restore OCI annotations (imagetools can't set config labels)
+          # Restore OCI annotations. imagetools create requires an explicit
+          # scope — keep the manifest: prefix; unscoped annotations fail
+          # with `"" annotations are not supported yet` on newer buildx.
           args=()
           while IFS= read -r ann; do
-            args+=(--annotation "${ann#manifest:}")
+            args+=(--annotation "$ann")
           done < <(jq -r '.annotations[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           docker buildx imagetools create \
             "${args[@]}" \
