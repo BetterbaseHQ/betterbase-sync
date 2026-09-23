@@ -14,7 +14,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubscribedSpaceState {
     pub cursor: i64,
-    pub key_generation: i32,
+    pub epoch: i32,
     pub rewrap_epoch: Option<i32>,
     pub home_server: Option<String>,
 }
@@ -146,7 +146,7 @@ where
         let space = SpaceStorage::get_or_create_space(self, space_id, client_id).await?;
         Ok(SubscribedSpaceState {
             cursor: space.cursor,
-            key_generation: space.key_generation,
+            epoch: space.epoch,
             rewrap_epoch: space.rewrap_epoch,
             home_server: space.home_server,
         })

@@ -9,7 +9,7 @@ use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
     WsEventSendParams, WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData,
     WsPullCommitData, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
-    ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS, ERR_CODE_KEY_GEN_STALE,
+    ERR_CODE_EPOCH_STALE, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
     ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
 };
 use betterbase_sync_storage::StorageError;
@@ -244,7 +244,7 @@ pub(super) async fn handle_subscribe_request(
                 spaces.push(WsSubscribedSpace {
                     id: requested.id.clone(),
                     cursor: space_state.cursor,
-                    key_generation: space_state.key_generation,
+                    epoch: space_state.epoch,
                     rewrap_epoch: space_state.rewrap_epoch,
                     token: String::new(),
                     peers,
@@ -420,10 +420,10 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_NOT_FOUND.to_owned(),
         },
-        Err(StorageError::KeyGenerationStale) => PushRpcResult {
+        Err(StorageError::EpochStale) => PushRpcResult {
             ok: false,
             cursor: 0,
-            error: ERR_CODE_KEY_GEN_STALE.to_owned(),
+            error: ERR_CODE_EPOCH_STALE.to_owned(),
         },
         Err(StorageError::InvalidRecordId | StorageError::DuplicateRecordId) => PushRpcResult {
             ok: false,
@@ -523,7 +523,7 @@ pub(super) async fn handle_pull_request(
                 space: requested.id.clone(),
                 prev: requested.since,
                 cursor: pull_stream.meta.cursor,
-                key_generation: pull_stream.meta.key_generation,
+                epoch: pull_stream.meta.epoch,
                 rewrap_epoch: pull_stream.meta.rewrap_epoch,
             },
         )

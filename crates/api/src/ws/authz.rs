@@ -91,7 +91,7 @@ async fn authorize_space(
 
     Ok(SubscribedSpaceState {
         cursor: space.cursor,
-        key_generation: space.key_generation,
+        epoch: space.epoch,
         rewrap_epoch: space.rewrap_epoch,
         home_server: space.home_server,
     })

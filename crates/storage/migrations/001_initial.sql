@@ -5,8 +5,8 @@ CREATE TABLE spaces (
     id                  UUID PRIMARY KEY,
     client_id           TEXT NOT NULL,
     root_public_key     BYTEA,                          -- NULL = personal, SET = shared
-    key_generation      INTEGER NOT NULL DEFAULT 1,
-    min_key_generation  INTEGER NOT NULL DEFAULT 1,
+    epoch      INTEGER NOT NULL DEFAULT 1,
+    min_epoch  INTEGER NOT NULL DEFAULT 1,
     metadata_version    INTEGER NOT NULL DEFAULT 0,
     sequence            BIGINT NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),

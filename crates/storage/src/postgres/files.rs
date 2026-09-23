@@ -47,7 +47,7 @@ impl FileStorage for PostgresStorage {
         // by the cursor UPDATE above, so the check races no rotation.
         {
             let row = sqlx::query_as::<_, SpaceGenRow>(
-                "SELECT root_public_key, min_key_generation FROM spaces WHERE id = $1",
+                "SELECT root_public_key, min_epoch FROM spaces WHERE id = $1",
             )
             .bind(space_id)
             .fetch_one(tx.as_mut())
@@ -55,8 +55,8 @@ impl FileStorage for PostgresStorage {
             .map_err(|error| StorageError::Database(error.to_string()))?;
             if row.root_public_key.is_some() {
                 if let Some(epoch) = super::parse_dek_epoch(wrapped_dek) {
-                    if epoch < row.min_key_generation {
-                        return Err(StorageError::KeyGenerationStale);
+                    if epoch < row.min_epoch {
+                        return Err(StorageError::EpochStale);
                     }
                 }
             }
@@ -181,20 +181,19 @@ impl FileStorage for PostgresStorage {
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        let key_generation: i32 =
-            sqlx::query_scalar("SELECT key_generation FROM spaces WHERE id = $1 FOR UPDATE")
-                .bind(space_id)
-                .fetch_one(tx.as_mut())
-                .await
-                .map_err(|error| match error {
-                    sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
-                    _ => StorageError::Database(error.to_string()),
-                })?;
+        let epoch: i32 = sqlx::query_scalar("SELECT epoch FROM spaces WHERE id = $1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })?;
 
         for dek in deks {
-            let epoch =
+            let dek_epoch =
                 super::parse_dek_epoch(&dek.wrapped_dek).ok_or(StorageError::DekEpochMismatch)?;
-            if epoch != key_generation {
+            if dek_epoch != epoch {
                 return Err(StorageError::DekEpochMismatch);
             }
         }
@@ -319,7 +318,7 @@ struct PendingDeletionRow {
 #[derive(Debug, sqlx::FromRow)]
 struct SpaceGenRow {
     root_public_key: Option<Vec<u8>>,
-    min_key_generation: i32,
+    min_epoch: i32,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -575,7 +574,7 @@ mod tests {
             .await
             .expect("record file");
 
-        sqlx::query("UPDATE spaces SET key_generation = 2 WHERE id = $1")
+        sqlx::query("UPDATE spaces SET epoch = 2 WHERE id = $1")
             .bind(space_id)
             .execute(storage.pool())
             .await
@@ -765,7 +764,7 @@ mod min_generation_tests {
     use super::*;
 
     #[tokio::test]
-    async fn record_file_below_min_key_generation_is_rejected_for_shared_spaces() {
+    async fn record_file_below_min_epoch_is_rejected_for_shared_spaces() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -780,7 +779,7 @@ mod min_generation_tests {
                 space_id,
                 2,
                 Some(&crate::AdvanceEpochOptions {
-                    set_min_key_generation: true,
+                    set_min_epoch: true,
                 }),
             )
             .await
@@ -798,7 +797,7 @@ mod min_generation_tests {
             )
             .await
             .expect_err("stale-epoch file DEK must be rejected");
-        assert_eq!(stale, StorageError::KeyGenerationStale);
+        assert_eq!(stale, StorageError::EpochStale);
 
         // A current-epoch file DEK is accepted.
         storage

@@ -17,10 +17,10 @@ pub struct Space {
         default
     )]
     pub root_public_key: Option<Vec<u8>>,
-    #[serde(rename = "key_generation")]
-    pub key_generation: i32,
-    #[serde(rename = "min_key_generation")]
-    pub min_key_generation: i32,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
+    #[serde(rename = "min_epoch")]
+    pub min_epoch: i32,
     #[serde(rename = "metadata_version")]
     pub metadata_version: i32,
     #[serde(rename = "cursor")]

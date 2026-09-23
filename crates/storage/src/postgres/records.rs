@@ -153,7 +153,7 @@ impl RecordStorage for PostgresStorage {
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
         let meta_row = sqlx::query_as::<_, PullMetaRow>(
-            "SELECT cursor, key_generation, rewrap_epoch FROM spaces WHERE id = $1",
+            "SELECT cursor, epoch, rewrap_epoch FROM spaces WHERE id = $1",
         )
         .bind(space_id)
         .fetch_one(tx.as_mut())
@@ -165,7 +165,7 @@ impl RecordStorage for PostgresStorage {
 
         let meta = PullStreamMeta {
             cursor: meta_row.cursor,
-            key_generation: meta_row.key_generation,
+            epoch: meta_row.epoch,
             rewrap_epoch: meta_row.rewrap_epoch,
         };
 
@@ -256,16 +256,16 @@ impl RecordStorage for PostgresStorage {
         let space_cursor = super::get_space_cursor_for_update(&mut tx, space_id).await?;
 
         if let Some(opts) = opts {
-            if opts.key_generation > 0 {
+            if opts.epoch > 0 {
                 let row = sqlx::query_as::<_, SpaceAuthRow>(
-                    "SELECT root_public_key, min_key_generation FROM spaces WHERE id = $1",
+                    "SELECT root_public_key, min_epoch FROM spaces WHERE id = $1",
                 )
                 .bind(space_id)
                 .fetch_one(tx.as_mut())
                 .await
                 .map_err(|error| StorageError::Database(error.to_string()))?;
-                if row.root_public_key.is_some() && opts.key_generation < row.min_key_generation {
-                    return Err(StorageError::KeyGenerationStale);
+                if row.root_public_key.is_some() && opts.epoch < row.min_epoch {
+                    return Err(StorageError::EpochStale);
                 }
             }
         }
@@ -278,7 +278,7 @@ impl RecordStorage for PostgresStorage {
         // Tombstone-only changes carry no wrapped DEK and remain allowed.
         {
             let row = sqlx::query_as::<_, SpaceAuthRow>(
-                "SELECT root_public_key, min_key_generation FROM spaces WHERE id = $1",
+                "SELECT root_public_key, min_epoch FROM spaces WHERE id = $1",
             )
             .bind(space_id)
             .fetch_one(tx.as_mut())
@@ -291,8 +291,8 @@ impl RecordStorage for PostgresStorage {
                 for change in changes {
                     if let Some(dek) = change.wrapped_dek.as_ref() {
                         if let Some(epoch) = super::parse_dek_epoch(dek) {
-                            if epoch < row.min_key_generation {
-                                return Err(StorageError::KeyGenerationStale);
+                            if epoch < row.min_epoch {
+                                return Err(StorageError::EpochStale);
                             }
                         }
                     }
@@ -441,7 +441,7 @@ struct ExistingRecordRow {
 #[derive(Debug, sqlx::FromRow)]
 struct PullMetaRow {
     cursor: i64,
-    key_generation: i32,
+    epoch: i32,
     rewrap_epoch: Option<i32>,
 }
 
@@ -464,7 +464,7 @@ struct StreamPullRow {
 #[derive(Debug, sqlx::FromRow)]
 struct SpaceAuthRow {
     root_public_key: Option<Vec<u8>>,
-    min_key_generation: i32,
+    min_epoch: i32,
 }
 
 #[cfg(test)]
@@ -708,7 +708,7 @@ mod tests {
     /// Clients depend on this error to know they must pull the new epoch
     /// and rewrap their DEKs before retrying the push.
     #[tokio::test]
-    async fn push_stale_key_generation_rejected() {
+    async fn push_stale_epoch_rejected() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -722,7 +722,7 @@ mod tests {
                 space_id,
                 2,
                 Some(&AdvanceEpochOptions {
-                    set_min_key_generation: true,
+                    set_min_epoch: true,
                 }),
             )
             .await
@@ -733,11 +733,11 @@ mod tests {
             .push(
                 space_id,
                 &[change(&id, Some(b"x"), 0)],
-                Some(&PushOptions { key_generation: 1 }),
+                Some(&PushOptions { epoch: 1 }),
             )
             .await
             .expect_err("stale key generation should be rejected");
-        assert_eq!(stale, StorageError::KeyGenerationStale);
+        assert_eq!(stale, StorageError::EpochStale);
     }
 
     #[tokio::test]
@@ -1306,7 +1306,7 @@ mod tests {
 
         let mut pull_stream = storage.stream_pull(space_id, 0).await.expect("stream_pull");
 
-        assert_eq!(pull_stream.meta.key_generation, 1);
+        assert_eq!(pull_stream.meta.epoch, 1);
         assert_eq!(pull_stream.meta.rewrap_epoch, None);
 
         let mut entries = Vec::<PullEntry>::new();
@@ -1345,7 +1345,7 @@ mod min_generation_tests {
     use super::*;
 
     #[tokio::test]
-    async fn push_below_min_key_generation_is_rejected_for_shared_spaces() {
+    async fn push_below_min_epoch_is_rejected_for_shared_spaces() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -1361,7 +1361,7 @@ mod min_generation_tests {
                 space_id,
                 2,
                 Some(&crate::AdvanceEpochOptions {
-                    set_min_key_generation: true,
+                    set_min_epoch: true,
                 }),
             )
             .await
@@ -1382,7 +1382,7 @@ mod min_generation_tests {
             )
             .await
             .expect_err("stale-epoch push must be rejected");
-        assert_eq!(stale_push, StorageError::KeyGenerationStale);
+        assert_eq!(stale_push, StorageError::EpochStale);
 
         // A current-epoch push is accepted.
         storage
@@ -1416,7 +1416,7 @@ mod min_generation_tests {
                 space_id,
                 2,
                 Some(&crate::AdvanceEpochOptions {
-                    set_min_key_generation: true,
+                    set_min_epoch: true,
                 }),
             )
             .await

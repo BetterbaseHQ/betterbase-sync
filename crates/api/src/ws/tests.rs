@@ -288,7 +288,7 @@ impl FederationForwarder for StubFederationForwarder {
 struct StubSyncStorage {
     fail_for: HashSet<Uuid>,
     create_error: Option<betterbase_sync_storage::StorageError>,
-    create_key_generation: i32,
+    create_epoch: i32,
     append_error: Option<betterbase_sync_storage::StorageError>,
     append_result: betterbase_sync_storage::AppendLogResult,
     members_result: Vec<betterbase_sync_storage::MembersLogEntry>,
@@ -316,7 +316,7 @@ impl StubSyncStorage {
         Self {
             fail_for: HashSet::new(),
             create_error: None,
-            create_key_generation: 1,
+            create_epoch: 1,
             append_error: None,
             append_result: betterbase_sync_storage::AppendLogResult {
                 chain_seq: 11,
@@ -510,8 +510,8 @@ impl SyncStorage for StubSyncStorage {
                 id: space_id.to_string(),
                 client_id: "client-1".to_owned(),
                 root_public_key: None,
-                key_generation: 3,
-                min_key_generation: 0,
+                epoch: 3,
+                min_epoch: 0,
                 metadata_version: self.metadata_version,
                 cursor: 42,
                 rewrap_epoch: Some(2),
@@ -523,8 +523,8 @@ impl SyncStorage for StubSyncStorage {
                 id: space_id.to_string(),
                 client_id: "client-1".to_owned(),
                 root_public_key: Some(root_public_key.clone()),
-                key_generation: 3,
-                min_key_generation: 0,
+                epoch: 3,
+                min_epoch: 0,
                 metadata_version: self.metadata_version,
                 cursor: 42,
                 rewrap_epoch: Some(2),
@@ -552,8 +552,8 @@ impl SyncStorage for StubSyncStorage {
             id: space_id.to_string(),
             client_id: client_id.to_owned(),
             root_public_key: root_public_key.map(ToOwned::to_owned),
-            key_generation: self.create_key_generation,
-            min_key_generation: 0,
+            epoch: self.create_epoch,
+            min_epoch: 0,
             metadata_version: 0,
             cursor: 0,
             rewrap_epoch: None,
@@ -572,7 +572,7 @@ impl SyncStorage for StubSyncStorage {
 
         Ok(SubscribedSpaceState {
             cursor: 42,
-            key_generation: 3,
+            epoch: 3,
             rewrap_epoch: Some(2),
             home_server: self.space_home_servers.get(&space_id).cloned(),
         })
@@ -609,7 +609,7 @@ impl SyncStorage for StubSyncStorage {
         Ok(betterbase_sync_storage::PullStream::new(
             betterbase_sync_storage::PullStreamMeta {
                 cursor: self.pull_result.cursor,
-                key_generation: self.create_key_generation,
+                epoch: self.create_epoch,
                 rewrap_epoch: None,
             },
             rx,
@@ -1059,7 +1059,7 @@ async fn websocket_federation_rebroadcast_requires_subscription() {
                 "space": test_personal_space_id(),
                 "prev": 0,
                 "cursor": 1,
-                "key_generation": 0,
+                "epoch": 0,
                 "records": [
                     { "id": "record-forged", "cursor": 1 }
                 ]
@@ -1084,7 +1084,7 @@ async fn websocket_federation_rebroadcast_requires_subscription() {
                 "space": shared_space_id.to_string(),
                 "prev": 0,
                 "cursor": 1,
-                "key_generation": 0,
+                "epoch": 0,
                 "records": [
                     { "id": "record-legit", "cursor": 1 }
                 ]
@@ -2195,7 +2195,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
 }
 
 #[tokio::test]
-async fn websocket_space_create_returns_id_and_key_generation() {
+async fn websocket_space_create_returns_id_and_epoch() {
     let server = spawn_server(base_state_with_ws_and_storage(
         Duration::from_secs(1),
         "sync",
@@ -2225,7 +2225,7 @@ async fn websocket_space_create_returns_id_and_key_generation() {
         read_result_response(&mut socket).await;
     assert_eq!(response.id, "space-create-1");
     assert_eq!(response.result.id, space_id);
-    assert_eq!(response.result.key_generation, 1);
+    assert_eq!(response.result.epoch, 1);
 
     server.handle.abort();
 }
@@ -4007,7 +4007,7 @@ async fn websocket_subscribe_returns_space_metadata() {
     assert_eq!(response.id, "sub-1");
     assert_eq!(response.result.spaces.len(), 1);
     assert_eq!(response.result.spaces[0].cursor, 42);
-    assert_eq!(response.result.spaces[0].key_generation, 3);
+    assert_eq!(response.result.spaces[0].epoch, 3);
     assert_eq!(response.result.spaces[0].rewrap_epoch, Some(2));
     assert!(response.result.errors.is_empty());
 
@@ -4317,7 +4317,7 @@ async fn websocket_subscribe_shared_space_with_valid_ucan_returns_space_metadata
     assert!(response.result.errors.is_empty());
     assert_eq!(response.result.spaces[0].id, shared_space_id.to_string());
     assert_eq!(response.result.spaces[0].cursor, 42);
-    assert_eq!(response.result.spaces[0].key_generation, 3);
+    assert_eq!(response.result.spaces[0].epoch, 3);
 
     server.handle.abort();
 }
@@ -4382,7 +4382,7 @@ async fn websocket_subscribe_shared_space_with_delegated_ucan_returns_space_meta
     assert!(response.result.errors.is_empty());
     assert_eq!(response.result.spaces[0].id, shared_space_id.to_string());
     assert_eq!(response.result.spaces[0].cursor, 42);
-    assert_eq!(response.result.spaces[0].key_generation, 3);
+    assert_eq!(response.result.spaces[0].epoch, 3);
 
     server.handle.abort();
 }
@@ -4946,7 +4946,7 @@ async fn websocket_pull_forwards_to_space_home_server_and_streams_remote_chunks(
                     space: space_id.clone(),
                     prev: 100,
                     cursor: 240,
-                    key_generation: 3,
+                    epoch: 3,
                     rewrap_epoch: Some(2),
                 },
             )

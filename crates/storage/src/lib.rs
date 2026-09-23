@@ -53,7 +53,7 @@ pub enum StorageError {
     #[error("hash chain broken")]
     HashChainBroken,
     #[error("key generation stale")]
-    KeyGenerationStale,
+    EpochStale,
     #[error("epoch mismatch")]
     EpochMismatch,
     #[error("{0}")]
@@ -187,7 +187,7 @@ impl PullResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullStreamMeta {
     pub cursor: i64,
-    pub key_generation: i32,
+    pub epoch: i32,
     pub rewrap_epoch: Option<i32>,
 }
 
@@ -259,7 +259,7 @@ pub struct Invitation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushOptions {
-    pub key_generation: i32,
+    pub epoch: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +281,7 @@ pub struct AppendLogResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvanceEpochOptions {
-    pub set_min_key_generation: bool,
+    pub set_min_epoch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

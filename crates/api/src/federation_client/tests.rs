@@ -137,7 +137,7 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
                 betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
                     cursor: 0,
-                    key_generation: 0,
+                    epoch: 0,
                     rewrap_epoch: None,
                     token: "fst-1".to_owned(),
                     peers: Vec::new(),
@@ -145,7 +145,7 @@ async fn federation_peer_manager_subscribe_stores_returned_fsts() {
                 betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-2".to_owned(),
                     cursor: 0,
-                    key_generation: 0,
+                    epoch: 0,
                     rewrap_epoch: None,
                     token: "fst-2".to_owned(),
                     peers: Vec::new(),
@@ -445,7 +445,7 @@ async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
                 betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-1".to_owned(),
                     cursor: 0,
-                    key_generation: 0,
+                    epoch: 0,
                     rewrap_epoch: None,
                     token: "fst-1".to_owned(),
                     peers: Vec::new(),
@@ -453,7 +453,7 @@ async fn federation_peer_manager_restore_subscriptions_uses_cached_tokens() {
                 betterbase_sync_core::protocol::WsSubscribedSpace {
                     id: "space-2".to_owned(),
                     cursor: 0,
-                    key_generation: 0,
+                    epoch: 0,
                     rewrap_epoch: None,
                     token: "fst-2".to_owned(),
                     peers: Vec::new(),
@@ -533,7 +533,7 @@ async fn federation_peer_manager_delivers_notifications_during_call() {
             "space": "space-1",
             "prev": 0,
             "cursor": 5,
-            "key_generation": 0,
+            "epoch": 0,
             "records": [{ "id": "record-1", "cursor": 5 }]
         }))
         .expect("encode notification params"),
@@ -541,7 +541,7 @@ async fn federation_peer_manager_delivers_notifications_during_call() {
             spaces: vec![betterbase_sync_core::protocol::WsSubscribedSpace {
                 id: "space-1".to_owned(),
                 cursor: 0,
-                key_generation: 0,
+                epoch: 0,
                 rewrap_epoch: None,
                 token: "fst-1".to_owned(),
                 peers: Vec::new(),
@@ -601,7 +601,7 @@ async fn federation_peer_manager_drops_notifications_for_unsubscribed_spaces() {
             "space": "space-not-subscribed",
             "prev": 0,
             "cursor": 1,
-            "key_generation": 0,
+            "epoch": 0,
             "records": [{ "id": "record-x", "cursor": 1 }]
         }))
         .expect("encode notification params"),

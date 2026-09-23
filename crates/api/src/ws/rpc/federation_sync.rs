@@ -1,8 +1,8 @@
 use betterbase_sync_auth::Permission;
 use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, WsPullBeginData, WsPullCommitData, ERR_CODE_BAD_REQUEST,
-    ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
-    ERR_CODE_KEY_GEN_STALE, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
+    ERR_CODE_CONFLICT, ERR_CODE_EPOCH_STALE, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
+    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
 };
 use betterbase_sync_storage::StorageError;
 use serde::Serialize;
@@ -150,10 +150,10 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_NOT_FOUND.to_owned(),
         },
-        Err(StorageError::KeyGenerationStale) => PushRpcResult {
+        Err(StorageError::EpochStale) => PushRpcResult {
             ok: false,
             cursor: 0,
-            error: ERR_CODE_KEY_GEN_STALE.to_owned(),
+            error: ERR_CODE_EPOCH_STALE.to_owned(),
         },
         Err(StorageError::InvalidRecordId | StorageError::DuplicateRecordId) => PushRpcResult {
             ok: false,
@@ -237,7 +237,7 @@ pub(super) async fn handle_pull_request(
                 space: requested.id.clone(),
                 prev: requested.since,
                 cursor: pull_stream.meta.cursor,
-                key_generation: pull_stream.meta.key_generation,
+                epoch: pull_stream.meta.epoch,
                 rewrap_epoch: pull_stream.meta.rewrap_epoch,
             },
         )

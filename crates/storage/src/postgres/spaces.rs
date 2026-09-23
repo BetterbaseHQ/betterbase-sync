@@ -24,8 +24,8 @@ impl SpaceStorage for PostgresStorage {
                 id,
                 client_id,
                 root_public_key,
-                key_generation,
-                min_key_generation,
+                epoch,
+                min_epoch,
                 metadata_version,
                 cursor,
                 rewrap_epoch,
@@ -56,8 +56,8 @@ impl SpaceStorage for PostgresStorage {
                 id,
                 client_id,
                 root_public_key,
-                key_generation,
-                min_key_generation,
+                epoch,
+                min_epoch,
                 metadata_version,
                 cursor,
                 rewrap_epoch,
@@ -95,8 +95,8 @@ impl SpaceStorage for PostgresStorage {
                 id,
                 client_id,
                 root_public_key,
-                key_generation,
-                min_key_generation,
+                epoch,
+                min_epoch,
                 metadata_version,
                 cursor,
                 rewrap_epoch,
@@ -143,8 +143,8 @@ pub(crate) struct SpaceRow {
     pub id: Uuid,
     pub client_id: String,
     pub root_public_key: Option<Vec<u8>>,
-    pub key_generation: i32,
-    pub min_key_generation: i32,
+    pub epoch: i32,
+    pub min_epoch: i32,
     pub metadata_version: i32,
     pub cursor: i64,
     pub rewrap_epoch: Option<i32>,
@@ -157,8 +157,8 @@ impl From<SpaceRow> for Space {
             id: value.id.to_string(),
             client_id: value.client_id,
             root_public_key: value.root_public_key,
-            key_generation: value.key_generation,
-            min_key_generation: value.min_key_generation,
+            epoch: value.epoch,
+            min_epoch: value.min_epoch,
             metadata_version: value.metadata_version,
             cursor: value.cursor,
             rewrap_epoch: value.rewrap_epoch,
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(created.id, space_id.to_string());
         assert_eq!(created.client_id, "client-1");
         assert!(created.root_public_key.is_none());
-        assert_eq!(created.key_generation, 1);
+        assert_eq!(created.epoch, 1);
         assert_eq!(created.cursor, 0);
 
         let fetched = storage.get_space(space_id).await.expect("get space");

@@ -151,7 +151,7 @@ pub(super) async fn handle_subscribe_request(
             let state = match sync_storage.get_space(space_id).await {
                 Ok(space) => SpaceState {
                     cursor: space.cursor,
-                    key_generation: space.key_generation,
+                    epoch: space.epoch,
                     rewrap_epoch: space.rewrap_epoch,
                 },
                 Err(_) => SpaceState::default(),
@@ -180,7 +180,7 @@ pub(super) async fn handle_subscribe_request(
         spaces.push(WsSubscribedSpace {
             id: requested.id.clone(),
             cursor: state.cursor,
-            key_generation: state.key_generation,
+            epoch: state.epoch,
             rewrap_epoch: state.rewrap_epoch,
             token,
             peers: Vec::new(),

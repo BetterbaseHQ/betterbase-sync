@@ -31,7 +31,7 @@ pub(super) enum AuthFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct SpaceState {
     pub cursor: i64,
-    pub key_generation: i32,
+    pub epoch: i32,
     pub rewrap_epoch: Option<i32>,
 }
 
@@ -93,7 +93,7 @@ pub(super) async fn authorize_federation_ucan(
     Ok(AuthorizedSpace {
         state: SpaceState {
             cursor: space.cursor,
-            key_generation: space.key_generation,
+            epoch: space.epoch,
             rewrap_epoch: space.rewrap_epoch,
         },
         expiry_cap: ucan_expiry_cap(&parsed),

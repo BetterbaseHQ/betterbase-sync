@@ -511,7 +511,7 @@ async fn handle_federation_rebroadcast(
     match method {
         "sync" => {
             if let Ok(params) = decode_frame_params::<WsSyncData>(payload) {
-                // Broadcast the full struct to preserve key_generation and rewrap_epoch.
+                // Broadcast the full struct to preserve epoch and rewrap_epoch.
                 realtime
                     .broadcast_notification(&params.space, "sync", &params)
                     .await;

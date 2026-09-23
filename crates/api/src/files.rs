@@ -235,7 +235,7 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
 enum FileCommitError {
     /// The wrapped DEK's epoch is below the space's minimum key
     /// generation — the client must re-encrypt under the current epoch.
-    KeyGenerationStale,
+    EpochStale,
     Storage,
 }
 
@@ -365,7 +365,7 @@ async fn commit_uploaded_file<S: FileSyncStorage + ?Sized>(
         .record_file(space_id, file_id, record_id, file_size, wrapped_dek)
         .await
         .map_err(|error| match error {
-            StorageError::KeyGenerationStale => FileCommitError::KeyGenerationStale,
+            StorageError::EpochStale => FileCommitError::EpochStale,
             _ => FileCommitError::Storage,
         })
 }
@@ -459,7 +459,7 @@ pub(crate) async fn put_file(
     {
         Ok(Some(cursor)) => cursor,
         Ok(None) => return StatusCode::NO_CONTENT.into_response(),
-        Err(FileCommitError::KeyGenerationStale) => {
+        Err(FileCommitError::EpochStale) => {
             return error_response(
                 StatusCode::CONFLICT,
                 "file key generation stale — re-encrypt under the current epoch",
@@ -916,8 +916,8 @@ mod tests {
                     id: space_id.to_string(),
                     client_id: "client".to_owned(),
                     root_public_key: None,
-                    key_generation: 1,
-                    min_key_generation: 0,
+                    epoch: 1,
+                    min_epoch: 0,
                     metadata_version: 0,
                     cursor: 0,
                     rewrap_epoch: None,
@@ -929,8 +929,8 @@ mod tests {
                     id: space_id.to_string(),
                     client_id: "client".to_owned(),
                     root_public_key: Some(root_public_key.clone()),
-                    key_generation: 1,
-                    min_key_generation: 0,
+                    epoch: 1,
+                    min_epoch: 0,
                     metadata_version: 0,
                     cursor: 0,
                     rewrap_epoch: None,
@@ -949,8 +949,8 @@ mod tests {
                 id: space_id.to_string(),
                 client_id: client_id.to_owned(),
                 root_public_key: None,
-                key_generation: 1,
-                min_key_generation: 0,
+                epoch: 1,
+                min_epoch: 0,
                 metadata_version: 0,
                 cursor: 0,
                 rewrap_epoch: None,
@@ -2185,8 +2185,7 @@ mod tests {
         let record_id = Uuid::new_v4();
         let payload = b"stale dek";
 
-        *sync_storage.fail_record_file.lock().expect("fail lock") =
-            Some(StorageError::KeyGenerationStale);
+        *sync_storage.fail_record_file.lock().expect("fail lock") = Some(StorageError::EpochStale);
         let response = app
             .oneshot(put_file_request(space_id, file_id, record_id, payload))
             .await

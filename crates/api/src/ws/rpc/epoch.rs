@@ -62,7 +62,7 @@ pub(super) async fn handle_begin_request(
     }
 
     let options = AdvanceEpochOptions {
-        set_min_key_generation: params.set_min_key_generation,
+        set_min_epoch: params.set_min_epoch,
     };
     match sync_storage
         .advance_epoch(space_id, params.epoch, Some(&options))

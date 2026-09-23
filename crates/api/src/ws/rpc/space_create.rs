@@ -74,7 +74,7 @@ pub(super) async fn handle_request(
                 id,
                 &SpaceCreateResult {
                     id: space.id,
-                    key_generation: space.key_generation,
+                    epoch: space.epoch,
                 },
             )
             .await;

@@ -44,7 +44,7 @@ pub const CLOSE_SLOW_CONSUMER: i32 = 4006;
 pub const CLOSE_RATE_LIMITED: i32 = 4007;
 
 // Application-specific RPC error codes.
-pub const ERR_CODE_KEY_GEN_STALE: &str = "key_generation_stale";
+pub const ERR_CODE_EPOCH_STALE: &str = "epoch_stale";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeParams {
@@ -134,8 +134,8 @@ pub struct WsSubscribedSpace {
     pub id: String,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "key_generation")]
-    pub key_generation: i32,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
     #[serde(rename = "rewrap_epoch", skip_serializing_if = "Option::is_none")]
     pub rewrap_epoch: Option<i32>,
     #[serde(rename = "token", skip_serializing_if = "is_empty", default)]
@@ -160,8 +160,8 @@ pub struct WsSyncData {
     pub prev: i64,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "key_generation")]
-    pub key_generation: i32,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
     #[serde(rename = "rewrap_epoch", skip_serializing_if = "Option::is_none")]
     pub rewrap_epoch: Option<i32>,
     #[serde(rename = "records")]
@@ -296,8 +296,8 @@ pub struct WsPullBeginData {
     pub prev: i64,
     #[serde(rename = "cursor")]
     pub cursor: i64,
-    #[serde(rename = "key_generation")]
-    pub key_generation: i32,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
     #[serde(rename = "rewrap_epoch", skip_serializing_if = "Option::is_none")]
     pub rewrap_epoch: Option<i32>,
 }
@@ -423,8 +423,8 @@ pub struct SpaceCreateParams {
 pub struct SpaceCreateResult {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "key_generation")]
-    pub key_generation: i32,
+    #[serde(rename = "epoch")]
+    pub epoch: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,12 +522,8 @@ pub struct EpochBeginParams {
     pub ucan: String,
     #[serde(rename = "epoch")]
     pub epoch: i32,
-    #[serde(
-        rename = "set_min_key_generation",
-        skip_serializing_if = "is_false",
-        default
-    )]
-    pub set_min_key_generation: bool,
+    #[serde(rename = "set_min_epoch", skip_serializing_if = "is_false", default)]
+    pub set_min_epoch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -822,7 +818,7 @@ mod tests {
                 WsSubscribedSpace {
                     id: "space-1".to_string(),
                     cursor: 42,
-                    key_generation: 3,
+                    epoch: 3,
                     rewrap_epoch: Some(2),
                     token: String::new(),
                     peers: Vec::new(),
@@ -830,7 +826,7 @@ mod tests {
                 WsSubscribedSpace {
                     id: "space-2".to_string(),
                     cursor: 100,
-                    key_generation: 1,
+                    epoch: 1,
                     rewrap_epoch: None,
                     token: String::new(),
                     peers: Vec::new(),
@@ -948,7 +944,7 @@ mod tests {
             space: "space-uuid".to_string(),
             prev: 1547,
             cursor: 1548,
-            key_generation: 3,
+            epoch: 3,
             rewrap_epoch: None,
             records: vec![
                 WsSyncRecord {

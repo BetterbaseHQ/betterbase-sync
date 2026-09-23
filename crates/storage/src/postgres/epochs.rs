@@ -15,10 +15,10 @@ impl EpochStorage for PostgresStorage {
         requested_epoch: i32,
         opts: Option<&AdvanceEpochOptions>,
     ) -> Result<AdvanceEpochResult, StorageError> {
-        let set_min = opts.is_some_and(|value| value.set_min_key_generation);
+        let set_min = opts.is_some_and(|value| value.set_min_epoch);
         let result = if set_min {
             sqlx::query(
-                "UPDATE spaces SET key_generation = $1, rewrap_epoch = $1, min_key_generation = $1 WHERE id = $2 AND key_generation = $3 AND rewrap_epoch IS NULL",
+                "UPDATE spaces SET epoch = $1, rewrap_epoch = $1, min_epoch = $1 WHERE id = $2 AND epoch = $3 AND rewrap_epoch IS NULL",
             )
             .bind(requested_epoch)
             .bind(space_id)
@@ -27,7 +27,7 @@ impl EpochStorage for PostgresStorage {
             .await
         } else {
             sqlx::query(
-                "UPDATE spaces SET key_generation = $1, rewrap_epoch = $1 WHERE id = $2 AND key_generation = $3 AND rewrap_epoch IS NULL",
+                "UPDATE spaces SET epoch = $1, rewrap_epoch = $1 WHERE id = $2 AND epoch = $3 AND rewrap_epoch IS NULL",
             )
             .bind(requested_epoch)
             .bind(space_id)
@@ -39,7 +39,7 @@ impl EpochStorage for PostgresStorage {
 
         if result.rows_affected() == 0 {
             let state = sqlx::query_as::<_, EpochStateRow>(
-                "SELECT key_generation, rewrap_epoch FROM spaces WHERE id = $1",
+                "SELECT epoch, rewrap_epoch FROM spaces WHERE id = $1",
             )
             .bind(space_id)
             .fetch_one(&self.pool)
@@ -49,7 +49,7 @@ impl EpochStorage for PostgresStorage {
                 _ => StorageError::Database(error.to_string()),
             })?;
             return Err(StorageError::EpochConflict(EpochConflict {
-                current_epoch: state.key_generation,
+                current_epoch: state.epoch,
                 rewrap_epoch: state.rewrap_epoch,
             }));
         }
@@ -122,20 +122,19 @@ impl EpochStorage for PostgresStorage {
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        let key_generation: i32 =
-            sqlx::query_scalar("SELECT key_generation FROM spaces WHERE id = $1 FOR UPDATE")
-                .bind(space_id)
-                .fetch_one(tx.as_mut())
-                .await
-                .map_err(|error| match error {
-                    sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
-                    _ => StorageError::Database(error.to_string()),
-                })?;
+        let epoch: i32 = sqlx::query_scalar("SELECT epoch FROM spaces WHERE id = $1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_one(tx.as_mut())
+            .await
+            .map_err(|error| match error {
+                sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
+                _ => StorageError::Database(error.to_string()),
+            })?;
 
         for dek in deks {
-            let epoch =
+            let dek_epoch =
                 super::parse_dek_epoch(&dek.wrapped_dek).ok_or(StorageError::DekEpochMismatch)?;
-            if epoch != key_generation {
+            if dek_epoch != epoch {
                 return Err(StorageError::DekEpochMismatch);
             }
 
@@ -250,7 +249,7 @@ impl EpochStorage for PostgresStorage {
 
 #[derive(Debug, sqlx::FromRow)]
 struct EpochStateRow {
-    key_generation: i32,
+    epoch: i32,
     rewrap_epoch: Option<i32>,
 }
 
@@ -335,13 +334,13 @@ mod tests {
                 space_id,
                 2,
                 Some(&AdvanceEpochOptions {
-                    set_min_key_generation: true,
+                    set_min_epoch: true,
                 }),
             )
             .await
-            .expect("advance with set_min_key_generation");
+            .expect("advance with set_min_epoch");
         let space = storage.get_space(space_id).await.expect("get space");
-        assert_eq!(space.min_key_generation, 2);
+        assert_eq!(space.min_epoch, 2);
     }
 
     #[tokio::test]

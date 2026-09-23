@@ -139,7 +139,7 @@ impl RealtimeSession {
                 space: space_id.to_owned(),
                 prev: cursor.saturating_sub(1),
                 cursor,
-                key_generation: 0,
+                epoch: 0,
                 rewrap_epoch: None,
                 records: records.to_vec(),
             },
