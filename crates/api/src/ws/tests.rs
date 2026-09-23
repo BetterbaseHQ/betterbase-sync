@@ -286,6 +286,7 @@ impl FederationForwarder for StubFederationForwarder {
 }
 
 struct StubSyncStorage {
+    push_epochs: TokioMutex<Vec<(Uuid, i32)>>,
     fail_for: HashSet<Uuid>,
     create_error: Option<betterbase_sync_storage::StorageError>,
     create_epoch: i32,
@@ -314,6 +315,7 @@ struct StubSyncStorage {
 impl StubSyncStorage {
     fn healthy() -> Self {
         Self {
+            push_epochs: TokioMutex::new(Vec::new()),
             fail_for: HashSet::new(),
             create_error: None,
             create_epoch: 1,
@@ -582,10 +584,12 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
         _changes: &[betterbase_sync_core::protocol::Change],
+        epoch: i32,
     ) -> Result<betterbase_sync_storage::PushResult, betterbase_sync_storage::StorageError> {
         if self.fail_for.contains(&space_id) {
             return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
+        self.push_epochs.lock().await.push((space_id, epoch));
         Ok(self.push_result.clone())
     }
 
@@ -1360,6 +1364,7 @@ async fn websocket_federation_push_requires_ucan() {
         "fed-push-no-ucan",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -1417,6 +1422,7 @@ async fn websocket_federation_push_and_pull_with_valid_ucan() {
         "fed-push-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -1648,6 +1654,7 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         "fed-push-quota-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -1668,6 +1675,7 @@ async fn websocket_federation_push_enforces_rate_limit_quota() {
         "fed-push-quota-2",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: write_ucan.clone(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -2059,6 +2067,7 @@ async fn websocket_token_refresh_requires_sync_scope_and_keeps_previous_auth() {
         "push-after-refresh-fail",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -2174,6 +2183,7 @@ async fn websocket_token_refresh_rejects_identity_mismatch() {
         "push-after-refresh-mismatch",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -4571,6 +4581,7 @@ async fn websocket_push_returns_cursor_on_success() {
         "push-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -4621,6 +4632,7 @@ async fn websocket_push_forwards_to_space_home_server() {
         "push-forward-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -4700,6 +4712,7 @@ async fn websocket_push_restores_remote_subscriptions_after_transient_forward_er
         "push-forward-restore-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -4762,6 +4775,7 @@ async fn websocket_push_invalid_space_id_returns_bad_request_result() {
         "push-2",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: "not-a-uuid".to_owned(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -4806,6 +4820,7 @@ async fn websocket_push_non_personal_space_without_ucan_returns_forbidden() {
         "push-forbidden-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: Uuid::new_v4().to_string(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -5153,6 +5168,7 @@ async fn websocket_push_broadcasts_sync_to_other_subscribers() {
         "push-sync-1",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -5260,6 +5276,7 @@ async fn websocket_unsubscribe_notification_stops_sync_broadcasts() {
         "push-sync-2",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: space_id.clone(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -7134,6 +7151,7 @@ async fn websocket_push_conflict_returns_conflict_result() {
         "push-conflict",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: test_personal_space_id(),
             ucan: String::new(),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -7151,6 +7169,54 @@ async fn websocket_push_conflict_returns_conflict_result() {
     assert_eq!(response.id, "push-conflict");
     assert!(!response.result.ok);
     assert_eq!(response.result.error, "conflict");
+    server.handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_push_passes_declared_epoch_to_storage() {
+    // The min_epoch guard runs in the storage layer; the handler must
+    // forward the writer's declared epoch from the wire params.
+    let storage = Arc::new(StubSyncStorage::healthy());
+    let server = spawn_server(base_state_with_ws_and_storage(
+        Duration::from_secs(1),
+        "sync",
+        storage.clone(),
+    ))
+    .await;
+    let request = ws_request(
+        server.addr,
+        Some(betterbase_sync_realtime::ws::WS_SUBPROTOCOL),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("connect websocket");
+    send_auth(&mut socket).await;
+
+    send_rpc_request(
+        &mut socket,
+        "push-epoch",
+        "push",
+        &betterbase_sync_core::protocol::PushParams {
+            epoch: 4,
+            space: test_personal_space_id(),
+            ucan: String::new(),
+            changes: vec![betterbase_sync_core::protocol::WsPushChange {
+                id: Uuid::new_v4().to_string(),
+                blob: Some(vec![1, 2, 3]),
+                expected_cursor: 0,
+                wrapped_dek: Some(vec![0xAA; 44]),
+            }],
+        },
+    )
+    .await;
+
+    let response: RpcResultResponse<betterbase_sync_core::protocol::PushRpcResult> =
+        read_result_response(&mut socket).await;
+    assert_eq!(response.id, "push-epoch");
+    assert!(response.result.ok);
+    let pushes = storage.push_epochs.lock().await;
+    let expected_space = test_personal_space_id()
+        .parse::<Uuid>()
+        .expect("parse space id");
+    assert_eq!(pushes.as_slice(), [(expected_space, 4)]);
     server.handle.abort();
 }
 
@@ -7728,6 +7794,7 @@ async fn websocket_revocation_detaches_the_removed_members_subscription() {
         "push-after-revoke",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Write),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {
@@ -7970,6 +8037,7 @@ async fn websocket_revocation_detach_joins_across_uuid_casing() {
         "push-after-revoke",
         "push",
         &betterbase_sync_core::protocol::PushParams {
+            epoch: 0,
             space: shared_space_id.to_string(),
             ucan: root_issuer.issue_space_ucan(&admin.did, shared_space_id, Permission::Write),
             changes: vec![betterbase_sync_core::protocol::WsPushChange {

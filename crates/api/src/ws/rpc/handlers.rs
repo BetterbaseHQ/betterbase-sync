@@ -401,7 +401,7 @@ pub(super) async fn handle_push_request(
 
     let changes = super::push_helpers::map_push_changes(&params);
     let mut sync_cursor = None;
-    let response = match sync_storage.push(space_id, &changes).await {
+    let response = match sync_storage.push(space_id, &changes, params.epoch).await {
         Ok(result) if result.ok => {
             sync_cursor = Some(result.cursor);
             PushRpcResult {

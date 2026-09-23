@@ -250,6 +250,7 @@ async fn federation_peer_manager_forward_push_forwards_and_decodes() {
 
     let manager = test_manager(peer.addr());
     let params = PushParams {
+        epoch: 0,
         space: "space-1".to_owned(),
         ucan: "ucan-write".to_owned(),
         changes: vec![WsPushChange {
@@ -408,6 +409,7 @@ async fn federation_peer_manager_retries_once_when_connection_closes() {
 
     let manager = test_manager(peer.addr());
     let params = PushParams {
+        epoch: 0,
         space: "space-1".to_owned(),
         ucan: "ucan-write".to_owned(),
         changes: vec![WsPushChange {
@@ -629,6 +631,7 @@ async fn federation_peer_manager_drops_notifications_for_unsubscribed_spaces() {
             "peer.test",
             &peer.ws_url,
             &PushParams {
+                epoch: 0,
                 space: "space-1".to_owned(),
                 ucan: "ucan-write".to_owned(),
                 changes: vec![WsPushChange {

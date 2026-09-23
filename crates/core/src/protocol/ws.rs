@@ -66,6 +66,11 @@ pub struct PushParams {
     pub space: String,
     #[serde(rename = "ucan", skip_serializing_if = "is_empty", default)]
     pub ucan: String,
+    /// Writer's current key epoch. When set and below the space's min_epoch
+    /// (shared spaces), the push is rejected with `epoch_stale` before any
+    /// write — covering updates that carry no wrapped DEK to inspect.
+    #[serde(rename = "epoch", skip_serializing_if = "is_zero_i32", default)]
+    pub epoch: i32,
     #[serde(rename = "changes")]
     pub changes: Vec<WsPushChange>,
 }
@@ -852,6 +857,7 @@ mod tests {
         let params = PushParams {
             space: "space-uuid".to_string(),
             ucan: "ucan-token".to_string(),
+            epoch: 3,
             changes: vec![
                 WsPushChange {
                     id: "rec-1".to_string(),
@@ -871,8 +877,25 @@ mod tests {
         let decoded: PushParams = minicbor_serde::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.space, "space-uuid");
         assert_eq!(decoded.ucan, "ucan-token");
+        assert_eq!(decoded.epoch, 3);
         assert_eq!(decoded.changes.len(), 2);
         assert_eq!(decoded.changes[0].expected_cursor, 0);
+    }
+
+    #[test]
+    fn push_params_omits_zero_epoch() {
+        let params = PushParams {
+            space: "space-uuid".to_string(),
+            ucan: String::new(),
+            epoch: 0,
+            changes: Vec::new(),
+        };
+        let encoded = minicbor_serde::to_vec(&params).expect("encode");
+        let text = format!("{encoded:02x?}");
+        assert!(
+            !text.contains("65706f6368"),
+            "epoch key must be omitted: {text}"
+        );
     }
 
     #[test]

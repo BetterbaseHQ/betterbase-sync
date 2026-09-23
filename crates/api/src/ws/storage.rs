@@ -6,8 +6,8 @@ use std::time::SystemTime;
 use betterbase_sync_storage::{
     AdvanceEpochOptions, AdvanceEpochResult, AppendLogResult, DekRecord, EpochKeyShare,
     EpochStorage, FileDekRecord, FileStorage as FileStorageTrait, Invitation, InvitationStorage,
-    MembersLogEntry, MembershipStorage, PullStream, PushResult, RateLimitStorage, RecordStorage,
-    RevocationStorage, SpaceStorage, Storage, StorageError,
+    MembersLogEntry, MembershipStorage, PullStream, PushOptions, PushResult, RateLimitStorage,
+    RecordStorage, RevocationStorage, SpaceStorage, Storage, StorageError,
 };
 use uuid::Uuid;
 
@@ -35,7 +35,12 @@ pub(crate) trait SyncStorage: Send + Sync {
         client_id: &str,
     ) -> Result<SubscribedSpaceState, StorageError>;
 
-    async fn push(&self, space_id: Uuid, changes: &[Change]) -> Result<PushResult, StorageError>;
+    async fn push(
+        &self,
+        space_id: Uuid,
+        changes: &[Change],
+        epoch: i32,
+    ) -> Result<PushResult, StorageError>;
 
     async fn stream_pull(&self, space_id: Uuid, since: i64) -> Result<PullStream, StorageError>;
 
@@ -152,8 +157,14 @@ where
         })
     }
 
-    async fn push(&self, space_id: Uuid, changes: &[Change]) -> Result<PushResult, StorageError> {
-        RecordStorage::push(self, space_id, changes, None).await
+    async fn push(
+        &self,
+        space_id: Uuid,
+        changes: &[Change],
+        epoch: i32,
+    ) -> Result<PushResult, StorageError> {
+        let opts = (epoch > 0).then_some(PushOptions { epoch });
+        RecordStorage::push(self, space_id, changes, opts.as_ref()).await
     }
 
     async fn stream_pull(&self, space_id: Uuid, since: i64) -> Result<PullStream, StorageError> {
