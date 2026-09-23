@@ -60,7 +60,7 @@ app           -> all crates; server config (env-based), startup, federation runt
 
 ### WebSocket RPC
 
-Subprotocol `betterbase-rpc-v1`. CBOR-encoded frames with discriminator: request (0), response (1), notification (2), chunk (3). The first message on a new connection must be an `auth` notification carrying a JWT. Error codes are strings (`invalid_params`, `forbidden`, `conflict`, `key_generation_stale`). Custom close codes: 4000-4007.
+Subprotocol `betterbase-rpc-v1`. CBOR-encoded frames with discriminator: request (0), response (1), notification (2), chunk (3). The first message on a new connection must be an `auth` notification carrying a JWT. Error codes are strings (`invalid_params`, `forbidden`, `conflict`, `epoch_stale`). Custom close codes: 4000-4007.
 
 ### Storage Layer
 

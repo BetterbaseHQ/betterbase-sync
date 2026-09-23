@@ -52,7 +52,7 @@ pub enum StorageError {
     VersionConflict,
     #[error("hash chain broken")]
     HashChainBroken,
-    #[error("key generation stale")]
+    #[error("epoch stale")]
     EpochStale,
     #[error("epoch mismatch")]
     EpochMismatch,
@@ -114,7 +114,7 @@ pub struct FileDekRecord {
     pub cursor: i64,
     /// Wrapper value the client observed when reading (rewrap inputs only;
     /// compare-and-set guard, AUD-026). `None` for listing results.
-    pub observed_dek: Option<Vec<u8>>,
+    pub observed_wrapped_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +327,7 @@ pub struct DekRecord {
     pub cursor: i64,
     /// Wrapper value the client observed when reading (rewrap inputs only;
     /// compare-and-set guard, AUD-026). `None` for listing results.
-    pub observed_dek: Option<Vec<u8>>,
+    pub observed_wrapped_dek: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------

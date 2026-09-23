@@ -348,13 +348,13 @@ impl StubSyncStorage {
                 id: Uuid::new_v4().to_string(),
                 wrapped_dek: vec![0xAA; 44],
                 cursor: 6,
-                observed_dek: None,
+                observed_wrapped_dek: None,
             }],
             file_deks_result: vec![betterbase_sync_storage::FileDekRecord {
                 id: Uuid::new_v4(),
                 wrapped_dek: vec![0xBB; 44],
                 cursor: 8,
-                observed_dek: None,
+                observed_wrapped_dek: None,
             }],
             deks_rewrap_error: None,
             file_deks_rewrap_error: None,
@@ -3467,7 +3467,7 @@ async fn websocket_deks_get_returns_records() {
     assert_eq!(response.id, "deks-get-1");
     assert_eq!(response.result.deks.len(), 1);
     assert_eq!(response.result.deks[0].seq, 6);
-    assert_eq!(response.result.deks[0].dek.len(), 44);
+    assert_eq!(response.result.deks[0].wrapped_dek.len(), 44);
 
     server.handle.abort();
 }
@@ -3498,8 +3498,8 @@ async fn websocket_deks_rewrap_returns_conflict_on_epoch_mismatch() {
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 44],
-                observed_dek: None,
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3544,8 +3544,8 @@ async fn websocket_deks_rewrap_returns_conflict_on_stale_observed_wrapper() {
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 44],
-                observed_dek: Some(vec![1; 44]),
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: Some(vec![1; 44]),
             }],
         },
     )
@@ -3592,8 +3592,8 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_stale_observed_wrapper()
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 44],
-                observed_dek: Some(vec![1; 44]),
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: Some(vec![1; 44]),
             }],
         },
     )
@@ -3633,8 +3633,8 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_record_id() {
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: String::new(),
-                dek: vec![9; 44],
-                observed_dek: None,
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3674,8 +3674,8 @@ async fn websocket_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_size(
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::DekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 43],
-                observed_dek: None,
+                wrapped_dek: vec![9; 43],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3764,7 +3764,7 @@ async fn websocket_file_deks_get_returns_records() {
     assert_eq!(response.id, "file-deks-get-1");
     assert_eq!(response.result.deks.len(), 1);
     assert_eq!(response.result.deks[0].cursor, 8);
-    assert_eq!(response.result.deks[0].dek.len(), 44);
+    assert_eq!(response.result.deks[0].wrapped_dek.len(), 44);
 
     server.handle.abort();
 }
@@ -3831,8 +3831,8 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_file_id() {
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
-                dek: vec![9; 44],
-                observed_dek: None,
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3872,8 +3872,8 @@ async fn websocket_deks_rewrap_files_alias_returns_bad_request_for_invalid_file_
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: "not-a-uuid".to_owned(),
-                dek: vec![9; 44],
-                observed_dek: None,
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3913,8 +3913,8 @@ async fn websocket_file_deks_rewrap_returns_bad_request_for_invalid_wrapped_dek_
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 43],
-                observed_dek: None,
+                wrapped_dek: vec![9; 43],
+                observed_wrapped_dek: None,
             }],
         },
     )
@@ -3956,8 +3956,8 @@ async fn websocket_file_deks_rewrap_returns_conflict_on_epoch_mismatch() {
             ucan: String::new(),
             deks: vec![betterbase_sync_core::protocol::FileDekRewrapEntry {
                 id: Uuid::new_v4().to_string(),
-                dek: vec![9; 44],
-                observed_dek: None,
+                wrapped_dek: vec![9; 44],
+                observed_wrapped_dek: None,
             }],
         },
     )

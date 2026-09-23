@@ -53,7 +53,7 @@ pub(super) async fn handle_get_request(
                 .into_iter()
                 .map(|dek| WsDekRecord {
                     id: dek.id,
-                    dek: dek.wrapped_dek,
+                    wrapped_dek: dek.wrapped_dek,
                     seq: dek.cursor,
                 })
                 .collect();
@@ -203,7 +203,7 @@ pub(super) async fn handle_file_get_request(
                 .into_iter()
                 .map(|dek| WsFileDekRecord {
                     id: dek.id.to_string(),
-                    dek: dek.wrapped_dek,
+                    wrapped_dek: dek.wrapped_dek,
                     cursor: dek.cursor,
                 })
                 .collect();
@@ -373,7 +373,7 @@ async fn decode_rewrap_deks(
             .await;
             return None;
         }
-        if dek.dek.len() != WRAPPED_DEK_LEN {
+        if dek.wrapped_dek.len() != WRAPPED_DEK_LEN {
             send_error_response(
                 outbound,
                 id,
@@ -386,9 +386,9 @@ async fn decode_rewrap_deks(
 
         deks.push(DekRecord {
             id: dek.id,
-            wrapped_dek: dek.dek,
+            wrapped_dek: dek.wrapped_dek,
             cursor: 0,
-            observed_dek: dek.observed_dek,
+            observed_wrapped_dek: dek.observed_wrapped_dek,
         });
     }
 
@@ -416,7 +416,7 @@ async fn decode_rewrap_file_deks(
                 return None;
             }
         };
-        if dek.dek.len() != WRAPPED_DEK_LEN {
+        if dek.wrapped_dek.len() != WRAPPED_DEK_LEN {
             send_error_response(
                 outbound,
                 id,
@@ -429,9 +429,9 @@ async fn decode_rewrap_file_deks(
 
         deks.push(FileDekRecord {
             id: file_id,
-            wrapped_dek: dek.dek,
+            wrapped_dek: dek.wrapped_dek,
             cursor: 0,
-            observed_dek: dek.observed_dek,
+            observed_wrapped_dek: dek.observed_wrapped_dek,
         });
     }
 

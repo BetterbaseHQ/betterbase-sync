@@ -75,7 +75,7 @@ export FEDERATION_FST_SECRET="<base64-secret>"
 - **Zero-knowledge storage** -- the server stores and syncs only encrypted blobs; plaintext never touches the wire or disk.
 - **WebSocket RPC** -- CBOR-encoded binary protocol (`betterbase-rpc-v1`) with real-time push notifications.
 - **Encrypted file sync** -- upload and download encrypted files with wrapped DEKs. Pluggable backends: local filesystem or S3-compatible.
-- **Epoch-based forward secrecy** -- key generation epochs with DEK rewrapping.
+- **Epoch-based forward secrecy** -- rotating epochs with DEK rewrapping.
 - **Federation** -- peer-to-peer sync across servers via HTTP Signatures, with quota tracking.
 - **JWT + UCAN authorization** -- validates JWTs from trusted issuers via JWKS, with UCAN delegation and revocation.
 

@@ -41,7 +41,7 @@ pub struct Change {
     #[serde(rename = "cursor")]
     pub cursor: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default

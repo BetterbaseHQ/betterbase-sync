@@ -270,10 +270,10 @@ impl RecordStorage for PostgresStorage {
             }
         }
 
-        // AUD-029: enforce the space's minimum key generation for every push,
+        // AUD-029: enforce the space's minimum epoch for every push,
         // including network pushes whose callers pass no PushOptions. The
         // epoch embedded in each new wrapped DEK is the wire-visible key
-        // generation of the writer; a stale-but-authorized device must not
+        // epoch of the writer; a stale-but-authorized device must not
         // commit ciphertext the post-rotation key hierarchy cannot decrypt.
         // Tombstone-only changes carry no wrapped DEK and remain allowed.
         {
@@ -703,7 +703,7 @@ mod tests {
         );
     }
 
-    /// The push CAS check rejects pushes encrypted under a key generation
+    /// The push CAS check rejects pushes encrypted under a stale epoch
     /// older than the space minimum (set when an epoch advance completes).
     /// Clients depend on this error to know they must pull the new epoch
     /// and rewrap their DEKs before retrying the push.
@@ -736,7 +736,7 @@ mod tests {
                 Some(&PushOptions { epoch: 1 }),
             )
             .await
-            .expect_err("stale key generation should be rejected");
+            .expect_err("stale epoch should be rejected");
         assert_eq!(stale, StorageError::EpochStale);
     }
 

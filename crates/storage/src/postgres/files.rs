@@ -161,7 +161,7 @@ impl FileStorage for PostgresStorage {
                 id: row.id,
                 wrapped_dek: row.wrapped_dek,
                 cursor: row.cursor,
-                observed_dek: None,
+                observed_wrapped_dek: None,
             })
             .collect())
     }
@@ -209,13 +209,13 @@ impl FileStorage for PostgresStorage {
             .bind(&dek.wrapped_dek)
             .bind(dek.id)
             .bind(space_id)
-            .bind(&dek.observed_dek)
+            .bind(&dek.observed_wrapped_dek)
             .execute(tx.as_mut())
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
             if result.rows_affected() != 1 {
-                return Err(match dek.observed_dek {
+                return Err(match dek.observed_wrapped_dek {
                     Some(_) => StorageError::DekConflict,
                     None => StorageError::FileDekNotFound,
                 });
@@ -540,7 +540,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: new_dek.clone(),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -587,7 +587,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xcc),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -635,7 +635,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
                     cursor: 0,
-                    observed_dek: Some(observed),
+                    observed_wrapped_dek: Some(observed),
                 }],
             )
             .await
@@ -657,7 +657,7 @@ mod tests {
                     id: file_id,
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
                     cursor: 0,
-                    observed_dek: Some(concurrent),
+                    observed_wrapped_dek: Some(concurrent),
                 }],
             )
             .await
@@ -679,7 +679,7 @@ mod tests {
                     id: uuid::Uuid::new_v4(),
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xcc),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await

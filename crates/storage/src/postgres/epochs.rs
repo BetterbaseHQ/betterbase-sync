@@ -106,7 +106,7 @@ impl EpochStorage for PostgresStorage {
                 id: row.id.to_string(),
                 wrapped_dek: row.wrapped_dek,
                 cursor: row.cursor,
-                observed_dek: None,
+                observed_wrapped_dek: None,
             })
             .collect())
     }
@@ -152,12 +152,12 @@ impl EpochStorage for PostgresStorage {
             .bind(&dek.wrapped_dek)
             .bind(record_id)
             .bind(space_id)
-            .bind(&dek.observed_dek)
+            .bind(&dek.observed_wrapped_dek)
             .execute(tx.as_mut())
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
             if result.rows_affected() != 1 {
-                return Err(match dek.observed_dek {
+                return Err(match dek.observed_wrapped_dek {
                     Some(_) => StorageError::DekConflict,
                     None => StorageError::DekRecordNotFound,
                 });
@@ -410,7 +410,7 @@ mod tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(1, 0xbb),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -424,7 +424,7 @@ mod tests {
                     id: "not-a-uuid".to_owned(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xbb),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -438,7 +438,7 @@ mod tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xcc),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -457,7 +457,7 @@ mod tests {
                     id: uuid::Uuid::new_v4().to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xdd),
                     cursor: 0,
-                    observed_dek: None,
+                    observed_wrapped_dek: None,
                 }],
             )
             .await
@@ -484,7 +484,7 @@ mod cas_tests {
     use super::*;
 
     #[tokio::test]
-    async fn rewrap_with_stale_observed_dek_is_rejected() {
+    async fn rewrap_with_stale_observed_wrapped_dek_is_rejected() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -516,7 +516,7 @@ mod cas_tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xbb),
                     cursor: 0,
-                    observed_dek: Some(observed),
+                    observed_wrapped_dek: Some(observed),
                 }],
             )
             .await
@@ -535,7 +535,7 @@ mod cas_tests {
                     id: record_id.to_string(),
                     wrapped_dek: wrapped_dek_with_epoch(2, 0xcc),
                     cursor: 0,
-                    observed_dek: Some(concurrent),
+                    observed_wrapped_dek: Some(concurrent),
                 }],
             )
             .await

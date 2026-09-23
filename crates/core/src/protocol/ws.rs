@@ -182,7 +182,7 @@ pub struct WsSyncRecord {
     #[serde(rename = "cursor")]
     pub cursor: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default
@@ -238,7 +238,7 @@ pub struct WsFileEntry {
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default
@@ -270,7 +270,7 @@ pub struct WsPushChange {
     #[serde(rename = "expected_cursor")]
     pub expected_cursor: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default
@@ -318,7 +318,7 @@ pub struct WsPullRecordData {
     #[serde(rename = "cursor")]
     pub cursor: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default
@@ -351,7 +351,7 @@ pub struct WsPullFileData {
     #[serde(rename = "size", skip_serializing_if = "is_zero_i64", default)]
     pub size: i64,
     #[serde(
-        rename = "dek",
+        rename = "wrapped_dek",
         skip_serializing_if = "Option::is_none",
         with = "option_bytes",
         default
@@ -610,8 +610,8 @@ pub struct DeksGetParams {
 pub struct DekRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek", with = "serde_bytes")]
-    pub dek: Vec<u8>,
+    #[serde(rename = "wrapped_dek", with = "serde_bytes")]
+    pub wrapped_dek: Vec<u8>,
     #[serde(rename = "seq")]
     pub seq: i64,
 }
@@ -626,20 +626,20 @@ pub struct DeksGetResult {
 pub struct DekRewrapEntry {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek", with = "serde_bytes")]
-    pub dek: Vec<u8>,
+    #[serde(rename = "wrapped_dek", with = "serde_bytes")]
+    pub wrapped_dek: Vec<u8>,
     /// The wrapped DEK the client observed when it read this record. When
     /// present, the server only applies the update if the stored wrapper is
     /// still this value — a concurrent push replaces the wrapper, and a
     /// stale rewrap must not overwrite the newer key (AUD-026). Optional so
     /// older clients interoperate (they get the legacy unconditional path).
     #[serde(
-        rename = "observed_dek",
+        rename = "observed_wrapped_dek",
         with = "serde_bytes",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub observed_dek: Option<Vec<u8>>,
+    pub observed_wrapped_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,8 +664,8 @@ pub struct DeksRewrapResult {
 pub struct FileDekRecord {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek", with = "serde_bytes")]
-    pub dek: Vec<u8>,
+    #[serde(rename = "wrapped_dek", with = "serde_bytes")]
+    pub wrapped_dek: Vec<u8>,
     #[serde(rename = "cursor")]
     pub cursor: i64,
 }
@@ -690,16 +690,16 @@ pub struct FileDeksGetResult {
 pub struct FileDekRewrapEntry {
     #[serde(rename = "id")]
     pub id: String,
-    #[serde(rename = "dek", with = "serde_bytes")]
-    pub dek: Vec<u8>,
+    #[serde(rename = "wrapped_dek", with = "serde_bytes")]
+    pub wrapped_dek: Vec<u8>,
     /// Observed wrapped DEK for compare-and-set rewrap (see DekRewrapEntry).
     #[serde(
-        rename = "observed_dek",
+        rename = "observed_wrapped_dek",
         with = "serde_bytes",
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub observed_dek: Option<Vec<u8>>,
+    pub observed_wrapped_dek: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
