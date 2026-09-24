@@ -6,6 +6,8 @@ use betterbase_sync_core::validation::{validate_record_id, DEFAULT_MAX_BLOB_SIZE
 use futures_util::StreamExt;
 use uuid::Uuid;
 
+use super::is_unique_violation;
+
 use super::PostgresStorage;
 use crate::{
     MembersLogEntry, PullEntry, PullEntryKind, PullStream, PullStreamMeta, PushOptions, PushResult,
@@ -344,12 +346,13 @@ impl RecordStorage for PostgresStorage {
 
             if existing_sequences.contains_key(&record_id) {
                 sqlx::query(
-                    "UPDATE records SET blob = $1, cursor = $2, wrapped_dek = $3, deleted = $4 WHERE id = $5",
+                    "UPDATE records SET blob = $1, cursor = $2, wrapped_dek = $3, deleted = $4 WHERE space_id = $5 AND id = $6",
                 )
                 .bind(&change.blob)
                 .bind(new_cursor)
                 .bind(&change.wrapped_dek)
                 .bind(deleted)
+                .bind(space_id)
                 .bind(record_id)
                 .execute(tx.as_mut())
                 .await
@@ -366,7 +369,17 @@ impl RecordStorage for PostgresStorage {
                 .bind(deleted)
                 .execute(tx.as_mut())
                 .await
-                .map_err(|error| StorageError::Database(error.to_string()))?;
+                .map_err(|error| {
+                    // Two connections can pass the per-space existence check
+                    // concurrently and race the INSERT; the loser must take
+                    // the conflict path (client reconciles via pull), not an
+                    // unclassified database error.
+                    if is_unique_violation(&error) {
+                        StorageError::VersionConflict
+                    } else {
+                        StorageError::Database(error.to_string())
+                    }
+                })?;
             }
         }
 

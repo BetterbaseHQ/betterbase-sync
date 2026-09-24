@@ -420,6 +420,11 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_NOT_FOUND.to_owned(),
         },
+        Err(StorageError::VersionConflict | StorageError::RecordNotFound) => PushRpcResult {
+            ok: false,
+            cursor: 0,
+            error: ERR_CODE_CONFLICT.to_owned(),
+        },
         Err(StorageError::EpochStale) => PushRpcResult {
             ok: false,
             cursor: 0,
@@ -440,7 +445,7 @@ pub(super) async fn handle_push_request(
             error: ERR_CODE_PAYLOAD_TOO_LARGE.to_owned(),
         },
         Err(ref other) => {
-            tracing::warn!(
+            tracing::error!(
                 "push rejected with unclassified storage error: {other} (space {space_id}, {} changes)",
                 changes.len(),
             );

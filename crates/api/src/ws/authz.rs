@@ -58,7 +58,13 @@ async fn authorize_space(
         return sync_storage
             .get_or_create_space(space_id, &auth.client_id)
             .await
-            .map_err(|_| SpaceAuthzError::Internal);
+            .map_err(|error| {
+                tracing::error!(
+                    "personal-space get_or_create failed for space {space_id} (client {}): {error}",
+                    auth.client_id,
+                );
+                SpaceAuthzError::Internal
+            });
     }
 
     let space = sync_storage
