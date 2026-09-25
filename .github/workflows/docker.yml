@@ -19,8 +19,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Build one arch per native runner and push per-arch images by digest on
-  # tags. Native arm64 runners keep the Rust compile fast (no QEMU).
+  # Build one arch per native runner and push per-arch images by digest
+  # on pushes (main or tags). Native arm64 runners keep the Rust compile
+  # fast (no QEMU).
   build:
     strategy:
       matrix:
@@ -49,7 +50,7 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
 
       - name: Log in to Container Registry
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push'
         # docker/login-action@v4
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
@@ -71,10 +72,10 @@ jobs:
           # each other's cache, forcing a cold compile for one arch every run.
           cache-from: type=gha,scope=buildkit-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=buildkit-${{ env.PLATFORM_PAIR }}
-          outputs: ${{ startsWith(github.ref, 'refs/tags/') && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.IMAGE_NAME_LC) || '' }}
+          outputs: ${{ github.event_name == 'push' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push=true', env.REGISTRY, env.IMAGE_NAME_LC) || '' }}
 
       - name: Export digest
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push'
         run: |
           digest="${{ steps.build.outputs.digest }}"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -85,7 +86,7 @@ jobs:
           touch "$RUNNER_TEMP/digests/${digest#sha256:}"
 
       - name: Upload digest
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push'
         # actions/upload-artifact@v7
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -97,7 +98,7 @@ jobs:
   # Merge the per-arch images into a multi-arch manifest and apply tags.
   merge:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -140,6 +141,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha
 
       - name: Create multi-arch manifest
