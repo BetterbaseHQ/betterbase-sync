@@ -9,8 +9,7 @@ use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
     WsEventSendParams, WsPresenceClearParams, WsPresenceSetParams, WsPullBeginData,
     WsPullCommitData, WsSpaceError, WsSubscribedSpace, ERR_CODE_BAD_REQUEST, ERR_CODE_CONFLICT,
-    ERR_CODE_EPOCH_STALE, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
-    ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE,
+    ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
 };
 use betterbase_sync_storage::StorageError;
 use serde::Serialize;
@@ -415,59 +414,8 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_CONFLICT.to_owned(),
         },
-        Err(StorageError::SpaceNotFound) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_NOT_FOUND.to_owned(),
-        },
-        Err(StorageError::VersionConflict | StorageError::RecordNotFound) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_CONFLICT.to_owned(),
-        },
-        Err(StorageError::RecordIdCollision) => {
-            // A record id that already exists in another space cannot be a
-            // conflict the client could resolve (pull finds nothing) — it is
-            // a client protocol violation. Reject permanently so the client
-            // quarantines instead of retrying forever.
-            tracing::error!(
-                "push rejected: record id collides with another space (space {space_id})"
-            );
-            PushRpcResult {
-                ok: false,
-                cursor: 0,
-                error: ERR_CODE_BAD_REQUEST.to_owned(),
-            }
-        }
-        Err(StorageError::EpochStale) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_EPOCH_STALE.to_owned(),
-        },
-        Err(StorageError::InvalidRecordId | StorageError::DuplicateRecordId) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_BAD_REQUEST.to_owned(),
-        },
-        Err(
-            StorageError::BlobTooLarge
-            | StorageError::PushRecordLimitExceeded
-            | StorageError::PushPayloadLimitExceeded,
-        ) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_PAYLOAD_TOO_LARGE.to_owned(),
-        },
-        Err(ref other) => {
-            tracing::error!(
-                "push rejected with unclassified storage error: {other} (space {space_id}, {} changes)",
-                changes.len(),
-            );
-            PushRpcResult {
-                ok: false,
-                cursor: 0,
-                error: ERR_CODE_INTERNAL.to_owned(),
-            }
+        Err(ref err) => {
+            super::push_helpers::push_error_result(err, &space_id.to_string(), changes.len())
         }
     };
 

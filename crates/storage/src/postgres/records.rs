@@ -373,26 +373,46 @@ impl RecordStorage for PostgresStorage {
                     if is_unique_violation(&error) {
                         // The transaction is aborted, so classify on a fresh
                         // connection. An id that exists only in ANOTHER space
-                        // is a cross-space collision: random UUIDs cannot
-                        // collide, so this is a client protocol violation,
-                        // never a conflict the client could resolve. Any
-                        // other unique violation means a concurrent writer
-                        // inserted the same id into THIS space after our
-                        // existence read — a genuine conflict, resolved via
-                        // pull.
-                        let elsewhere: i64 = sqlx::query_scalar(
+                        // is a cross-space collision: with random UUIDs the
+                        // collision probability is negligible, so this is a
+                        // client protocol violation, never a conflict the
+                        // client could resolve. Any other unique violation
+                        // means a concurrent writer inserted the same id into
+                        // THIS space after our existence read — a genuine
+                        // conflict, resolved via pull.
+                        //
+                        // The pool query's verdict is authoritative: Postgres
+                        // reports a unique violation on a concurrently
+                        // inserted key only after the winning transaction
+                        // commits, so the conflicting row is always visible
+                        // to the fresh snapshot. If the query itself fails
+                        // (pool saturation, transient error), fall back to
+                        // VersionConflict — wrong only for the negligible
+                        // cross-space case, and bounded by the client's
+                        // conflict-retry path.
+                        let elsewhere: Result<i64, sqlx::Error> = sqlx::query_scalar(
                             "SELECT COUNT(*) FROM records WHERE id = $1 AND space_id <> $2",
                         )
                         .bind(record_id)
                         .bind(space_id)
                         .fetch_one(self.pool())
-                        .await
-                        .unwrap_or(0);
-                        return Err(if elsewhere > 0 {
-                            StorageError::RecordIdCollision
-                        } else {
-                            StorageError::VersionConflict
-                        });
+                        .await;
+                        let elsewhere = match elsewhere {
+                            Ok(count) => count,
+                            Err(err) => {
+                                tracing::warn!(
+                                    "collision classification query failed for record                                      {record_id} (space {space_id}): {err}; assuming conflict"
+                                );
+                                return Err(StorageError::VersionConflict);
+                            }
+                        };
+                        if elsewhere > 0 {
+                            tracing::error!(
+                                "record id {record_id} exists in another space;                                  rejecting as protocol violation (space {space_id})"
+                            );
+                            return Err(StorageError::RecordIdCollision);
+                        }
+                        return Err(StorageError::VersionConflict);
                     }
                     return Err(StorageError::Database(error.to_string()));
                 }

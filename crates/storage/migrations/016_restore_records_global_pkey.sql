@@ -25,5 +25,10 @@ END $$;
 ALTER TABLE files DROP CONSTRAINT files_record_fk;
 ALTER TABLE records DROP CONSTRAINT records_pkey;
 ALTER TABLE records ADD PRIMARY KEY (id);
+-- The global PK implies (space_id, id) uniqueness; the explicit UNIQUE
+-- constraint gives files_record_fk a same-space target, so a files row can
+-- never reference a record in a different space (which would dodge the
+-- tombstone cascade and leak its blob from storage accounting).
+ALTER TABLE records ADD CONSTRAINT records_space_id_unique UNIQUE (space_id, id);
 ALTER TABLE files ADD CONSTRAINT files_record_fk
-  FOREIGN KEY (record_id) REFERENCES records(id);
+  FOREIGN KEY (space_id, record_id) REFERENCES records(space_id, id);

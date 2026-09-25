@@ -1,8 +1,8 @@
 use betterbase_sync_auth::Permission;
 use betterbase_sync_core::protocol::{
     PullParams, PushParams, PushRpcResult, WsPullBeginData, WsPullCommitData, ERR_CODE_BAD_REQUEST,
-    ERR_CODE_CONFLICT, ERR_CODE_EPOCH_STALE, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL,
-    ERR_CODE_INVALID_PARAMS, ERR_CODE_NOT_FOUND, ERR_CODE_PAYLOAD_TOO_LARGE, ERR_CODE_RATE_LIMITED,
+    ERR_CODE_CONFLICT, ERR_CODE_FORBIDDEN, ERR_CODE_INTERNAL, ERR_CODE_INVALID_PARAMS,
+    ERR_CODE_NOT_FOUND, ERR_CODE_RATE_LIMITED,
 };
 use betterbase_sync_storage::StorageError;
 use serde::Serialize;
@@ -145,35 +145,9 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_CONFLICT.to_owned(),
         },
-        Err(StorageError::SpaceNotFound) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_NOT_FOUND.to_owned(),
-        },
-        Err(StorageError::EpochStale) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_EPOCH_STALE.to_owned(),
-        },
-        Err(StorageError::InvalidRecordId | StorageError::DuplicateRecordId) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_BAD_REQUEST.to_owned(),
-        },
-        Err(
-            StorageError::BlobTooLarge
-            | StorageError::PushRecordLimitExceeded
-            | StorageError::PushPayloadLimitExceeded,
-        ) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_PAYLOAD_TOO_LARGE.to_owned(),
-        },
-        Err(_) => PushRpcResult {
-            ok: false,
-            cursor: 0,
-            error: ERR_CODE_INTERNAL.to_owned(),
-        },
+        Err(ref err) => {
+            super::push_helpers::push_error_result(err, &space_id.to_string(), changes.len())
+        }
     };
 
     send_result_response(outbound, id, &response).await;
