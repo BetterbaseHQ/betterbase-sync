@@ -384,6 +384,16 @@ async fn decode_rewrap_deks(
             return None;
         }
 
+        if dek.observed_wrapped_dek.is_none() {
+            // The AUD-026 compare-and-set is a no-op without the observed
+            // value — a stale rewrap can then overwrite a concurrently
+            // installed DEK. Absence is only legitimate for legacy clients
+            // that predate the field, so make the downgrade visible.
+            tracing::warn!(
+                "dek rewrap without observed_wrapped_dek: CAS guard disabled (record {})",
+                dek.id
+            );
+        }
         deks.push(DekRecord {
             id: dek.id,
             wrapped_dek: dek.wrapped_dek,
@@ -427,6 +437,11 @@ async fn decode_rewrap_file_deks(
             return None;
         }
 
+        if dek.observed_wrapped_dek.is_none() {
+            tracing::warn!(
+                "file dek rewrap without observed_wrapped_dek: CAS guard disabled (file {file_id})"
+            );
+        }
         deks.push(FileDekRecord {
             id: file_id,
             wrapped_dek: dek.wrapped_dek,
