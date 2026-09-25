@@ -50,6 +50,8 @@ pub enum StorageError {
     InvitationNotFound,
     #[error("metadata version conflict")]
     VersionConflict,
+    #[error("record id already exists in another space")]
+    RecordIdCollision,
     #[error("hash chain broken")]
     HashChainBroken,
     #[error("epoch stale")]

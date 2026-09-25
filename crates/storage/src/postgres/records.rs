@@ -358,7 +358,7 @@ impl RecordStorage for PostgresStorage {
                 .await
                 .map_err(|error| StorageError::Database(error.to_string()))?;
             } else {
-                sqlx::query(
+                if let Err(error) = sqlx::query(
                     "INSERT INTO records (id, space_id, blob, cursor, wrapped_dek, deleted) VALUES ($1, $2, $3, $4, $5, $6)",
                 )
                 .bind(record_id)
@@ -369,17 +369,33 @@ impl RecordStorage for PostgresStorage {
                 .bind(deleted)
                 .execute(tx.as_mut())
                 .await
-                .map_err(|error| {
-                    // Two connections can pass the per-space existence check
-                    // concurrently and race the INSERT; the loser must take
-                    // the conflict path (client reconciles via pull), not an
-                    // unclassified database error.
+                {
                     if is_unique_violation(&error) {
-                        StorageError::VersionConflict
-                    } else {
-                        StorageError::Database(error.to_string())
+                        // The transaction is aborted, so classify on a fresh
+                        // connection. An id that exists only in ANOTHER space
+                        // is a cross-space collision: random UUIDs cannot
+                        // collide, so this is a client protocol violation,
+                        // never a conflict the client could resolve. Any
+                        // other unique violation means a concurrent writer
+                        // inserted the same id into THIS space after our
+                        // existence read — a genuine conflict, resolved via
+                        // pull.
+                        let elsewhere: i64 = sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM records WHERE id = $1 AND space_id <> $2",
+                        )
+                        .bind(record_id)
+                        .bind(space_id)
+                        .fetch_one(self.pool())
+                        .await
+                        .unwrap_or(0);
+                        return Err(if elsewhere > 0 {
+                            StorageError::RecordIdCollision
+                        } else {
+                            StorageError::VersionConflict
+                        });
                     }
-                })?;
+                    return Err(StorageError::Database(error.to_string()));
+                }
             }
         }
 
@@ -567,6 +583,34 @@ mod tests {
             .await
             .expect("second push");
         assert!(!result.ok);
+    }
+
+    #[tokio::test]
+    async fn push_cross_space_id_collision_is_not_a_conflict() {
+        // The pre-check found the id absent in THIS space, but the global
+        // primary key rejects it: the id exists in ANOTHER space. That is a
+        // protocol violation, not a conflict — mapping it to VersionConflict
+        // would send the client into a pull-reconcile loop that can never
+        // resolve (the offending record is not in its space).
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space_a = uuid::Uuid::new_v4();
+        let space_b = uuid::Uuid::new_v4();
+        create_space(&storage, space_a).await;
+        create_space(&storage, space_b).await;
+
+        let shared_id = "019400e8-7b5d-7000-8000-00000000000f";
+        storage
+            .push(space_a, &[change(shared_id, Some(b"a"), 0)], None)
+            .await
+            .expect("space a push");
+
+        let err = storage
+            .push(space_b, &[change(shared_id, Some(b"b"), 0)], None)
+            .await
+            .expect_err("cross-space push must fail");
+        assert!(matches!(err, StorageError::RecordIdCollision));
     }
 
     #[tokio::test]

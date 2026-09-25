@@ -425,6 +425,20 @@ pub(super) async fn handle_push_request(
             cursor: 0,
             error: ERR_CODE_CONFLICT.to_owned(),
         },
+        Err(StorageError::RecordIdCollision) => {
+            // A record id that already exists in another space cannot be a
+            // conflict the client could resolve (pull finds nothing) — it is
+            // a client protocol violation. Reject permanently so the client
+            // quarantines instead of retrying forever.
+            tracing::error!(
+                "push rejected: record id collides with another space (space {space_id})"
+            );
+            PushRpcResult {
+                ok: false,
+                cursor: 0,
+                error: ERR_CODE_BAD_REQUEST.to_owned(),
+            }
+        }
         Err(StorageError::EpochStale) => PushRpcResult {
             ok: false,
             cursor: 0,
