@@ -16,7 +16,7 @@ use betterbase_sync_core::protocol::{
 use betterbase_sync_storage::{MembersLogEntry, StorageError};
 use uuid::Uuid;
 
-const RATE_LIMIT_MAX: i64 = 10;
+const RATE_LIMIT_MAX: i64 = 30;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(3600);
 
 pub(super) async fn handle_request(
@@ -69,7 +69,9 @@ pub(super) async fn handle_request(
                     outbound,
                     id,
                     ERR_CODE_RATE_LIMITED,
-                    "rate limit exceeded: max 10 membership appends per hour".to_owned(),
+                    format!(
+                        "rate limit exceeded: max {RATE_LIMIT_MAX} membership appends per hour"
+                    ),
                 )
                 .await;
                 return;
