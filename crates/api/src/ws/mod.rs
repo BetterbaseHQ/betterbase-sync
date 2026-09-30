@@ -21,8 +21,11 @@ use crate::ApiState;
 const WS_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60); // 1 hour
 /// Maximum time a stalled client may hold an individual socket write.
 const WS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Maximum size of a single inbound WebSocket message (4 MiB).
-const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+/** Maximum size of a single inbound WebSocket message (8 MiB).
+ * Matches the client's RPC frame cap (betterbase-sync-core MAX_FRAME_BYTES):
+ * sized so a single-record push carrying a top-padding-bucket blob
+ * (5,242,880 bytes + envelope) passes with headroom. */
+const WS_MAX_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
 mod authz;
 mod presence;
