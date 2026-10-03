@@ -12,3 +12,7 @@ description = "Standalone database migration runner"
 anyhow.workspace = true
 betterbase-sync-storage = { path = "../../crates/storage" }
 tokio.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true
+uuid.workspace = true

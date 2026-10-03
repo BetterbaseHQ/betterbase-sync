@@ -67,6 +67,24 @@ mod tests {
     use super::{parse_permission, Permission};
 
     #[test]
+    fn permission_wire_values_and_display_are_stable() {
+        for (value, permission, command) in [
+            (1, Permission::Read, "/space/read"),
+            (2, Permission::Write, "/space/write"),
+            (3, Permission::Admin, "/space/admin"),
+        ] {
+            assert_eq!(Permission::try_from(value).expect("permission"), permission);
+            assert_eq!(permission.to_string(), command);
+        }
+        for invalid in [0, 4, 255] {
+            assert_eq!(
+                Permission::try_from(invalid),
+                Err(super::ParsePermissionError::UnknownValue(invalid))
+            );
+        }
+    }
+
+    #[test]
     fn parse_permission_known_commands() {
         assert_eq!(
             parse_permission("/space/read").expect("read"),

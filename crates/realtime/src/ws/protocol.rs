@@ -62,6 +62,40 @@ mod tests {
     use super::{parse_client_binary_frame, validate_client_binary_frame, ClientFrame};
 
     #[test]
+    fn rejects_malformed_frame_field_types() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"type": null}),
+            serde_json::json!({"type": "0"}),
+            serde_json::json!({"type": 0, "id": 123}),
+            serde_json::json!({"type": 0, "method": []}),
+            serde_json::json!({"type": i64::MAX}),
+            serde_json::json!([]),
+            serde_json::json!(true),
+        ] {
+            let encoded = minicbor_serde::to_vec(&value).expect("encode");
+            let error = parse_client_binary_frame(&encoded).expect_err("malformed frame");
+            assert_eq!(error.code, CLOSE_PROTOCOL_ERROR, "{value}");
+        }
+    }
+
+    #[test]
+    fn every_truncated_request_prefix_is_rejected() {
+        let frame = minicbor_serde::to_vec(
+            serde_json::json!({"type": RPC_REQUEST, "id": "request", "method": "pull"}),
+        )
+        .expect("encode");
+        for length in 0..frame.len() {
+            let error = parse_client_binary_frame(&frame[..length]).expect_err("truncated request");
+            assert_eq!(error.code, CLOSE_PROTOCOL_ERROR, "prefix length {length}");
+        }
+        assert!(matches!(
+            parse_client_binary_frame(&frame),
+            Ok(ClientFrame::Request { .. })
+        ));
+    }
+
+    #[test]
     fn rejects_empty_binary_frame() {
         let error =
             validate_client_binary_frame(&[]).expect_err("empty binary frame must be rejected");

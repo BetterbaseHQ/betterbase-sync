@@ -213,4 +213,80 @@ mod tests {
             .expect_err("missing sync scope must fail");
         assert_eq!(error.close.reason, "sync scope required");
     }
+    struct RejectValidator(AuthError);
+
+    #[async_trait]
+    impl TokenValidator for RejectValidator {
+        async fn validate_token(&self, _: &str) -> Result<AuthContext, AuthError> {
+            Err(match self.0 {
+                AuthError::MissingToken => AuthError::MissingToken,
+                AuthError::InvalidToken => AuthError::InvalidToken,
+                AuthError::ExpiredToken => AuthError::ExpiredToken,
+                AuthError::UntrustedIssuer => AuthError::UntrustedIssuer,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_first_frames_have_precise_close_reasons() {
+        let validator = StubValidator { context: None };
+        let cases = [
+            (FirstMessage::Closed, "connection closed before auth"),
+            (FirstMessage::Binary(vec![]), "empty auth frame"),
+            (FirstMessage::Binary(vec![0xff]), "invalid auth frame"),
+            (FirstMessage::Binary(minicbor_serde::to_vec(serde_json::json!({
+                "type": 0, "method": "auth", "params": {"token": "token"}
+            })).unwrap()), "first frame must be an auth notification"),
+            (FirstMessage::Binary(minicbor_serde::to_vec(serde_json::json!({
+                "type": RPC_NOTIFICATION, "method": "subscribe", "params": {"token": "token"}
+            })).unwrap()), "first frame must be an auth notification"),
+            (FirstMessage::Binary(minicbor_serde::to_vec(serde_json::json!({
+                "type": RPC_NOTIFICATION, "method": "auth", "params": {"token": ""}
+            })).unwrap()), "empty auth token"),
+        ];
+        for (frame, reason) in cases {
+            let error = authenticate_first_message(&validator, frame)
+                .await
+                .expect_err(reason);
+            assert_eq!(
+                error.close.code,
+                betterbase_sync_core::protocol::CLOSE_AUTH_FAILED
+            );
+            assert_eq!(error.close.reason, reason);
+        }
+    }
+
+    #[tokio::test]
+    async fn validator_failures_preserve_auth_close_contract() {
+        for (error, reason) in [
+            (AuthError::MissingToken, "missing auth token"),
+            (AuthError::InvalidToken, "invalid auth token"),
+            (AuthError::ExpiredToken, "expired auth token"),
+            (AuthError::UntrustedIssuer, "untrusted auth issuer"),
+        ] {
+            let frame = minicbor_serde::to_vec(serde_json::json!({
+                "type": RPC_NOTIFICATION, "method": "auth", "params": {"token": "token"}
+            }))
+            .unwrap();
+            let result =
+                authenticate_first_message(&RejectValidator(error), FirstMessage::Binary(frame))
+                    .await
+                    .expect_err(reason);
+            assert_eq!(
+                result.close.code,
+                betterbase_sync_core::protocol::CLOSE_AUTH_FAILED
+            );
+            assert_eq!(result.close.reason, reason);
+        }
+    }
+
+    #[test]
+    fn scopes_require_an_exact_whitespace_delimited_match() {
+        for scope in ["sync", "files sync", " sync\tfiles\nsync "] {
+            assert!(has_scope(scope, "sync"));
+        }
+        for scope in ["", "files", "syncing", "nosync", "sync,files", "SYNC"] {
+            assert!(!has_scope(scope, "sync"));
+        }
+    }
 }

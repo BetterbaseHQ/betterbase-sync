@@ -197,6 +197,146 @@ mod tests {
         *b"01234567890123456789012345678901"
     }
 
+    fn signed_token_with_expiry(expiry: u64, version: u8) -> String {
+        use base64::Engine as _;
+        use hmac::{KeyInit, Mac};
+
+        let token =
+            create_fst(&test_key(), Uuid::nil(), "peer.example.com", None).expect("create token");
+        let mut raw = super::URL_SAFE_NO_PAD.decode(token).expect("decode");
+        raw[0] = version;
+        raw[65..73].copy_from_slice(&expiry.to_be_bytes());
+        let mut mac = super::HmacSha256::new_from_slice(&test_key()).expect("key");
+        mac.update(&raw[..73]);
+        raw[73..].copy_from_slice(&mac.finalize().into_bytes());
+        super::URL_SAFE_NO_PAD.encode(raw)
+    }
+
+    #[test]
+    fn fst_rejects_authenticated_invalid_version_and_expiry() {
+        // Re-sign malformed claims to exercise validation after authentication,
+        // rather than merely failing the MAC check.
+        let future_expiry = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("current unix time")
+            .as_secs()
+            + 3600;
+        for (expiry, version, expected) in [
+            (
+                u64::MAX,
+                super::FST_VERSION,
+                FederationTokenError::InvalidToken,
+            ),
+            (0, super::FST_VERSION, FederationTokenError::ExpiredToken),
+            (
+                future_expiry,
+                super::FST_VERSION + 1,
+                FederationTokenError::InvalidToken,
+            ),
+        ] {
+            let token = signed_token_with_expiry(expiry, version);
+            assert_eq!(
+                verify_fst(&test_key(), &token, "peer.example.com"),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn fst_rejects_every_single_byte_mutation_and_truncation() {
+        use base64::Engine as _;
+        let token =
+            create_fst(&test_key(), Uuid::new_v4(), "peer.example.com", None).expect("token");
+        let raw = super::URL_SAFE_NO_PAD.decode(token).expect("decode");
+        for index in 0..raw.len() {
+            let mut altered = raw.clone();
+            altered[index] ^= 1;
+            assert_eq!(
+                verify_fst(
+                    &test_key(),
+                    &super::URL_SAFE_NO_PAD.encode(altered),
+                    "peer.example.com"
+                ),
+                Err(FederationTokenError::InvalidToken),
+                "mutation at byte {index}"
+            );
+            assert_eq!(
+                verify_fst(
+                    &test_key(),
+                    &super::URL_SAFE_NO_PAD.encode(&raw[..index]),
+                    "peer.example.com"
+                ),
+                Err(FederationTokenError::InvalidToken),
+                "truncation at byte {index}"
+            );
+        }
+        let mut extended = raw;
+        extended.push(0);
+        assert_eq!(
+            verify_fst(
+                &test_key(),
+                &super::URL_SAFE_NO_PAD.encode(extended),
+                "peer.example.com"
+            ),
+            Err(FederationTokenError::InvalidToken)
+        );
+    }
+
+    #[test]
+    fn fst_accepts_equivalent_domains_but_binds_nondefault_port() {
+        let token = create_fst(
+            &test_key(),
+            Uuid::nil(),
+            "https://PEER.EXAMPLE.COM:443/path",
+            None,
+        )
+        .expect("token");
+        assert!(verify_fst(&test_key(), &token, "peer.example.com.").is_ok());
+        assert_eq!(
+            verify_fst(&test_key(), &token, "peer.example.com:8443"),
+            Err(FederationTokenError::InvalidToken)
+        );
+    }
+
+    #[test]
+    fn fst_rejects_expiry_before_unix_epoch() {
+        assert_eq!(
+            create_fst(
+                &test_key(),
+                Uuid::nil(),
+                "peer.example.com",
+                Some(SystemTime::UNIX_EPOCH - Duration::from_secs(1))
+            ),
+            Err(FederationTokenError::ExpiryBeforeUnixEpoch)
+        );
+    }
+
+    #[test]
+    fn fst_key_rotation_does_not_bypass_expiry_or_peer_binding() {
+        let old_key = test_key();
+        let new_key = derive_fst_key(b"new secret");
+        let expired = create_fst(
+            &old_key,
+            Uuid::nil(),
+            "peer.example.com",
+            Some(SystemTime::UNIX_EPOCH),
+        )
+        .expect("expired token");
+        assert_eq!(
+            verify_fst_dual_key(&new_key, Some(&old_key), &expired, "peer.example.com"),
+            Err(FederationTokenError::ExpiredToken)
+        );
+        let token = create_fst(&old_key, Uuid::nil(), "peer.example.com", None).expect("token");
+        assert_eq!(
+            verify_fst_dual_key(&new_key, Some(&old_key), &token, "other.example.com"),
+            Err(FederationTokenError::InvalidToken)
+        );
+        assert_eq!(
+            verify_fst_dual_key(&new_key, None, &token, "peer.example.com"),
+            Err(FederationTokenError::InvalidToken)
+        );
+    }
+
     #[test]
     fn fst_round_trip() {
         let fst_key = derive_fst_key(&test_key());

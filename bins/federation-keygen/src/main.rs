@@ -361,7 +361,14 @@ mod tests {
     async fn isolated_database() -> Option<TestDatabase> {
         let base_database_url = match std::env::var("DATABASE_URL") {
             Ok(value) => value,
-            Err(_) => return None,
+            Err(_) => {
+                assert_ne!(
+                    std::env::var("BB_TEST_REQUIRE_DB").ok().as_deref(),
+                    Some("1"),
+                    "BB_TEST_REQUIRE_DB=1 but DATABASE_URL is not set"
+                );
+                return None;
+            }
         };
 
         // Each test gets its own schema for isolation.
