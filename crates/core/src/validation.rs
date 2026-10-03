@@ -62,6 +62,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_bad_characters_at_every_uuid_position() {
+        let valid = "019400e8-7b5d-7000-8000-000000000001";
+        for index in 0..valid.len() {
+            let mut invalid = valid.as_bytes().to_vec();
+            invalid[index] = b'g';
+            let invalid = String::from_utf8(invalid).expect("ASCII");
+            assert_eq!(
+                validate_record_id(&invalid),
+                Err(ValidationError::InvalidRecordId)
+            );
+            assert_eq!(
+                validate_file_id(&invalid),
+                Err(ValidationError::InvalidFileId)
+            );
+        }
+    }
+    #[test]
+    fn size_errors_report_the_configured_limit() {
+        assert_eq!(
+            blob_too_large(DEFAULT_MAX_BLOB_SIZE),
+            ValidationError::BlobTooLarge(5)
+        );
+        assert_eq!(
+            file_too_large(DEFAULT_MAX_FILE_SIZE),
+            ValidationError::FileTooLarge(100)
+        );
+        assert_eq!(
+            blob_too_large(DEFAULT_MAX_BLOB_SIZE).to_string(),
+            "blob exceeds 5 MB limit"
+        );
+        assert_eq!(
+            file_too_large(DEFAULT_MAX_FILE_SIZE).to_string(),
+            "file exceeds 100 MB limit"
+        );
+    }
+
+    #[test]
     fn validate_record_id_cases() {
         let valid = [
             "019400e8-7b5d-7000-8000-000000000001",

@@ -12,8 +12,10 @@ Part of the [betterbase-dev](https://github.com/BetterbaseHQ/betterbase-dev) orc
 
 ```bash
 just check          # fmt + clippy + test (standard workflow check)
-just test           # cargo test (DB tests auto-skip without DATABASE_URL)
-just test-db        # Spin up Postgres container, run full suite, tear down
+just test           # Full suite with automatic disposable PostgreSQL
+just test-db        # Alias for just test
+just test-no-db     # Explicit fast mode; skip database-backed tests
+just coverage       # Rust coverage + >90% gates with disposable PostgreSQL
 just test-v         # Tests with --nocapture
 just bench          # cargo bench --workspace
 just bench-db       # Storage benchmarks against real PostgreSQL
@@ -142,7 +144,9 @@ File routes are only registered when file storage is configured.
 - **`#![forbid(unsafe_code)]`** on every crate.
 - **Error types**: domain-specific enums with `thiserror`, `Clone + PartialEq + Eq` for testability. Map external errors early; never leak sqlx/reqwest types.
 - **CBOR serialization**: `minicbor-serde`. Use `serde_bytes` for byte fields, `skip_serializing_if` for optional/zero-value fields.
-- **Test isolation**: each DB test gets its own PostgreSQL schema (`test_{uuid}`), auto-created by `test_support::test_storage()`. Tests return `None` gracefully when `DATABASE_URL` is unset.
+- **Test isolation**: each DB test gets its own PostgreSQL schema (`test_{uuid}`), auto-created by its test helper. Direct `cargo test` returns `None` gracefully without `DATABASE_URL`, unless `BB_TEST_REQUIRE_DB=1`. `just test`, `just check`, and `just coverage` enforce DB tests and automatically provision and remove a dedicated PostgreSQL container on a random loopback port. A supplied `DATABASE_URL` is used without managing that database's lifecycle.
+- **Coverage**: `just coverage` and CI require LLVM line/region/function coverage overall and per crate, plus production line coverage for every library crate and binary to exceed 90%. Production counters exclude tests. Stable Rust reports currently have no branch counters.
+- **Lifecycle regressions**: test failure/cancellation followed by retry, tombstone/collection, or recovery. Gate both before and after backend dispatch, including work that outlives its awaiting future; assert final metadata, bytes, timestamps, tokens, and resource ownership. Confirm new regressions fail against the previous implementation when practical.
 - **API tests**: use stub trait impls (`StubHealth`, `StubValidator`) + `tower::ServiceExt::oneshot` to test routes without a running server.
 - **Async**: `#[tokio::test]` for async tests, `async_trait` for trait methods.
 - Workspace edition: 2021, MSRV: 1.88.

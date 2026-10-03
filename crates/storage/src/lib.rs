@@ -368,8 +368,18 @@ pub trait RecordStorage: Send + Sync {
     async fn record_exists(&self, space_id: Uuid, record_id: Uuid) -> Result<bool, StorageError>;
 }
 
+/// Owned guard that releases a file operation lock when dropped.
+pub type FileOperationLock = Box<dyn Send>;
+
 #[async_trait]
 pub trait FileStorage: Send + Sync {
+    /// Serializes upload and object deletion across workers for this file.
+    /// Hold the returned guard through both object-store and metadata operations.
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<FileOperationLock, StorageError>;
     /// Records file metadata and advances the space cursor.
     /// Returns `Some(cursor)` when a new record is created, `None` when the file already exists (idempotent).
     async fn record_file(
@@ -414,7 +424,20 @@ pub trait FileStorage: Send + Sync {
         cutoff: SystemTime,
         limit: usize,
     ) -> Result<Vec<PendingFileDeletion>, StorageError>;
-    /// Remove a queued deletion once the object is gone (or was re-created).
+    /// Rechecks queue eligibility after acquiring the per-file operation lock.
+    async fn file_deletion_due(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        cutoff: SystemTime,
+    ) -> Result<bool, StorageError>;
+    /// Clears stale cleanup intent only while metadata remains live, serialized with tombstones.
+    async fn clear_file_deletion_if_live(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError>;
+    /// Removes a queued deletion once the object is gone.
     async fn complete_file_deletion(
         &self,
         space_id: Uuid,

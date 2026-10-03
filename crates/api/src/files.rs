@@ -48,6 +48,16 @@ impl HttpFailure {
 
 #[async_trait]
 pub(crate) trait FileSyncStorage: Send + Sync {
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError>;
+    async fn schedule_file_deletions(
+        &self,
+        space_id: Uuid,
+        file_ids: &[Uuid],
+    ) -> Result<(), StorageError>;
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError>;
     async fn get_or_create_space(
         &self,
@@ -76,6 +86,20 @@ impl<T> FileSyncStorage for T
 where
     T: SpaceStorage + RecordStorage + FileStorageTrait + RevocationStorage + Send + Sync,
 {
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError> {
+        FileStorageTrait::lock_file(self, space_id, file_id).await
+    }
+    async fn schedule_file_deletions(
+        &self,
+        space_id: Uuid,
+        file_ids: &[Uuid],
+    ) -> Result<(), StorageError> {
+        FileStorageTrait::schedule_file_deletions(self, space_id, file_ids).await
+    }
     async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
         SpaceStorage::get_space(self, space_id).await
     }
@@ -233,6 +257,7 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
 }
 
 enum FileCommitError {
+    RecordNotFound,
     /// The wrapped DEK's epoch is below the space's minimum key
     /// generation — the client must re-encrypt under the current epoch.
     EpochStale,
@@ -243,6 +268,11 @@ enum FileCommitError {
 /// [`FileSyncStorage`] because only the background sweep consumes it.
 #[async_trait]
 pub trait FileDeletionQueue: Send + Sync {
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError>;
     /// File objects past their deletion grace period.
     async fn pending_file_deletions(
         &self,
@@ -257,6 +287,17 @@ pub trait FileDeletionQueue: Send + Sync {
         space_id: Uuid,
         file_id: Uuid,
     ) -> Result<bool, betterbase_sync_storage::StorageError>;
+    async fn file_deletion_due(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        cutoff: std::time::SystemTime,
+    ) -> Result<bool, StorageError>;
+    async fn clear_file_deletion_if_live(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError>;
     async fn complete_file_deletion(
         &self,
         space_id: Uuid,
@@ -269,6 +310,14 @@ impl<T> FileDeletionQueue for T
 where
     T: betterbase_sync_storage::Storage + Send + Sync,
 {
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError> {
+        FileStorageTrait::lock_file(self, space_id, file_id).await
+    }
+
     async fn pending_file_deletions(
         &self,
         cutoff: std::time::SystemTime,
@@ -288,6 +337,21 @@ where
         betterbase_sync_storage::FileStorage::file_exists(self, space_id, file_id).await
     }
 
+    async fn file_deletion_due(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        cutoff: std::time::SystemTime,
+    ) -> Result<bool, StorageError> {
+        FileStorageTrait::file_deletion_due(self, space_id, file_id, cutoff).await
+    }
+    async fn clear_file_deletion_if_live(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError> {
+        FileStorageTrait::clear_file_deletion_if_live(self, space_id, file_id).await
+    }
     async fn complete_file_deletion(
         &self,
         space_id: Uuid,
@@ -306,42 +370,61 @@ where
 /// (space, file_id) after its tombstone re-inserted metadata, making the
 /// object live again.
 ///
-/// Residual (documented): metadata recreated between the existence check
-/// and the object deletion leaves a live row over a deleted object — a
-/// millisecond window, once per file, ≥24h after its tombstone; the
-/// failure mode is a recoverable GET miss.
-pub async fn sweep_file_deletions<S: FileDeletionQueue + ?Sized>(
-    storage: &S,
-    blobs: &dyn FileBlobStorage,
+/// The per-file storage lock serializes the metadata re-check and object deletion
+/// with uploads across server workers, including when a queued snapshot is stale.
+/// Cancelling a sweep stops the batch, but its current locked operation finishes
+/// before releasing the lock. Owned storage handles keep that operation alive.
+pub async fn sweep_file_deletions<S: FileDeletionQueue + ?Sized + 'static>(
+    storage: Arc<S>,
+    blobs: Arc<dyn FileBlobStorage>,
     cutoff: std::time::SystemTime,
     batch_limit: usize,
 ) -> Result<usize, betterbase_sync_storage::StorageError> {
     let pending = storage.pending_file_deletions(cutoff, batch_limit).await?;
     let mut removed = 0;
     for item in pending {
-        if storage.file_exists(item.space_id, item.file_id).await? {
-            // Re-uploaded after the tombstone — the object is live again.
-            storage
-                .complete_file_deletion(item.space_id, item.file_id)
-                .await?;
-            continue;
-        }
-        match blobs.delete(item.space_id, item.file_id).await {
-            Ok(_) => {
+        let file_lock = storage.lock_file(item.space_id, item.file_id).await?;
+        let storage = storage.clone();
+        let blobs = blobs.clone();
+        // Once the operation owns the lock, caller cancellation must not abort
+        // it: dispatched filesystem/remote I/O can outlive its awaiting future.
+        // Dropping this JoinHandle detaches the operation, which keeps the lock
+        // through deletion AND queue completion before allowing a new upload.
+        let operation = tokio::spawn(async move {
+            let _file_lock = file_lock;
+            // A completed upload or a fresh tombstone may have replaced the
+            // snapshot while we waited. Honor the current grace period.
+            if !storage
+                .file_deletion_due(item.space_id, item.file_id, cutoff)
+                .await?
+            {
+                return Ok(0);
+            }
+            if storage.file_exists(item.space_id, item.file_id).await? {
                 storage
-                    .complete_file_deletion(item.space_id, item.file_id)
+                    .clear_file_deletion_if_live(item.space_id, item.file_id)
                     .await?;
-                removed += 1;
+                return Ok(0);
             }
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    space = %item.space_id,
-                    file = %item.file_id,
-                    "file object deletion failed; will retry next sweep"
-                );
+            match blobs.delete(item.space_id, item.file_id).await {
+                Ok(_) => {
+                    storage
+                        .complete_file_deletion(item.space_id, item.file_id)
+                        .await?;
+                    Ok(1)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        space = %item.space_id,
+                        file = %item.file_id,
+                        "file object deletion failed; will retry next sweep"
+                    );
+                    Ok(0)
+                }
             }
-        }
+        });
+        removed += operation.await.map_err(|_| StorageError::Unavailable)??;
     }
     Ok(removed)
 }
@@ -365,6 +448,7 @@ async fn commit_uploaded_file<S: FileSyncStorage + ?Sized>(
         .record_file(space_id, file_id, record_id, file_size, wrapped_dek)
         .await
         .map_err(|error| match error {
+            StorageError::RecordNotFound => FileCommitError::RecordNotFound,
             StorageError::EpochStale => FileCommitError::EpochStale,
             _ => FileCommitError::Storage,
         })
@@ -418,80 +502,105 @@ pub(crate) async fn put_file(
         Err(error) => return error.into_response(),
     };
 
-    match sync_storage.record_exists(space_id, record_id).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
-        }
+    let file_lock = match sync_storage.lock_file(space_id, file_id).await {
+        Ok(guard) => guard,
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
-    }
-
-    // Returns whether the object was newly created; the AUD-027 flow below
-    // no longer branches on it — both first attempts and retries of an
-    // interrupted upload run the same idempotent metadata commit.
-    let _created = match file_storage.store(space_id, file_id, &body).await {
-        Ok(created) => created,
-        Err(FileBlobStorageError::TooLarge) => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
-        }
-        Err(FileBlobStorageError::Internal) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-        Err(FileBlobStorageError::NotFound) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
     };
-    // AUD-027: an existing object may be the only survivor of an
-    // interrupted attempt — bytes stored, process lost before metadata
-    // committed. `!created` must NOT be acknowledged early: fall through
-    // to the idempotent commit, which distinguishes "this call newly
-    // committed metadata" (Some(cursor) — acknowledge and broadcast) from
-    // "already fully recorded" (None — plain idempotent replay).
-    let cursor = match commit_uploaded_file(
-        sync_storage.as_ref(),
-        space_id,
-        file_id,
-        record_id,
-        file_size,
-        &wrapped_dek,
-    )
-    .await
-    {
-        Ok(Some(cursor)) => cursor,
-        Ok(None) => return StatusCode::NO_CONTENT.into_response(),
-        Err(FileCommitError::EpochStale) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "file key generation stale — re-encrypt under the current epoch",
-            );
+    // Dispatched backend writes can outlive the request future. Keep the lock
+    // and cleanup/metadata bookkeeping owned until the entire upload finishes.
+    let operation = tokio::spawn(async move {
+        let _file_lock = file_lock;
+        match sync_storage.record_exists(space_id, record_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
+            }
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         }
-        Err(FileCommitError::Storage) => {
+
+        // Persist cleanup intent before writing bytes. Failed or cancelled uploads
+        // remain collectible; a successful metadata commit clears it atomically.
+        if sync_storage
+            .schedule_file_deletions(space_id, &[file_id])
+            .await
+            .is_err()
+        {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
-    };
 
-    if let Some(broker) = state.realtime_broker() {
-        let space_hex = space_id.as_simple().to_string();
-        crate::ws::broadcast_to_space(
-            &broker,
-            &space_hex,
-            "file",
-            WsFileData {
-                space: space_hex.clone(),
-                cursor,
-                files: vec![WsFileEntry {
-                    id: file_id.to_string(),
-                    record_id: record_id.to_string(),
-                    size: file_size,
-                    wrapped_dek: Some(wrapped_dek),
-                    deleted: false,
-                }],
-            },
+        // Returns whether the object was newly created; the AUD-027 flow below
+        // no longer branches on it — both first attempts and retries of an
+        // interrupted upload run the same idempotent metadata commit.
+        let _created = match file_storage.store(space_id, file_id, &body).await {
+            Ok(created) => created,
+            Err(FileBlobStorageError::TooLarge) => {
+                return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
+            }
+            Err(FileBlobStorageError::Internal) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+            Err(FileBlobStorageError::NotFound) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+        };
+        // AUD-027: an existing object may be the only survivor of an
+        // interrupted attempt — bytes stored, process lost before metadata
+        // committed. `!created` must NOT be acknowledged early: fall through
+        // to the idempotent commit, which distinguishes "this call newly
+        // committed metadata" (Some(cursor) — acknowledge and broadcast) from
+        // "already fully recorded" (None — plain idempotent replay).
+        let cursor = match commit_uploaded_file(
+            sync_storage.as_ref(),
+            space_id,
+            file_id,
+            record_id,
+            file_size,
+            &wrapped_dek,
         )
-        .await;
-    }
+        .await
+        {
+            Ok(Some(cursor)) => cursor,
+            Ok(None) => return StatusCode::NO_CONTENT.into_response(),
+            Err(FileCommitError::RecordNotFound) => {
+                return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
+            }
+            Err(FileCommitError::EpochStale) => {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "file key generation stale — re-encrypt under the current epoch",
+                );
+            }
+            Err(FileCommitError::Storage) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+        };
 
-    StatusCode::CREATED.into_response()
+        if let Some(broker) = state.realtime_broker() {
+            let space_hex = space_id.as_simple().to_string();
+            crate::ws::broadcast_to_space(
+                &broker,
+                &space_hex,
+                "file",
+                WsFileData {
+                    space: space_hex.clone(),
+                    cursor,
+                    files: vec![WsFileEntry {
+                        id: file_id.to_string(),
+                        record_id: record_id.to_string(),
+                        size: file_size,
+                        wrapped_dek: Some(wrapped_dek),
+                        deleted: false,
+                    }],
+                },
+            )
+            .await;
+        }
+
+        StatusCode::CREATED.into_response()
+    });
+    operation
+        .await
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
 }
 
 pub(crate) async fn get_file(
@@ -849,6 +958,8 @@ fn file_object_path(space_id: Uuid, file_id: Uuid) -> ObjectPath {
 
 #[cfg(test)]
 mod tests {
+    #[path = "file_lifecycle_tests.rs"]
+    mod lifecycle_tests;
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -910,6 +1021,16 @@ mod tests {
 
     #[async_trait]
     impl FileSyncStorage for StubFileSyncStorage {
+        async fn lock_file(
+            &self,
+            _: Uuid,
+            _: Uuid,
+        ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError> {
+            Ok(Box::new(()))
+        }
+        async fn schedule_file_deletions(&self, _: Uuid, _: &[Uuid]) -> Result<(), StorageError> {
+            Ok(())
+        }
         async fn get_space(&self, space_id: Uuid) -> Result<Space, StorageError> {
             if self.personal_spaces.contains(&space_id) {
                 return Ok(Space {
@@ -1069,6 +1190,13 @@ mod tests {
 
     #[async_trait]
     impl FileDeletionQueue for StubDeletionQueue {
+        async fn lock_file(
+            &self,
+            _: Uuid,
+            _: Uuid,
+        ) -> Result<betterbase_sync_storage::FileOperationLock, StorageError> {
+            Ok(Box::new(()))
+        }
         async fn pending_file_deletions(
             &self,
             cutoff: std::time::SystemTime,
@@ -1096,6 +1224,21 @@ mod tests {
                 .contains(&(space_id, file_id)))
         }
 
+        async fn file_deletion_due(
+            &self,
+            _: Uuid,
+            _: Uuid,
+            _: std::time::SystemTime,
+        ) -> Result<bool, StorageError> {
+            Ok(true)
+        }
+        async fn clear_file_deletion_if_live(
+            &self,
+            space: Uuid,
+            file: Uuid,
+        ) -> Result<(), StorageError> {
+            self.complete_file_deletion(space, file).await
+        }
         async fn complete_file_deletion(
             &self,
             space_id: Uuid,
@@ -1113,8 +1256,8 @@ mod tests {
     async fn sweep_removes_due_objects_and_completes_rows() {
         // AUD-039: tombstoned records schedule their file objects for
         // removal; the sweep deletes aged-out objects and clears the queue.
-        let storage = StubDeletionQueue::default();
-        let blobs = StubFileBlobStorage::default();
+        let storage = Arc::new(StubDeletionQueue::default());
+        let blobs = Arc::new(StubFileBlobStorage::default());
         let space_id = Uuid::new_v4();
         let due_file = Uuid::new_v4();
         let future_file = Uuid::new_v4();
@@ -1135,9 +1278,14 @@ mod tests {
                 .expect("store");
         }
 
-        let removed = sweep_file_deletions(&storage, &blobs, std::time::SystemTime::now(), 100)
-            .await
-            .expect("sweep");
+        let removed = sweep_file_deletions(
+            storage.clone(),
+            blobs.clone(),
+            std::time::SystemTime::now(),
+            100,
+        )
+        .await
+        .expect("sweep");
         assert_eq!(removed, 1);
         assert!(blobs.get(space_id, due_file).await.is_err());
         // Not yet due — untouched.
@@ -1157,8 +1305,8 @@ mod tests {
         // The re-upload guard: a file id whose metadata was re-created after
         // the tombstone queued it is live again — the object survives and
         // the queue entry is dropped.
-        let storage = StubDeletionQueue::default();
-        let blobs = StubFileBlobStorage::default();
+        let storage = Arc::new(StubDeletionQueue::default());
+        let blobs = Arc::new(StubFileBlobStorage::default());
         let space_id = Uuid::new_v4();
         let file_id = Uuid::new_v4();
 
@@ -1177,9 +1325,14 @@ mod tests {
             .expect("lock live files")
             .insert((space_id, file_id));
 
-        let removed = sweep_file_deletions(&storage, &blobs, std::time::SystemTime::now(), 100)
-            .await
-            .expect("sweep");
+        let removed = sweep_file_deletions(
+            storage.clone(),
+            blobs.clone(),
+            std::time::SystemTime::now(),
+            100,
+        )
+        .await
+        .expect("sweep");
         assert_eq!(removed, 0);
         assert!(blobs.get(space_id, file_id).await.is_ok());
         let remaining = storage

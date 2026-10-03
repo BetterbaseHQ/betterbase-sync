@@ -35,6 +35,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+sqlx.workspace = true
 jsonwebtoken.workspace = true
 p256.workspace = true
 rand_core.workspace = true

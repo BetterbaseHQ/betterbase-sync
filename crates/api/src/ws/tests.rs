@@ -37,6 +37,15 @@ use crate::{
     FederationTokenKeys, HealthCheck, HttpSignatureFederationAuthenticator,
 };
 
+#[path = "coverage_tests.rs"]
+mod coverage_tests;
+#[path = "domain_failure_tests.rs"]
+mod domain_failure_tests;
+#[path = "federation_postgres_tests.rs"]
+mod federation_postgres_tests;
+#[path = "postgres_tests.rs"]
+mod postgres_tests;
+
 type TestSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -286,6 +295,11 @@ impl FederationForwarder for StubFederationForwarder {
 }
 
 struct StubSyncStorage {
+    operation_errors: HashMap<&'static str, betterbase_sync_storage::StorageError>,
+    invitation_list_calls: TokioMutex<Vec<(String, usize, Option<Uuid>)>>,
+    created_invitation_override: Option<betterbase_sync_storage::Invitation>,
+    rewrapped_deks: TokioMutex<Vec<betterbase_sync_storage::DekRecord>>,
+    rewrapped_file_deks: TokioMutex<Vec<betterbase_sync_storage::FileDekRecord>>,
     push_epochs: TokioMutex<Vec<(Uuid, i32)>>,
     fail_for: HashSet<Uuid>,
     create_error: Option<betterbase_sync_storage::StorageError>,
@@ -301,6 +315,13 @@ struct StubSyncStorage {
     epoch_begin_error: Option<betterbase_sync_storage::StorageError>,
     epoch_begin_result: betterbase_sync_storage::AdvanceEpochResult,
     epoch_complete_error: Option<betterbase_sync_storage::StorageError>,
+    epoch_keys_put_error: Option<betterbase_sync_storage::StorageError>,
+    epoch_keys_get_result: Result<Vec<u8>, betterbase_sync_storage::StorageError>,
+    stored_key_shares: TokioMutex<Vec<betterbase_sync_storage::EpochKeyShare>>,
+    requested_key_dids: TokioMutex<Vec<String>>,
+    recent_actions: Result<i64, betterbase_sync_storage::StorageError>,
+    recorded_actions: TokioMutex<Vec<(String, String)>>,
+    record_action_error: Option<betterbase_sync_storage::StorageError>,
     deks_result: Vec<betterbase_sync_storage::DekRecord>,
     file_deks_result: Vec<betterbase_sync_storage::FileDekRecord>,
     deks_rewrap_error: Option<betterbase_sync_storage::StorageError>,
@@ -315,6 +336,11 @@ struct StubSyncStorage {
 impl StubSyncStorage {
     fn healthy() -> Self {
         Self {
+            operation_errors: HashMap::new(),
+            invitation_list_calls: TokioMutex::new(Vec::new()),
+            created_invitation_override: None,
+            rewrapped_deks: TokioMutex::new(Vec::new()),
+            rewrapped_file_deks: TokioMutex::new(Vec::new()),
             push_epochs: TokioMutex::new(Vec::new()),
             fail_for: HashSet::new(),
             create_error: None,
@@ -346,6 +372,15 @@ impl StubSyncStorage {
             epoch_begin_error: None,
             epoch_begin_result: betterbase_sync_storage::AdvanceEpochResult { epoch: 2 },
             epoch_complete_error: None,
+            epoch_keys_put_error: None,
+            epoch_keys_get_result: Err(
+                betterbase_sync_storage::StorageError::EpochKeyShareNotFound,
+            ),
+            stored_key_shares: TokioMutex::new(Vec::new()),
+            requested_key_dids: TokioMutex::new(Vec::new()),
+            recent_actions: Ok(0),
+            recorded_actions: TokioMutex::new(Vec::new()),
+            record_action_error: None,
             deks_result: vec![betterbase_sync_storage::DekRecord {
                 id: Uuid::new_v4().to_string(),
                 wrapped_dek: vec![0xAA; 44],
@@ -503,6 +538,9 @@ impl SyncStorage for StubSyncStorage {
         &self,
         space_id: Uuid,
     ) -> Result<betterbase_sync_core::protocol::Space, betterbase_sync_storage::StorageError> {
+        if let Some(error) = self.operation_errors.get("get_space") {
+            return Err(error.clone());
+        }
         if self.fail_for.contains(&space_id) {
             return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
@@ -642,6 +680,9 @@ impl SyncStorage for StubSyncStorage {
         _since_seq: i32,
     ) -> Result<Vec<betterbase_sync_storage::MembersLogEntry>, betterbase_sync_storage::StorageError>
     {
+        if let Some(error) = self.operation_errors.get("get_members") {
+            return Err(error.clone());
+        }
         if self.fail_for.contains(&space_id) {
             return Err(betterbase_sync_storage::StorageError::Unavailable);
         }
@@ -683,6 +724,9 @@ impl SyncStorage for StubSyncStorage {
         if let Some(error) = &self.invitation_create_error {
             return Err(error.clone());
         }
+        if let Some(invitation) = &self.created_invitation_override {
+            return Ok(invitation.clone());
+        }
         Ok(test_invitation(
             Uuid::parse_str("5c17784d-c039-4daf-82f0-852d3ccbdec2").expect("valid invitation id"),
             &invitation.mailbox_id,
@@ -693,10 +737,17 @@ impl SyncStorage for StubSyncStorage {
     async fn list_invitations(
         &self,
         mailbox_id: &str,
-        _limit: usize,
-        _after: Option<Uuid>,
+        limit: usize,
+        after: Option<Uuid>,
     ) -> Result<Vec<betterbase_sync_storage::Invitation>, betterbase_sync_storage::StorageError>
     {
+        self.invitation_list_calls
+            .lock()
+            .await
+            .push((mailbox_id.to_owned(), limit, after));
+        if let Some(error) = self.operation_errors.get("list_invitations") {
+            return Err(error.clone());
+        }
         Ok(self
             .invitations
             .iter()
@@ -710,6 +761,9 @@ impl SyncStorage for StubSyncStorage {
         id: Uuid,
         mailbox_id: &str,
     ) -> Result<betterbase_sync_storage::Invitation, betterbase_sync_storage::StorageError> {
+        if let Some(error) = self.operation_errors.get("get_invitation") {
+            return Err(error.clone());
+        }
         self.invitations
             .iter()
             .find(|invitation| invitation.id == id && invitation.mailbox_id == mailbox_id)
@@ -766,14 +820,18 @@ impl SyncStorage for StubSyncStorage {
         _since: i64,
     ) -> Result<Vec<betterbase_sync_storage::DekRecord>, betterbase_sync_storage::StorageError>
     {
+        if let Some(error) = self.operation_errors.get("get_deks") {
+            return Err(error.clone());
+        }
         Ok(self.deks_result.clone())
     }
 
     async fn rewrap_deks(
         &self,
         _space_id: Uuid,
-        _deks: &[betterbase_sync_storage::DekRecord],
+        deks: &[betterbase_sync_storage::DekRecord],
     ) -> Result<(), betterbase_sync_storage::StorageError> {
+        self.rewrapped_deks.lock().await.extend_from_slice(deks);
         if let Some(error) = &self.deks_rewrap_error {
             return Err(error.clone());
         }
@@ -784,8 +842,15 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _epoch: i32,
-        _shares: &[betterbase_sync_storage::EpochKeyShare],
+        shares: &[betterbase_sync_storage::EpochKeyShare],
     ) -> Result<(), betterbase_sync_storage::StorageError> {
+        if let Some(error) = &self.epoch_keys_put_error {
+            return Err(error.clone());
+        }
+        self.stored_key_shares
+            .lock()
+            .await
+            .extend_from_slice(shares);
         Ok(())
     }
 
@@ -793,9 +858,13 @@ impl SyncStorage for StubSyncStorage {
         &self,
         _space_id: Uuid,
         _epoch: i32,
-        _member_did: &str,
+        member_did: &str,
     ) -> Result<Vec<u8>, betterbase_sync_storage::StorageError> {
-        Err(betterbase_sync_storage::StorageError::EpochKeyShareNotFound)
+        self.requested_key_dids
+            .lock()
+            .await
+            .push(member_did.to_owned());
+        self.epoch_keys_get_result.clone()
     }
 
     async fn prune_epoch_key_shares(
@@ -812,14 +881,21 @@ impl SyncStorage for StubSyncStorage {
         _since: i64,
     ) -> Result<Vec<betterbase_sync_storage::FileDekRecord>, betterbase_sync_storage::StorageError>
     {
+        if let Some(error) = self.operation_errors.get("get_file_deks") {
+            return Err(error.clone());
+        }
         Ok(self.file_deks_result.clone())
     }
 
     async fn rewrap_file_deks(
         &self,
         _space_id: Uuid,
-        _deks: &[betterbase_sync_storage::FileDekRecord],
+        deks: &[betterbase_sync_storage::FileDekRecord],
     ) -> Result<(), betterbase_sync_storage::StorageError> {
+        self.rewrapped_file_deks
+            .lock()
+            .await
+            .extend_from_slice(deks);
         if let Some(error) = &self.file_deks_rewrap_error {
             return Err(error.clone());
         }
@@ -832,14 +908,21 @@ impl SyncStorage for StubSyncStorage {
         _actor_hash: &str,
         _since: std::time::SystemTime,
     ) -> Result<i64, betterbase_sync_storage::StorageError> {
-        Ok(0)
+        self.recent_actions.clone()
     }
 
     async fn record_action(
         &self,
-        _action: &str,
-        _actor_hash: &str,
+        action: &str,
+        actor_hash: &str,
     ) -> Result<(), betterbase_sync_storage::StorageError> {
+        if let Some(error) = &self.record_action_error {
+            return Err(error.clone());
+        }
+        self.recorded_actions
+            .lock()
+            .await
+            .push((action.to_owned(), actor_hash.to_owned()));
         Ok(())
     }
 }

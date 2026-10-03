@@ -154,7 +154,18 @@ pub(super) async fn handle_subscribe_request(
                     epoch: space.epoch,
                     rewrap_epoch: space.rewrap_epoch,
                 },
-                Err(_) => SpaceState::default(),
+                Err(error) => {
+                    errors.push(WsSpaceError {
+                        space: requested.id.clone(),
+                        error: if error == betterbase_sync_storage::StorageError::SpaceNotFound {
+                            ERR_CODE_NOT_FOUND
+                        } else {
+                            ERR_CODE_INTERNAL
+                        }
+                        .to_owned(),
+                    });
+                    continue;
+                }
             };
             (state, Some(claims.expires_at))
         } else {
@@ -187,6 +198,9 @@ pub(super) async fn handle_subscribe_request(
         });
     }
 
+    // Charge only distinct additions, matching the broker's set semantics.
+    added_spaces.sort_unstable();
+    added_spaces.dedup();
     let new_space_count = if let Some(realtime) = realtime {
         let mut already_subscribed = 0_usize;
         for space_id in &added_spaces {

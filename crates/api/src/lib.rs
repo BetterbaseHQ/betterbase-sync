@@ -36,7 +36,10 @@ pub use federation_client::{
     FederationForwarder, FederationPeerError, FederationPeerManager, PeerNotificationHandler,
 };
 pub use federation_quota::{FederationPeerStatus, FederationQuotaLimits, FederationQuotaTracker};
-pub use files::{sweep_file_deletions, FileBlobStorage, ObjectStoreFileBlobStorage};
+pub use files::{
+    sweep_file_deletions, FileBlobStorage, FileBlobStorageError, FileDeletionQueue,
+    ObjectStoreFileBlobStorage,
+};
 pub use ws::PresenceRegistry;
 
 #[async_trait]

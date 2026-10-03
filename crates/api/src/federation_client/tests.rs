@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -59,6 +60,8 @@ enum MockPeerReply {
         result: betterbase_sync_core::protocol::CborValue,
     },
     CloseConnection,
+    Stall,
+    RpcError,
 }
 
 struct MockFederationPeer {
@@ -769,10 +772,463 @@ async fn handle_socket(
                     return;
                 }
             }
+            MockPeerReply::RpcError => {
+                #[derive(serde::Serialize)]
+                struct ErrorFrame {
+                    #[serde(rename = "type")]
+                    kind: i32,
+                    id: String,
+                    error: betterbase_sync_core::protocol::RpcError,
+                }
+                let response = ErrorFrame {
+                    kind: RPC_RESPONSE,
+                    id: request.id,
+                    error: betterbase_sync_core::protocol::RpcError {
+                        code: "rate_limited".into(),
+                        message: "quota".into(),
+                    },
+                };
+                socket
+                    .send(Message::Binary(
+                        minicbor_serde::to_vec(&response).expect("error").into(),
+                    ))
+                    .await
+                    .expect("send error");
+            }
+            MockPeerReply::Stall => {}
             MockPeerReply::CloseConnection => {
                 let _ = socket.close().await;
                 return;
             }
         }
     }
+}
+
+async fn deadline_manager(peer: &MockFederationPeer) -> Arc<FederationPeerManager> {
+    let manager = Arc::new(test_manager(peer.addr()));
+    let connection = super::peer::PeerConnection::new(
+        "deadline.example".into(),
+        peer.ws_url.clone(),
+        Arc::new(|_, _| {}),
+    )
+    .with_response_timeout(Duration::from_millis(250));
+    manager
+        .peers
+        .lock()
+        .await
+        .insert("deadline.example".into(), Arc::new(connection));
+    manager
+}
+fn deadline_push() -> PushParams {
+    PushParams {
+        space: uuid::Uuid::new_v4().to_string(),
+        epoch: 0,
+        ucan: String::new(),
+        changes: Vec::new(),
+    }
+}
+fn push_reply() -> MockPeerReply {
+    MockPeerReply::Respond {
+        result: betterbase_sync_core::protocol::CborValue::from_serializable(&PushRpcResult {
+            ok: true,
+            cursor: 1,
+            error: String::new(),
+        })
+        .expect("push"),
+        chunks: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn stalled_peer_times_out_retries_once_and_next_call_recovers() {
+    let stalled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let switch = stalled.clone();
+    let mut peer = MockFederationPeer::spawn(move |_| {
+        if switch.load(Ordering::SeqCst) {
+            MockPeerReply::Stall
+        } else {
+            push_reply()
+        }
+    })
+    .await;
+    let manager = deadline_manager(&peer).await;
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        manager.forward_push("deadline.example", &peer.ws_url, &deadline_push()),
+    )
+    .await
+    .expect("bounded deadline")
+    .expect_err("stalled peer");
+    assert!(matches!(error, super::FederationPeerError::Closed));
+    let first = peer.require_request().await;
+    let second = peer.require_request().await;
+    assert_ne!(first.id, second.id);
+    assert_eq!(
+        manager
+            .peers
+            .lock()
+            .await
+            .get("deadline.example")
+            .expect("peer")
+            .pending_count()
+            .await,
+        0
+    );
+    stalled.store(false, Ordering::SeqCst);
+    assert!(
+        manager
+            .forward_push("deadline.example", &peer.ws_url, &deadline_push())
+            .await
+            .expect("recovered")
+            .ok
+    );
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_peer_call_does_not_retain_pending_response_or_break_other_calls() {
+    let stalled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let switch = stalled.clone();
+    let mut peer = MockFederationPeer::spawn(move |_| {
+        if switch.load(Ordering::SeqCst) {
+            MockPeerReply::Stall
+        } else {
+            push_reply()
+        }
+    })
+    .await;
+    let manager = Arc::new(test_manager(peer.addr()));
+    let url = peer.ws_url.clone();
+    let caller = manager.clone();
+    let task = tokio::spawn(async move {
+        caller
+            .forward_push("cancel.example", &url, &deadline_push())
+            .await
+    });
+    peer.require_request().await;
+    task.abort();
+    assert!(task.await.expect_err("cancelled").is_cancelled());
+    let connection = manager
+        .peers
+        .lock()
+        .await
+        .get("cancel.example")
+        .expect("peer")
+        .clone();
+    assert_eq!(
+        connection.pending_count().await,
+        0,
+        "cancelled calls must not retain chunk buffers"
+    );
+    stalled.store(false, Ordering::SeqCst);
+    assert!(
+        manager
+            .forward_push("cancel.example", &peer.ws_url, &deadline_push())
+            .await
+            .expect("other call works")
+            .ok
+    );
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn rejected_subscribe_does_not_leave_requested_spaces_in_notification_gate() {
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::RpcError).await;
+    let manager = test_manager(peer.addr());
+    let space = uuid::Uuid::new_v4().to_string();
+    let result = manager
+        .subscribe(
+            "rejected.example",
+            &peer.ws_url,
+            &[WsSubscribeSpace {
+                id: space.clone(),
+                since: 0,
+                ucan: "test".into(),
+                token: String::new(),
+                presence: false,
+            }],
+        )
+        .await;
+    assert!(matches!(result, Err(super::FederationPeerError::Rpc(_))));
+    peer.require_request().await;
+    assert!(!peer_tokens(&manager, "rejected.example")
+        .await
+        .contains_key(&space));
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_subscribe_rolls_back_notification_gate_and_preserves_previous_tokens() {
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Stall).await;
+    let manager = Arc::new(test_manager(peer.addr()));
+    let connection = manager
+        .get_or_create_peer("cancel-sub.example", &peer.ws_url)
+        .await;
+    connection
+        .set_space_tokens(HashMap::from([("existing".into(), "old-fst".into())]))
+        .await;
+    let caller = manager.clone();
+    let url = peer.ws_url.clone();
+    let task = tokio::spawn(async move {
+        caller
+            .subscribe(
+                "cancel-sub.example",
+                &url,
+                &["existing", "new"].map(|id| WsSubscribeSpace {
+                    id: id.into(),
+                    since: 0,
+                    ucan: "test".into(),
+                    token: String::new(),
+                    presence: false,
+                }),
+            )
+            .await
+    });
+    peer.require_request().await;
+    task.abort();
+    assert!(task.await.expect_err("cancelled").is_cancelled());
+    assert_eq!(
+        connection.space_tokens().await,
+        HashMap::from([("existing".into(), "old-fst".into())])
+    );
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn stalled_websocket_handshake_is_deadline_bounded() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let addr = listener.local_addr().expect("address");
+    let (accepted_tx, mut accepted_rx) = mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        let mut sockets = Vec::new();
+        loop {
+            let (socket, _) = listener.accept().await.expect("accept");
+            sockets.push(socket);
+            let _ = accepted_tx.send(());
+        }
+    });
+    let manager = test_manager(addr);
+    let url = format!("ws://{addr}/ws");
+    manager.peers.lock().await.insert(
+        "handshake.example".into(),
+        Arc::new(
+            super::peer::PeerConnection::new(
+                "handshake.example".into(),
+                url.clone(),
+                Arc::new(|_, _| {}),
+            )
+            .with_response_timeout(Duration::from_millis(250)),
+        ),
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        manager.forward_push("handshake.example", &url, &deadline_push()),
+    )
+    .await
+    .expect("bounded handshake");
+    assert!(matches!(result, Err(super::FederationPeerError::Closed)));
+    assert!(accepted_rx.try_recv().is_ok());
+    assert!(accepted_rx.try_recv().is_ok());
+    assert!(accepted_rx.try_recv().is_err());
+    manager.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn closing_manager_fails_inflight_call_without_reconnecting_it() {
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Stall).await;
+    let manager = Arc::new(test_manager(peer.addr()));
+    let caller = manager.clone();
+    let url = peer.ws_url.clone();
+    let task = tokio::spawn(async move {
+        caller
+            .forward_push("close.example", &url, &deadline_push())
+            .await
+    });
+    peer.require_request().await;
+    manager.close().await;
+    let result = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("shutdown releases caller")
+        .expect("caller task");
+    assert!(matches!(result, Err(super::FederationPeerError::Closed)));
+    assert!(
+        peer.requests.try_recv().is_err(),
+        "shutdown must not reconnect an in-flight call"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_calls_recover_from_a_reset_without_closing_each_others_replacement() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let peer = MockFederationPeer::spawn(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 0 {
+            MockPeerReply::CloseConnection
+        } else {
+            push_reply()
+        }
+    })
+    .await;
+    let manager = Arc::new(test_manager(peer.addr()));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let caller = manager.clone();
+        let url = peer.ws_url.clone();
+        tasks.spawn(async move {
+            caller
+                .forward_push("concurrent.example", &url, &deadline_push())
+                .await
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.expect("caller").expect("recovered call").ok);
+        }
+    })
+    .await
+    .expect("bounded recovery");
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn review_transient_restore_failure_preserves_cached_tokens_for_recovery() {
+    use betterbase_sync_core::protocol::{CborValue, WsSpaceError, WsSubscribedSpace};
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut peer = MockFederationPeer::spawn(move |_| {
+        let attempt = count.fetch_add(1, Ordering::SeqCst);
+        let result = if attempt == 1 {
+            SubscribeResult {
+                spaces: vec![],
+                errors: vec![WsSpaceError {
+                    space: "space-1".into(),
+                    error: "internal".into(),
+                }],
+            }
+        } else {
+            SubscribeResult {
+                spaces: vec![WsSubscribedSpace {
+                    id: "space-1".into(),
+                    cursor: 0,
+                    epoch: 0,
+                    rewrap_epoch: None,
+                    token: format!("fst-{attempt}"),
+                    peers: vec![],
+                }],
+                errors: vec![],
+            }
+        };
+        MockPeerReply::Respond {
+            result: CborValue::from_serializable(&result).expect("result"),
+            chunks: vec![],
+        }
+    })
+    .await;
+    let manager = test_manager(peer.addr());
+    manager
+        .subscribe(
+            "peer.test",
+            &peer.ws_url,
+            &[WsSubscribeSpace {
+                id: "space-1".into(),
+                since: 0,
+                ucan: "ucan".into(),
+                token: String::new(),
+                presence: false,
+            }],
+        )
+        .await
+        .expect("initial subscribe");
+    peer.require_request().await;
+    assert!(
+        matches!(manager.restore_subscriptions("peer.test", &peer.ws_url).await,
+        Err(super::FederationPeerError::Rpc(error)) if error.code == "internal")
+    );
+    peer.require_request().await;
+    assert_eq!(
+        peer_tokens(&manager, "peer.test")
+            .await
+            .get("space-1")
+            .map(String::as_str),
+        Some("fst-0")
+    );
+    manager
+        .restore_subscriptions("peer.test", &peer.ws_url)
+        .await
+        .expect("recovered restore");
+    let params: betterbase_sync_core::protocol::SubscribeParams =
+        decode_params(peer.require_request().await.params);
+    assert_eq!(params.spaces[0].token, "fst-0");
+    assert_eq!(
+        peer_tokens(&manager, "peer.test")
+            .await
+            .get("space-1")
+            .map(String::as_str),
+        Some("fst-2")
+    );
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn review_mixed_subscribe_errors_keep_only_previously_cached_transient_tokens() {
+    use betterbase_sync_core::protocol::{CborValue, WsSpaceError, WsSubscribedSpace};
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
+        result: CborValue::from_serializable(&SubscribeResult {
+            spaces: vec![WsSubscribedSpace {
+                id: "accepted".into(),
+                cursor: 0,
+                epoch: 0,
+                rewrap_epoch: None,
+                token: "new-fst".into(),
+                peers: vec![],
+            }],
+            errors: vec![
+                WsSpaceError {
+                    space: "existing".into(),
+                    error: "internal".into(),
+                },
+                WsSpaceError {
+                    space: "tentative".into(),
+                    error: "internal".into(),
+                },
+                WsSpaceError {
+                    space: "revoked".into(),
+                    error: "forbidden".into(),
+                },
+            ],
+        })
+        .expect("result"),
+        chunks: vec![],
+    })
+    .await;
+    let manager = test_manager(peer.addr());
+    let connection = manager.get_or_create_peer("peer.test", &peer.ws_url).await;
+    connection
+        .set_space_tokens(HashMap::from([
+            ("existing".into(), "cached-fst".into()),
+            ("revoked".into(), "revoked-fst".into()),
+        ]))
+        .await;
+    let spaces = ["accepted", "existing", "tentative", "revoked"].map(|id| WsSubscribeSpace {
+        id: id.into(),
+        since: 0,
+        ucan: "ucan".into(),
+        token: String::new(),
+        presence: false,
+    });
+    manager
+        .subscribe("peer.test", &peer.ws_url, &spaces)
+        .await
+        .expect("partial success");
+    peer.require_request().await;
+    assert_eq!(
+        peer_tokens(&manager, "peer.test").await,
+        HashMap::from([
+            ("accepted".into(), "new-fst".into()),
+            ("existing".into(), "cached-fst".into()),
+        ])
+    );
+    manager.close().await;
 }

@@ -129,6 +129,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cbor_roundtrip_preserves_all_value_kinds_in_nested_frames() {
+        let frame = CborValue::Map(vec![(
+            CborValue::Text("params".into()),
+            CborValue::Array(vec![
+                CborValue::Null,
+                CborValue::Bool(true),
+                CborValue::Bool(false),
+                CborValue::Integer(-8),
+                CborValue::Float(1.25),
+                CborValue::Text("héllo".into()),
+                CborValue::Bytes(vec![0, 128, 255]),
+                CborValue::Array(vec![]),
+                CborValue::Map(vec![]),
+            ]),
+        )]);
+        let bytes = minicbor_serde::to_vec(&frame).expect("CBOR frame");
+        assert_eq!(
+            minicbor_serde::from_slice::<CborValue>(&bytes).expect("decode frame"),
+            frame
+        );
+        assert_eq!(
+            CborValue::from_serializable(&frame).expect("dynamic frame"),
+            frame
+        );
+    }
+
+    #[test]
+    fn integer_boundaries_and_unsigned_overflow() {
+        for value in [i64::MIN, -1, 0, i64::MAX] {
+            assert_eq!(
+                CborValue::from_serializable(&value).expect("signed integer"),
+                CborValue::Integer(value)
+            );
+        }
+        assert_eq!(
+            CborValue::from_serializable(&(i64::MAX as u64))
+                .expect("largest supported unsigned integer"),
+            CborValue::Integer(i64::MAX)
+        );
+        for value in [i64::MAX as u64 + 1, u64::MAX] {
+            assert!(
+                CborValue::from_serializable(&value).is_err(),
+                "overflow {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn federation_reencoding_preserves_binary_fields() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct ResultPayload {
+            #[serde(with = "serde_bytes")]
+            blob: Vec<u8>,
+            cursor: i64,
+        }
+        let original = ResultPayload {
+            blob: vec![0, 0x80, 0xff],
+            cursor: i64::MAX,
+        };
+        let dynamic = CborValue::from_serializable(&original).expect("dynamic payload");
+        let CborValue::Map(entries) = &dynamic else {
+            panic!("expected payload map");
+        };
+        assert!(entries.contains(&(
+            CborValue::Text("blob".to_owned()),
+            CborValue::Bytes(original.blob.clone()),
+        )));
+        let encoded = minicbor_serde::to_vec(dynamic).expect("reencode");
+        let decoded: ResultPayload =
+            minicbor_serde::from_slice(&encoded).expect("concrete payload");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
     fn roundtrip_primitives() {
         let values = vec![
             CborValue::Null,
@@ -180,5 +254,38 @@ mod tests {
             }
             other => panic!("expected Map, got {other:?}"),
         }
+    }
+    #[test]
+    fn conversion_rejects_unsigned_integer_overflow() {
+        let error = CborValue::from_serializable(&u64::MAX).expect_err("overflow must not wrap");
+        assert!(error.contains("overflows i64"), "{error}");
+        assert_eq!(
+            CborValue::from_serializable(&(i64::MAX as u64)).unwrap(),
+            CborValue::Integer(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn conversion_propagates_serializer_failure() {
+        struct Invalid;
+        impl Serialize for Invalid {
+            fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("source serialization failed"))
+            }
+        }
+        assert!(CborValue::from_serializable(&Invalid)
+            .unwrap_err()
+            .contains("source serialization failed"));
+    }
+
+    #[test]
+    fn dynamic_values_accept_owned_strings_and_reject_unsupported_integer_width() {
+        use serde::de::value::{Error, StringDeserializer, U128Deserializer};
+        let value =
+            CborValue::deserialize(StringDeserializer::<Error>::new("owned text".to_owned()))
+                .unwrap();
+        assert_eq!(value, CborValue::Text("owned text".to_owned()));
+        let error = CborValue::deserialize(U128Deserializer::<Error>::new(u128::MAX)).unwrap_err();
+        assert!(error.to_string().contains("any CBOR value"));
     }
 }

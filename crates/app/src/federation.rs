@@ -354,6 +354,10 @@ async fn load_primary_signing_key(
 }
 
 #[cfg(test)]
+#[path = "federation_runtime_tests.rs"]
+mod runtime_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
@@ -579,10 +583,17 @@ mod tests {
         assert!(error.to_string().contains("mismatch"));
     }
 
-    async fn isolated_storage() -> Option<PostgresStorage> {
+    pub(super) async fn isolated_storage() -> Option<PostgresStorage> {
         let database_url = match std::env::var("DATABASE_URL") {
             Ok(value) => value,
-            Err(_) => return None,
+            Err(_) => {
+                assert_ne!(
+                    std::env::var("BB_TEST_REQUIRE_DB").ok().as_deref(),
+                    Some("1"),
+                    "BB_TEST_REQUIRE_DB=1 but DATABASE_URL is not set"
+                );
+                return None;
+            }
         };
 
         // Create pool with search_path set to isolated schema.

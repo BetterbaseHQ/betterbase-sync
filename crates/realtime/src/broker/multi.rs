@@ -372,6 +372,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mailbox_broadcast_is_isolated_and_eviction_cleans_all_spaces() {
+        let broker = MultiBroker::new(BrokerConfig::default());
+        let healthy = Arc::new(MockSubscriber::new("mailbox-a", "healthy"));
+        let slow = Arc::new(MockSubscriber::new("mailbox-a", "slow"));
+        let other = Arc::new(MockSubscriber::new("mailbox-b", "other"));
+        broker
+            .register_subscriber(healthy.clone(), &[])
+            .await
+            .expect("healthy");
+        let slow_id = broker
+            .register_subscriber(slow.clone(), &["space-a".into(), "space-b".into()])
+            .await
+            .expect("slow");
+        broker
+            .register_subscriber(other.clone(), &["space-a".into()])
+            .await
+            .expect("other");
+        slow.set_send_ok(false);
+        assert_eq!(
+            broker.broadcast_mailbox("mailbox-a", b"invitation").await,
+            1
+        );
+        assert_eq!(healthy.received_count(), 1);
+        assert_eq!(other.received_count(), 0);
+        assert_eq!(broker.connection_count("mailbox-a").await, 1);
+        assert_eq!(broker.broadcast_space("space-b", "", b"event").await, 0);
+        assert_eq!(broker.broadcast_space("space-a", "", b"event").await, 1);
+        assert_eq!(
+            broker.unregister_subscriber(slow_id).await,
+            Err(BrokerError::SubscriberNotFound)
+        );
+        assert_eq!(broker.broadcast_mailbox("missing", b"event").await, 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_space_subscriptions_deliver_only_once() {
+        let broker = MultiBroker::new(BrokerConfig::default());
+        let subscriber = Arc::new(MockSubscriber::new("mailbox", "connection"));
+        let spaces = ["space".into(), "space".into()];
+        let id = broker
+            .register_subscriber(subscriber.clone(), &spaces)
+            .await
+            .expect("register");
+        broker
+            .add_spaces(id, &spaces)
+            .await
+            .expect("add duplicates");
+        assert_eq!(broker.broadcast_space("space", "", b"event").await, 1);
+        assert_eq!(subscriber.received_count(), 1);
+        broker
+            .remove_spaces(id, &spaces)
+            .await
+            .expect("remove duplicates");
+        broker
+            .remove_spaces(id, &spaces)
+            .await
+            .expect("remove again");
+        assert_eq!(broker.broadcast_space("space", "", b"event").await, 0);
+        // Removing spaces must retain mailbox delivery and the connection.
+        assert_eq!(broker.broadcast_mailbox("mailbox", b"invitation").await, 1);
+        assert_eq!(broker.connection_count("mailbox").await, 1);
+        broker.unregister_subscriber(id).await.expect("unregister");
+        assert_eq!(
+            broker.add_spaces(id, &spaces).await,
+            Err(BrokerError::SubscriberNotFound)
+        );
+        assert_eq!(
+            broker.remove_spaces(id, &spaces).await,
+            Err(BrokerError::SubscriberNotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_registration_enforces_limit_and_unregister_restores_capacity() {
+        let broker = Arc::new(MultiBroker::new(BrokerConfig {
+            max_connections_per_mailbox: 2,
+        }));
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let broker = broker.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                broker
+                    .register_subscriber(Arc::new(MockSubscriber::new("mailbox", "conn")), &[])
+                    .await
+            }));
+        }
+        let mut accepted = Vec::new();
+        for task in tasks {
+            match task.await.expect("registration task") {
+                Ok(id) => accepted.push(id),
+                Err(error) => assert_eq!(error, BrokerError::TooManyConnections),
+            }
+        }
+        assert_eq!(accepted.len(), 2);
+        assert_eq!(broker.connection_count("mailbox").await, 2);
+        for id in accepted {
+            broker.unregister_subscriber(id).await.expect("unregister");
+        }
+        assert_eq!(broker.connection_count("mailbox").await, 0);
+        broker
+            .register_subscriber(Arc::new(MockSubscriber::new("mailbox", "replacement")), &[])
+            .await
+            .expect("capacity restored");
+    }
+
+    #[tokio::test]
     async fn register_enforces_mailbox_limit() {
         let broker = MultiBroker::new(BrokerConfig {
             max_connections_per_mailbox: 1,
