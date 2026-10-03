@@ -3,7 +3,12 @@ default:
     @just --list
 
 # Run all checks (format, lint, test)
-check: fmt lint test
+check: fmt lint test-runner test
+
+# Verify automatic database cleanup and exit status handling.
+test-runner:
+    python3 scripts/test-with-test-db.py
+    python3 scripts/test-coverage-gate.py
 
 # Format code
 fmt:
@@ -13,13 +18,21 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Run tests (no database required — DB tests are skipped without DATABASE_URL)
+# Full suite with disposable PostgreSQL (or an explicitly supplied DATABASE_URL).
 test *args:
-    cargo test --workspace {{args}}
+    bash scripts/with-test-db.sh cargo test --workspace {{args}}
+
+# Explicit fast mode; database-backed tests skip.
+test-no-db *args:
+    env -u DATABASE_URL -u BB_TEST_REQUIRE_DB cargo test --workspace {{args}}
 
 # Run tests with verbose output
 test-v *args:
-    cargo test --workspace {{args}} -- --nocapture
+    bash scripts/with-test-db.sh cargo test --workspace {{args}} -- --nocapture
+
+# Rust coverage, including database tests, with automatic PostgreSQL cleanup.
+coverage:
+    bash scripts/with-test-db.sh bash scripts/coverage-rust.sh
 
 # Run benchmarks
 bench *args:
@@ -68,7 +81,7 @@ db-start:
             postgres:17-alpine
     fi
     echo "Waiting for PostgreSQL to accept connections..."
-    until docker exec {{_db_container}} pg_isready -U {{_db_user}} -d {{_db_name}} > /dev/null 2>&1; do
+    until docker exec {{_db_container}} pg_isready -h 127.0.0.1 -U {{_db_user}} -d {{_db_name}} > /dev/null 2>&1; do
         sleep 0.2
     done
     echo "Test database ready on port {{_db_port}}"
@@ -77,15 +90,9 @@ db-start:
 db-down:
     docker rm -f {{_db_container}} 2>/dev/null || true
 
-# Run tests against a real PostgreSQL database (spins up, tests, tears down on success)
-# On failure the container is kept for debugging via `just db-shell`; run `just db-down` to remove.
+# Alias for the automated full suite; cleanup also runs on failure.
 test-db *args:
-    #!/usr/bin/env bash
-    set -e
-    just db-start
-    echo "Running tests with DATABASE_URL..."
-    DATABASE_URL="{{_db_url}}" cargo test --workspace {{args}}
-    just db-down
+    just test {{args}}
 
 # Run storage benchmarks against a real PostgreSQL database
 bench-db *args:

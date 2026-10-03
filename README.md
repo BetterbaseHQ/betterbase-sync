@@ -119,6 +119,10 @@ All v1 routes are immutable contracts. Every response includes `X-Protocol-Versi
 
 File routes are only registered when file storage is configured.
 
+Uploads and garbage collection serialize per file using PostgreSQL advisory locks across server workers. Uploads queue cleanup before writing objects and clear that entry atomically when metadata commits, so failed or cancelled uploads are eventually collected. Metadata commits recheck that the parent record is live in the same space. Collection rechecks the current queue entry's age and metadata while holding the file lock.
+
+File locks use a separate, lazy PostgreSQL pool with the same maximum connection count as the metadata pool (10 by default). This lets a lock holder finish metadata queries even when other uploads are waiting for its lock. Budget database connections for both pools when file storage is enabled.
+
 ### Federation Routes
 
 | Method | Path | Auth | Description |
@@ -156,6 +160,7 @@ File routes are only registered when file storage is configured.
 | `FILE_S3_BUCKET` | -- | S3 bucket name (required for s3) |
 | `FILE_S3_REGION` | `us-east-1` | S3 region |
 | `FILE_S3_USE_SSL` | `true` | Use HTTPS for S3 |
+| `FILE_DELETION_GRACE_SECS` | `86400` | Delay before removing tombstoned or abandoned file objects; must be greater than zero |
 
 ### Federation
 
@@ -173,21 +178,32 @@ File routes are only registered when file storage is configured.
 
 ## Development
 
+Federation integration tests run an edge server and a home server against separate PostgreSQL schemas. A disposable TCP proxy cuts their link to verify quota cleanup, cached-token restoration, and reconnection. Controlled peer fixtures cover stalled handshakes, RPC deadlines, cancellation, and concurrent calls. All listeners and database fixtures are managed by the tests.
+
 ### Prerequisites
 
 - Rust 1.88+
-- PostgreSQL 17 (or Docker for `just test-db`)
+- Python 3 for test-runner checks and coverage summaries
+- Docker for automatic test PostgreSQL, or an existing PostgreSQL test database
 
 ### Commands
 
 ```bash
 just check          # Format + lint + test (run before committing)
-just test           # Run tests (DB tests skip without DATABASE_URL)
-just test-db        # Spin up Postgres, run all tests including DB, tear down
+just test           # Full suite; automatically start and remove PostgreSQL
+just test-db        # Alias for just test
+just test-no-db     # Fast mode; skip database-backed tests
+just coverage       # Rust coverage + >90% gates with automatic PostgreSQL
 just bench-db       # Run storage benchmarks against real PostgreSQL
 ```
 
-Unit tests run without a database via `just test`. For the full suite including storage tests, use `just test-db` -- this starts a PostgreSQL container on port 15432, runs all tests, then removes the container.
+`just test`, `just check`, and `just coverage` run database-backed tests automatically. Each run creates a disposable PostgreSQL 17 container on a random loopback port and removes it on success, failure, or interruption. Each database test uses an isolated schema. Concurrent runs use separate containers. Coverage reports are written to `target/coverage/rust/`; coverage requires `cargo-llvm-cov` and the Rust `llvm-tools-preview` component.
+
+Coverage fails unless LLVM line, region, and function coverage each exceed 90% overall and in every library crate and binary. Each crate must also exceed 90% production line coverage. Production counters exclude test sources; the HTML report retains tests for navigation. Stable Rust reports do not provide branch counters, so these gates do not claim branch coverage. CI runs the same coverage workflow against its PostgreSQL service.
+
+File-collector cancellation stops the remaining batch while its active file operation finishes deletion and queue cleanup under the file lock. This keeps an already dispatched delete from racing a re-upload. The test runner forwards `SIGINT`/`SIGTERM` to the command’s process group and waits for children to stop before removing PostgreSQL; an unresponsive group is killed after a five-second grace period.
+
+If `DATABASE_URL` is supplied, these commands use that test database and leave it running. `BB_TEST_REQUIRE_DB=1` prevents database tests from silently skipping in the full suite and CI. Use `just test-no-db` for an explicit database-free run; direct `cargo test` still skips database tests when `DATABASE_URL` is absent. For manual debugging, `just db-start`, `just db-shell`, and `just db-down` manage the fixed-port database on port 15432.
 
 ### Docker
 
