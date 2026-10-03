@@ -221,6 +221,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sqlx",
  "thiserror",
  "time",
  "tokio",
@@ -236,6 +237,7 @@ name = "betterbase-sync-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "betterbase-sync-api",
@@ -247,6 +249,7 @@ dependencies = [
  "hex",
  "minicbor-serde",
  "object_store",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sqlx",
@@ -316,7 +319,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "betterbase-sync-storage",
+ "sqlx",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

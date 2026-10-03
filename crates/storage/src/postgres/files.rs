@@ -9,6 +9,25 @@ pub(super) const WRAPPED_DEK_LENGTH: usize = 44;
 
 #[async_trait]
 impl FileStorage for PostgresStorage {
+    async fn lock_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<crate::FileOperationLock, StorageError> {
+        let mut tx = self
+            .file_lock_pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("betterbase-sync:file:{space_id}:{file_id}"))
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        // Transaction rollback on Drop also releases the lock on cancellation.
+        Ok(Box::new(tx))
+    }
+
     async fn record_file(
         &self,
         space_id: Uuid,
@@ -30,21 +49,20 @@ impl FileStorage for PostgresStorage {
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        let new_cursor: i64 = sqlx::query_scalar(
-            "UPDATE spaces SET cursor = cursor + 1 WHERE id = $1 RETURNING cursor",
-        )
-        .bind(space_id)
-        .fetch_one(tx.as_mut())
-        .await
-        .map_err(|error| match error {
-            sqlx::Error::RowNotFound => StorageError::SpaceNotFound,
-            _ => StorageError::Database(error.to_string()),
-        })?;
+        let cursor = super::get_space_cursor_for_update(&mut tx, space_id).await?;
+        let parent_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE space_id = $1 AND id = $2 AND deleted = FALSE)",
+        ).bind(space_id).bind(record_id).fetch_one(tx.as_mut()).await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        if !parent_exists {
+            return Err(StorageError::RecordNotFound);
+        }
+        let new_cursor = cursor + 1;
 
         // AUD-029 (files): enforce the space's minimum key generation on file
         // DEKs too — a stale-but-authorized device must not land wrappers the
         // post-rotation key hierarchy cannot decrypt. The space row is locked
-        // by the cursor UPDATE above, so the check races no rotation.
+        // by the cursor SELECT above, so the check races no rotation.
         {
             let row = sqlx::query_as::<_, SpaceGenRow>(
                 "SELECT root_public_key, min_epoch FROM spaces WHERE id = $1",
@@ -79,18 +97,27 @@ impl FileStorage for PostgresStorage {
         .await
         .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        // Preserve idempotency without advancing space cursor when the file already exists.
-        if result.rows_affected() == 0 {
-            tx.rollback()
+        let created = result.rows_affected() != 0;
+        if created {
+            sqlx::query("UPDATE spaces SET cursor = $2 WHERE id = $1")
+                .bind(space_id)
+                .bind(new_cursor)
+                .execute(tx.as_mut())
                 .await
                 .map_err(|error| StorageError::Database(error.to_string()))?;
-            return Ok(None);
         }
-
+        // Clear the upload's cleanup intent atomically with metadata. A later
+        // tombstone holds the same space lock and will create a fresh intent.
+        sqlx::query("DELETE FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2")
+            .bind(space_id)
+            .bind(file_id)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
-        Ok(Some(new_cursor))
+        Ok(created.then_some(new_cursor))
     }
 
     async fn get_file_metadata(
@@ -292,6 +319,41 @@ impl FileStorage for PostgresStorage {
                 file_id: row.file_id,
             })
             .collect())
+    }
+
+    async fn file_deletion_due(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+        cutoff: SystemTime,
+    ) -> Result<bool, StorageError> {
+        let cutoff_us = super::system_time_to_unix_micros(cutoff)?;
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2 AND (EXTRACT(EPOCH FROM scheduled_at) * 1000000)::BIGINT <= $3)")
+            .bind(space_id).bind(file_id).bind(cutoff_us).fetch_one(&self.pool).await
+            .map_err(|error| StorageError::Database(error.to_string()))
+    }
+
+    async fn clear_file_deletion_if_live(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        match super::get_space_cursor_for_update(&mut tx, space_id).await {
+            Ok(_) => {}
+            Err(StorageError::SpaceNotFound) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        sqlx::query("DELETE FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2 AND EXISTS(SELECT 1 FROM files WHERE space_id = $1 AND id = $2)")
+            .bind(space_id).bind(file_id).execute(tx.as_mut()).await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))
     }
 
     async fn complete_file_deletion(

@@ -524,6 +524,292 @@ mod tests {
     use crate::{AdvanceEpochOptions, EpochStorage, PullEntry, PullEntryKind, PushOptions};
 
     #[tokio::test]
+    async fn push_blob_size_boundary_and_empty_blob_roundtrip() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        let id = uuid::Uuid::new_v4();
+        let blob = vec![42; betterbase_sync_core::validation::DEFAULT_MAX_BLOB_SIZE as usize];
+        assert!(
+            storage
+                .push(space, &[change(&id.to_string(), Some(&blob), 0)], None)
+                .await
+                .expect("exact size limit")
+                .ok
+        );
+        let oversized = vec![42; blob.len() + 1];
+        assert_eq!(
+            storage
+                .push(space, &[change(&id.to_string(), Some(&oversized), 1)], None)
+                .await,
+            Err(StorageError::BlobTooLarge)
+        );
+        let pulled = storage
+            .stream_pull(space, 0)
+            .await
+            .expect("pull")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(pulled.cursor, 1);
+        assert_eq!(pulled.records()[0].blob.as_ref(), Some(&blob));
+        assert!(
+            storage
+                .push(space, &[change(&id.to_string(), Some(b""), 1)], None)
+                .await
+                .expect("empty blob update")
+                .ok
+        );
+        assert!(storage
+            .record_exists(space, id)
+            .await
+            .expect("empty blob remains live"));
+        let pulled = storage
+            .stream_pull(space, 1)
+            .await
+            .expect("delta")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(pulled.records()[0].blob, Some(Vec::new()));
+        assert!(!pulled.records()[0].deleted);
+    }
+
+    #[tokio::test]
+    async fn restoring_tombstone_requires_latest_cursor() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        let id = create_record(&storage, space).await;
+        assert!(
+            storage
+                .push(space, &[change(&id.to_string(), None, 1)], None)
+                .await
+                .expect("delete")
+                .ok
+        );
+        for stale_cursor in [0, 1] {
+            assert!(
+                !storage
+                    .push(
+                        space,
+                        &[change(
+                            &id.to_string(),
+                            Some(b"stale restore"),
+                            stale_cursor
+                        )],
+                        None
+                    )
+                    .await
+                    .expect("stale restore")
+                    .ok
+            );
+        }
+        assert!(!storage
+            .record_exists(space, id)
+            .await
+            .expect("still deleted"));
+        assert_eq!(storage.get_space(space).await.expect("space").cursor, 2);
+        assert!(
+            storage
+                .push(
+                    space,
+                    &[change(&id.to_string(), Some(b"restored"), 2)],
+                    None
+                )
+                .await
+                .expect("restore")
+                .ok
+        );
+        let initial = storage
+            .stream_pull(space, 0)
+            .await
+            .expect("initial")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(initial.cursor, 3);
+        assert_eq!(initial.records().len(), 1);
+        assert_eq!(initial.records()[0].blob, Some(b"restored".to_vec()));
+        assert!(!initial.records()[0].deleted);
+        let current = storage
+            .stream_pull(space, 3)
+            .await
+            .expect("up to date")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(current.cursor, 3);
+        assert!(current.records().is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_updates_have_exactly_one_winner() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        let id = create_record(&storage, space).await.to_string();
+        let left = [change(&id, Some(b"left"), 1)];
+        let right = [change(&id, Some(b"right"), 1)];
+        let (left_result, right_result) = tokio::join!(
+            storage.push(space, &left, None),
+            storage.push(space, &right, None)
+        );
+        let left_result = left_result.expect("left push");
+        let right_result = right_result.expect("right push");
+        assert_ne!(left_result.ok, right_result.ok);
+        let pulled = storage
+            .stream_pull(space, 0)
+            .await
+            .expect("pull")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(pulled.cursor, 2);
+        assert_eq!(pulled.records().len(), 1);
+        let expected = if left_result.ok {
+            b"left".to_vec()
+        } else {
+            b"right".to_vec()
+        };
+        assert_eq!(pulled.records()[0].blob, Some(expected));
+        assert_eq!(pulled.records()[0].cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn pull_snapshot_excludes_writes_after_stream_creation() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        // More entries than the channel capacity keeps the snapshot open
+        // until the consumer starts draining it.
+        let changes: Vec<_> = (0..130)
+            .map(|_| change(&uuid::Uuid::new_v4().to_string(), Some(b"before"), 0))
+            .collect();
+        storage.push(space, &changes, None).await.expect("seed");
+        let stream = storage.stream_pull(space, 0).await.expect("snapshot");
+        let id = uuid::Uuid::new_v4().to_string();
+        storage
+            .push(space, &[change(&id, Some(b"after"), 0)], None)
+            .await
+            .expect("concurrent write");
+        let snapshot = stream.collect().await.expect("collect snapshot");
+        assert_eq!(snapshot.cursor, 1);
+        assert_eq!(snapshot.records().len(), 130);
+        assert!(snapshot.records().iter().all(|record| record.cursor == 1));
+        let delta = storage
+            .stream_pull(space, snapshot.cursor)
+            .await
+            .expect("delta")
+            .collect()
+            .await
+            .expect("collect delta");
+        assert_eq!(delta.cursor, 2);
+        assert_eq!(delta.records().len(), 1);
+        assert_eq!(delta.records()[0].id, id);
+    }
+
+    #[tokio::test]
+    async fn dropping_backpressured_pull_releases_database_connection() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        let changes: Vec<_> = (0..130)
+            .map(|_| change(&uuid::Uuid::new_v4().to_string(), Some(b"data"), 0))
+            .collect();
+        storage.push(space, &changes, None).await.expect("seed");
+        let stream = storage.stream_pull(space, 0).await.expect("stream");
+        // Hold the other connection so a leak cannot be masked by the pool.
+        let other_connection = storage.pool().acquire().await.expect("other connection");
+        drop(stream);
+        let released =
+            tokio::time::timeout(std::time::Duration::from_secs(5), storage.pool().acquire())
+                .await
+                .expect("pull must release connection")
+                .expect("acquire released connection");
+        drop(released);
+        drop(other_connection);
+    }
+
+    #[tokio::test]
+    async fn cross_space_collision_rolls_back_prior_inserts_and_cursor() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let owner = uuid::Uuid::new_v4();
+        let target = uuid::Uuid::new_v4();
+        create_space(&storage, owner).await;
+        create_space(&storage, target).await;
+        let collision = create_record(&storage, owner).await.to_string();
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let error = storage
+            .push(
+                target,
+                &[
+                    change(&new_id, Some(b"must roll back"), 0),
+                    change(&collision, Some(b"collision"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect_err("collision");
+        assert_eq!(error, StorageError::RecordIdCollision);
+        let target_pull = storage
+            .stream_pull(target, 0)
+            .await
+            .expect("pull")
+            .collect()
+            .await
+            .expect("collect");
+        assert_eq!(target_pull.cursor, 0);
+        assert!(target_pull.records().is_empty());
+        assert!(storage
+            .record_exists(owner, uuid::Uuid::parse_str(&collision).expect("uuid"))
+            .await
+            .expect("owner record"));
+        assert!(
+            storage
+                .push(target, &[change(&new_id, Some(b"retry"), 0)], None)
+                .await
+                .expect("retry")
+                .ok
+        );
+    }
+
+    #[tokio::test]
+    async fn push_duplicate_uuid_with_different_case_is_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let space = uuid::Uuid::new_v4();
+        create_space(&storage, space).await;
+        let id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let error = storage
+            .push(
+                space,
+                &[
+                    change(id, Some(b"first"), 0),
+                    change(&id.to_uppercase(), Some(b"second"), 0),
+                ],
+                None,
+            )
+            .await
+            .expect_err("duplicate UUID");
+        assert_eq!(error, StorageError::DuplicateRecordId);
+        assert_eq!(storage.get_space(space).await.expect("space").cursor, 0);
+    }
+
+    #[tokio::test]
     async fn pull_empty_space() {
         let Some(storage) = test_storage().await else {
             return;

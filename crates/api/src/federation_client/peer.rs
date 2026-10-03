@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,8 +9,9 @@ use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
 use http::{HeaderValue, Method, Request};
+use std::sync::RwLock;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -22,9 +24,9 @@ type PeerSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type PeerSink = futures_util::stream::SplitSink<PeerSocket, Message>;
 type PeerStream = futures_util::stream::SplitStream<PeerSocket>;
 
-/// Upper bound for a single RPC call, chunks included. A stalled or
-/// flooding trusted peer previously held the per-peer mutex forever;
-/// the deadline converts that into a connection reset (AUD-037).
+/// Upper bound for each peer RPC phase: connection setup, write, response
+/// streaming, and teardown. A stalled peer must not hold the socket-state
+/// mutex or an in-flight call indefinitely (AUD-037).
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,14 +37,67 @@ pub(super) struct ReceivedChunk {
 
 pub(super) struct PeerConnection {
     ws_url: String,
+    response_timeout: Duration,
+    subscription_lock: Mutex<()>,
     spaces: Arc<RwLock<HashMap<String, String>>>,
     notifications: PeerNotificationHandler,
     state: Arc<Mutex<PeerState>>,
+    reader: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    closed: AtomicBool,
 }
 
 struct PeerState {
     sink: Option<PeerSink>,
-    pending: HashMap<String, Arc<PendingCall>>,
+    pending: PendingCalls,
+    generation: u64,
+}
+
+type PendingCalls = Arc<std::sync::Mutex<HashMap<String, Arc<PendingCall>>>>;
+
+// A caller's cancellation must release its response/chunk accumulator without
+// spawning cleanup or waiting for the socket-state mutex.
+struct PendingRegistration {
+    calls: PendingCalls,
+    id: String,
+}
+impl Drop for PendingRegistration {
+    fn drop(&mut self) {
+        self.calls.lock().expect("pending calls").remove(&self.id);
+    }
+}
+
+impl Drop for PeerConnection {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.lock().expect("reader task").take() {
+            reader.abort();
+        }
+    }
+}
+
+pub(super) struct SubscriptionRegistration {
+    spaces: Arc<RwLock<HashMap<String, String>>>,
+    previous: HashMap<String, Option<String>>,
+    committed: bool,
+}
+impl SubscriptionRegistration {
+    pub(super) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for SubscriptionRegistration {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut spaces = self.spaces.write().expect("subscription tokens");
+        for (space, token) in &self.previous {
+            if let Some(token) = token {
+                spaces.insert(space.clone(), token.clone());
+            } else {
+                spaces.remove(space);
+            }
+        }
+    }
 }
 
 struct PendingCall {
@@ -105,13 +160,57 @@ impl PeerConnection {
     ) -> Self {
         Self {
             ws_url,
+            response_timeout: RESPONSE_TIMEOUT,
+            subscription_lock: Mutex::new(()),
             spaces: Arc::new(RwLock::new(HashMap::new())),
             notifications,
             state: Arc::new(Mutex::new(PeerState {
                 sink: None,
-                pending: HashMap::new(),
+                pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                generation: 0,
             })),
+            reader: std::sync::Mutex::new(None),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    pub(super) async fn subscription_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.subscription_lock.lock().await
+    }
+    pub(super) fn prepare_subscription(
+        &self,
+        ids: impl Iterator<Item = String>,
+    ) -> SubscriptionRegistration {
+        let mut spaces = self.spaces.write().expect("subscription tokens");
+        let mut previous = HashMap::new();
+        for id in ids {
+            previous
+                .entry(id.clone())
+                .or_insert_with(|| spaces.get(&id).cloned());
+            spaces.entry(id).or_default();
+        }
+        SubscriptionRegistration {
+            spaces: self.spaces.clone(),
+            previous,
+            committed: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_response_timeout(mut self, timeout: Duration) -> Self {
+        self.response_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) async fn pending_count(&self) -> usize {
+        self.state
+            .lock()
+            .await
+            .pending
+            .lock()
+            .expect("pending calls")
+            .len()
     }
 
     pub(super) async fn call_raw<P>(
@@ -134,26 +233,53 @@ impl PeerConnection {
         let frame = encode_request_frame(request_id, method, params)?;
 
         let mut state = self.state.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(FederationPeerError::Closed);
+        }
         if state.sink.is_none() {
-            match connect_socket(&self.ws_url, key_id, signing_key).await {
+            match tokio::time::timeout(
+                self.response_timeout,
+                connect_socket(&self.ws_url, key_id, signing_key),
+            )
+            .await
+            .unwrap_or(Err(FederationPeerError::Closed))
+            {
                 Ok(socket) => {
                     let (sink, stream) = socket.split();
-                    tokio::spawn(read_peer_socket(
+                    state.generation += 1;
+                    let reader = tokio::spawn(read_peer_socket(
                         stream,
                         Arc::clone(&self.state),
                         Arc::clone(&self.spaces),
                         Arc::clone(&self.notifications),
+                        state.generation,
+                        self.response_timeout,
                     ));
+                    if let Some(previous) = self
+                        .reader
+                        .lock()
+                        .expect("reader task")
+                        .replace(reader.abort_handle())
+                    {
+                        previous.abort();
+                    }
                     state.sink = Some(sink);
                 }
                 Err(error) => return Err(error),
             }
         }
 
+        let generation = state.generation;
         let call = Arc::new(PendingCall::new());
         state
             .pending
+            .lock()
+            .expect("pending calls")
             .insert(request_id.to_owned(), Arc::clone(&call));
+        let _registration = PendingRegistration {
+            calls: state.pending.clone(),
+            id: request_id.to_owned(),
+        };
 
         // Register interest BEFORE sending: `Notify::notify_waiters` wakes
         // only already-registered waiters, so a peer answering within the
@@ -166,30 +292,38 @@ impl PeerConnection {
         // reading (TCP backpressure) would otherwise wedge the send while
         // the state mutex is held, starving the reader and `close()`.
         let send_result = match state.sink.as_mut() {
-            Some(sink) => {
-                tokio::time::timeout(RESPONSE_TIMEOUT, sink.send(Message::Binary(frame.into())))
-                    .await
-                    .ok()
-            }
+            Some(sink) => tokio::time::timeout(
+                self.response_timeout,
+                sink.send(Message::Binary(frame.into())),
+            )
+            .await
+            .ok(),
             None => None,
         };
         let send_failed = !matches!(send_result, Some(Ok(())));
         if send_failed {
-            teardown(&mut state).await;
+            teardown(&mut state, self.response_timeout).await;
             return Err(FederationPeerError::Closed);
         }
         drop(state);
 
-        let wait = tokio::time::timeout(RESPONSE_TIMEOUT, notified).await;
+        let wait = tokio::time::timeout(self.response_timeout, notified).await;
         let mut state = self.state.lock().await;
-        state.pending.remove(request_id);
+        state
+            .pending
+            .lock()
+            .expect("pending calls")
+            .remove(request_id);
+        if state.generation != generation {
+            return call.take();
+        }
         match wait {
             Ok(()) => {
                 let result = call.take();
-                if result.is_err() {
+                if matches!(result, Err(FederationPeerError::Closed)) {
                     // The reader reported a fatal condition for this call —
                     // treat the connection as unhealthy.
-                    teardown(&mut state).await;
+                    teardown(&mut state, self.response_timeout).await;
                 }
                 result
             }
@@ -203,44 +337,45 @@ impl PeerConnection {
                 }
                 // The peer stalled. Reset the connection so the next call
                 // reconnects instead of queuing behind it.
-                teardown(&mut state).await;
+                teardown(&mut state, self.response_timeout).await;
                 Err(FederationPeerError::Closed)
             }
         }
     }
 
     pub(super) async fn set_space_tokens(&self, token_by_space: HashMap<String, String>) {
-        let mut spaces = self.spaces.write().await;
+        let mut spaces = self.spaces.write().expect("subscription tokens");
         for (space, token) in token_by_space {
             spaces.insert(space, token);
         }
     }
 
     pub(super) async fn remove_space_tokens(&self, space_ids: &[String]) {
-        let mut spaces = self.spaces.write().await;
+        let mut spaces = self.spaces.write().expect("subscription tokens");
         for space_id in space_ids {
             spaces.remove(space_id);
         }
     }
 
     pub(super) async fn space_tokens(&self) -> HashMap<String, String> {
-        self.spaces.read().await.clone()
+        self.spaces.read().expect("subscription tokens").clone()
     }
 
     pub(super) async fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         let mut state = self.state.lock().await;
-        teardown(&mut state).await;
+        teardown(&mut state, self.response_timeout).await;
     }
 }
 
 /// Fail every in-flight call and drop the socket so the next call
 /// reconnects from scratch. The reader task observes the closed stream and
 /// exits on its own.
-async fn teardown(state: &mut PeerState) {
+async fn teardown(state: &mut PeerState, timeout: Duration) {
     if let Some(mut sink) = state.sink.take() {
-        let _ = sink.close().await;
+        let _ = tokio::time::timeout(timeout, sink.close()).await;
     }
-    let pending = std::mem::take(&mut state.pending);
+    let pending = std::mem::take(&mut *state.pending.lock().expect("pending calls"));
     for (_, call) in pending {
         call.complete(Err(FederationPeerError::Closed));
     }
@@ -254,12 +389,17 @@ async fn read_peer_socket(
     state: Arc<Mutex<PeerState>>,
     spaces: Arc<RwLock<HashMap<String, String>>>,
     notifications: PeerNotificationHandler,
+    generation: u64,
+    timeout: Duration,
 ) {
     loop {
         let frame = match stream.next().await {
             Some(Ok(frame)) => frame,
             Some(Err(_)) | None => break,
         };
+        if state.lock().await.generation != generation {
+            return;
+        }
         match frame {
             Message::Binary(payload) => {
                 if payload.len() == 1 && payload[0] == 0xF6 {
@@ -276,7 +416,13 @@ async fn read_peer_socket(
                             continue;
                         }
                         let state = state.lock().await;
-                        if let Some(call) = state.pending.get(&response.id) {
+                        let call = state
+                            .pending
+                            .lock()
+                            .expect("pending calls")
+                            .get(&response.id)
+                            .cloned();
+                        if let Some(call) = call {
                             let outcome = match response.error {
                                 Some(error) => Err(FederationPeerError::Rpc(error)),
                                 None => Ok(response
@@ -291,7 +437,13 @@ async fn read_peer_socket(
                             continue;
                         }
                         let state = state.lock().await;
-                        if let Some(call) = state.pending.get(&chunk.id) {
+                        let call = state
+                            .pending
+                            .lock()
+                            .expect("pending calls")
+                            .get(&chunk.id)
+                            .cloned();
+                        if let Some(call) = call {
                             call.push_chunk(ReceivedChunk {
                                 name: chunk.name,
                                 data: chunk.data,
@@ -308,7 +460,7 @@ async fn read_peer_socket(
                         // actually subscribed to on the peer — the outgoing
                         // counterpart of the incoming rebroadcast gate.
                         let subscribed = {
-                            let spaces = spaces.read().await;
+                            let spaces = spaces.read().expect("subscription tokens");
                             notification
                                 .space
                                 .as_deref()
@@ -332,7 +484,10 @@ async fn read_peer_socket(
     }
 
     let mut state = state.lock().await;
-    teardown(&mut state).await;
+    // A reader from a reset socket must never close its replacement socket.
+    if state.generation == generation {
+        teardown(&mut state, timeout).await;
+    }
 }
 
 async fn connect_socket(

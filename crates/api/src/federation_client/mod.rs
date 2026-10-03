@@ -135,23 +135,23 @@ impl FederationPeerManager {
     ) -> Result<(), FederationPeerError> {
         let peer = self.get_or_create_peer(peer_domain, peer_ws_url).await;
 
-        // Register requested spaces before the call: the peer's server may
-        // start pushing notifications for them the moment its subscribe
-        // processing lands, which can beat our response bookkeeping. Empty
-        // tokens mirror the decode-failure fallback below; rejected spaces
-        // only widen the notification gate, never the UCAN-validated
-        // subscription itself.
-        {
-            let mut requested = HashMap::with_capacity(spaces.len());
-            for space in spaces {
-                requested.insert(space.id.clone(), String::new());
-            }
-            peer.set_space_tokens(requested).await;
-        }
+        let _subscription_guard = peer.subscription_guard().await;
+        self.subscribe_to_peer(&peer, peer_domain, spaces).await
+    }
+
+    async fn subscribe_to_peer(
+        &self,
+        peer: &peer::PeerConnection,
+        peer_domain: &str,
+        spaces: &[WsSubscribeSpace],
+    ) -> Result<(), FederationPeerError> {
+        // Allow notifications that beat the subscribe response, but roll back
+        // tentative additions and preserve existing FSTs on error or cancellation.
+        let registration = peer.prepare_subscription(spaces.iter().map(|space| space.id.clone()));
 
         let value = self
             .call_method(
-                &peer,
+                peer,
                 "subscribe",
                 &SubscribeParams {
                     spaces: spaces.to_vec(),
@@ -184,6 +184,17 @@ impl FederationPeerManager {
                 token_by_space.insert(space.id.clone(), space.token.clone());
             }
             peer.set_space_tokens(token_by_space).await;
+            registration.commit();
+            if result.spaces.is_empty() {
+                if let Some(error) = result.errors.first() {
+                    return Err(FederationPeerError::Rpc(
+                        betterbase_sync_core::protocol::RpcError {
+                            code: error.error.clone(),
+                            message: "peer rejected subscription".to_owned(),
+                        },
+                    ));
+                }
+            }
             return Ok(());
         }
 
@@ -192,6 +203,7 @@ impl FederationPeerManager {
             fallback_tokens.insert(space.id.clone(), String::new());
         }
         peer.set_space_tokens(fallback_tokens).await;
+        registration.commit();
         Ok(())
     }
 
@@ -237,6 +249,7 @@ impl FederationPeerManager {
         peer_ws_url: &str,
     ) -> Result<(), FederationPeerError> {
         let peer = self.get_or_create_peer(peer_domain, peer_ws_url).await;
+        let _subscription_guard = peer.subscription_guard().await;
         let tokens = peer.space_tokens().await;
         if tokens.is_empty() {
             return Ok(());
@@ -252,7 +265,7 @@ impl FederationPeerManager {
                 presence: false,
             })
             .collect::<Vec<_>>();
-        self.subscribe(peer_domain, peer_ws_url, &spaces).await
+        self.subscribe_to_peer(&peer, peer_domain, &spaces).await
     }
 
     pub async fn forward_invitation(
@@ -363,7 +376,8 @@ impl FederationPeerManager {
         match first {
             Ok(result) => Ok(result),
             Err(error) if should_retry(&error) => {
-                peer.close().await;
+                // call_raw resets unhealthy sockets. Do not close a replacement
+                // another concurrent caller may already have established.
                 // A fresh id per attempt: the torn-down connection's reader
                 // may still drain a late frame, and id-only routing must
                 // not let it complete the new attempt's slot.

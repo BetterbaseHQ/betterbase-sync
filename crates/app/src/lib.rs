@@ -20,6 +20,13 @@ use url::Url;
 
 mod federation;
 
+#[cfg(test)]
+mod config_env_tests;
+#[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
+mod runtime_tests;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
@@ -155,6 +162,8 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         .with_websocket(validator)
         .with_realtime_broker(broker)
         .with_sync_storage(storage.clone());
+    // Abort background workers when serving fails or this future is cancelled.
+    let mut background_tasks = tokio::task::JoinSet::new();
 
     if let Some(key) = config.identity_hash_key {
         api_state = api_state.with_identity_hash_key(key);
@@ -167,10 +176,11 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
         api_state = api_state.with_file_object_store(file_storage);
         // AUD-039: tombstoned records queue their encrypted objects for
         // removal; this sweep honors the grace period.
-        tokio::spawn(file_gc_loop(
+        background_tasks.spawn(file_gc_loop(
             storage.clone(),
             blob_storage,
             config.file_deletion_grace,
+            Duration::from_secs(15 * 60),
         ));
     }
     api_state =
@@ -179,7 +189,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     if let (Some(presence_registry), Some(broker)) =
         (api_state.presence_registry(), api_state.realtime_broker())
     {
-        tokio::spawn(presence_cleanup_loop(presence_registry, broker));
+        background_tasks.spawn(presence_cleanup_loop(presence_registry, broker));
     }
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
@@ -191,22 +201,27 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
 /// Background erasure of file objects orphaned by record tombstones
 /// (AUD-039). Each pass deletes objects whose grace period elapsed and
 /// clears their queue entries; failures retry on the next pass.
-async fn file_gc_loop(
-    storage: Arc<PostgresStorage>,
+async fn file_gc_loop<S: betterbase_sync_api::FileDeletionQueue + ?Sized + 'static>(
+    storage: Arc<S>,
     blobs: Arc<dyn betterbase_sync_api::FileBlobStorage>,
     grace: Duration,
+    sweep_interval: Duration,
 ) {
-    const SWEEP_INTERVAL: Duration = Duration::from_secs(15 * 60);
     const SWEEP_BATCH: usize = 500;
-    let mut interval = tokio::time::interval(SWEEP_INTERVAL);
+    let mut interval = tokio::time::interval(sweep_interval);
     interval.tick().await; // first tick fires immediately, skip it
     loop {
         interval.tick().await;
         let Some(cutoff) = std::time::SystemTime::now().checked_sub(grace) else {
             continue;
         };
-        match betterbase_sync_api::sweep_file_deletions(&*storage, &*blobs, cutoff, SWEEP_BATCH)
-            .await
+        match betterbase_sync_api::sweep_file_deletions(
+            storage.clone(),
+            blobs.clone(),
+            cutoff,
+            SWEEP_BATCH,
+        )
+        .await
         {
             Ok(0) => {}
             Ok(removed) => tracing::info!(removed, "file gc removed objects"),

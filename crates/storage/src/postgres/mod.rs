@@ -11,6 +11,8 @@ mod revocation;
 mod spaces;
 
 #[cfg(test)]
+mod failure_tests;
+#[cfg(test)]
 mod test_support;
 
 use sqlx::PgPool;
@@ -20,6 +22,8 @@ use crate::StorageError;
 #[derive(Clone)]
 pub struct PostgresStorage {
     pool: PgPool,
+    // Lock waiters must not exhaust the pool used by the lock holder's metadata queries.
+    file_lock_pool: PgPool,
 }
 
 impl PostgresStorage {
@@ -27,12 +31,18 @@ impl PostgresStorage {
         let pool = PgPool::connect(database_url)
             .await
             .map_err(|error| StorageError::Database(error.to_string()))?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
     }
 
     #[must_use]
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        let file_lock_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(pool.options().get_max_connections())
+            .connect_lazy_with(pool.connect_options().as_ref().clone());
+        Self {
+            pool,
+            file_lock_pool,
+        }
     }
 
     #[must_use]
@@ -41,6 +51,7 @@ impl PostgresStorage {
     }
 
     pub async fn close(self) {
+        self.file_lock_pool.close().await;
         self.pool.close().await;
     }
 }
