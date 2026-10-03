@@ -119,7 +119,7 @@ All v1 routes are immutable contracts. Every response includes `X-Protocol-Versi
 
 File routes are only registered when file storage is configured.
 
-Uploads and garbage collection serialize per file using PostgreSQL advisory locks across server workers. Uploads queue cleanup before writing objects and clear that entry atomically when metadata commits, so failed or cancelled uploads are eventually collected. Metadata commits recheck that the parent record is live in the same space. Collection rechecks the current queue entry's age and metadata while holding the file lock.
+Uploads and garbage collection serialize per file using PostgreSQL advisory locks across server workers. Uploads queue cleanup before writing objects and clear that entry atomically when metadata commits, so failed uploads remain collectible. Once an upload owns its file lock, request cancellation lets its write and metadata bookkeeping finish before releasing the lock. Metadata commits recheck that the parent record is live in the same space. Collection rechecks the current queue entry's age and metadata while holding the file lock.
 
 File locks use a separate, lazy PostgreSQL pool with the same maximum connection count as the metadata pool (10 by default). This lets a lock holder finish metadata queries even when other uploads are waiting for its lock. Budget database connections for both pools when file storage is enabled.
 
@@ -180,6 +180,9 @@ File locks use a separate, lazy PostgreSQL pool with the same maximum connection
 
 Federation integration tests run an edge server and a home server against separate PostgreSQL schemas. A disposable TCP proxy cuts their link to verify quota cleanup, cached-token restoration, and reconnection. Controlled peer fixtures cover stalled handshakes, RPC deadlines, cancellation, and concurrent calls. All listeners and database fixtures are managed by the tests.
 
+For lifecycle changes, test sequences as well as individual calls: fail or cancel an operation, then retry, tombstone, collect, or reconnect. Place deterministic gates before dispatch, after backend dispatch but before completion, and between external I/O and database bookkeeping. Model backends whose work continues after their awaiting future is dropped. Assert the final invariant (bytes match live metadata, deletion grace starts at the tombstone, cached tokens survive transient failures, owned processes and containers are removed). Verify that new regressions fail against the previous implementation; coverage percentages alone cannot establish these properties.
+
+
 ### Prerequisites
 
 - Rust 1.88+
@@ -201,7 +204,7 @@ just bench-db       # Run storage benchmarks against real PostgreSQL
 
 Coverage fails unless LLVM line, region, and function coverage each exceed 90% overall and in every library crate and binary. Each crate must also exceed 90% production line coverage. Production counters exclude test sources; the HTML report retains tests for navigation. Stable Rust reports do not provide branch counters, so these gates do not claim branch coverage. CI runs the same coverage workflow against its PostgreSQL service.
 
-File-collector cancellation stops the remaining batch while its active file operation finishes deletion and queue cleanup under the file lock. This keeps an already dispatched delete from racing a re-upload. The test runner forwards `SIGINT`/`SIGTERM` to the command’s process group and waits for children to stop before removing PostgreSQL; an unresponsive group is killed after a five-second grace period.
+Upload cancellation leaves the active write and metadata bookkeeping running under the file lock. File-collector cancellation stops the remaining batch while its active file operation finishes deletion and queue cleanup under the file lock. This keeps an already dispatched delete from racing a re-upload. The runner assigns a unique container name before launch and waits for an interrupted launch to finish before removing it. The test runner forwards `SIGINT`/`SIGTERM` to the command’s process group and waits for children to stop before removing PostgreSQL; an unresponsive group is killed after a five-second grace period.
 
 If `DATABASE_URL` is supplied, these commands use that test database and leave it running. `BB_TEST_REQUIRE_DB=1` prevents database tests from silently skipping in the full suite and CI. Use `just test-no-db` for an explicit database-free run; direct `cargo test` still skips database tests when `DATABASE_URL` is absent. For manual debugging, `just db-start`, `just db-shell`, and `just db-down` manage the fixed-port database on port 15432.
 

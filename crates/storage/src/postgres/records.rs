@@ -440,11 +440,12 @@ impl RecordStorage for PostgresStorage {
 
             // Queue the orphaned objects for physical removal in the same
             // transaction (AUD-039): a crash between tombstone and queue
-            // insert would otherwise leak the object forever.
+            // insert would otherwise leak the object forever. Refresh any failed
+            // replay intent so the grace period starts at this tombstone.
             for file_id in &deleted_file_ids {
                 sqlx::query(
                     "INSERT INTO pending_file_deletions (space_id, file_id) VALUES ($1, $2)
-                     ON CONFLICT (space_id, file_id) DO NOTHING",
+                     ON CONFLICT (space_id, file_id) DO UPDATE SET scheduled_at = EXCLUDED.scheduled_at",
                 )
                 .bind(space_id)
                 .bind(file_id)

@@ -792,7 +792,7 @@ async fn failed_cleanup_intent_never_writes_an_untracked_object() {
 }
 
 #[tokio::test]
-async fn cancelled_upload_releases_lock_and_leaves_collectible_object() {
+async fn cancelled_upload_finishes_bookkeeping_before_releasing_lock() {
     let Some(f) = Fixture::new().await else {
         return;
     };
@@ -809,20 +809,26 @@ async fn cancelled_upload_releases_lock_and_leaves_collectible_object() {
     assert_eq!(f.cursor().await, 1);
     assert_eq!(f.read("GET").await.status(), StatusCode::NOT_FOUND);
     assert_eq!(f.queued().await.len(), 1);
-    let removed = tokio::time::timeout(
-        Duration::from_secs(5),
-        sweep_file_deletions(f.db.clone(), f.blobs.clone(), SystemTime::now(), 100),
-    )
-    .await
-    .expect("cancelled upload releases lock")
-    .expect("sweep");
-    assert_eq!(removed, 1);
+    let sweep = tokio::spawn(sweep_file_deletions(
+        f.db.clone(),
+        f.blobs.clone(),
+        SystemTime::now(),
+        100,
+    ));
+    f.wait_for_file_lock_waiter().await;
+    gate.release();
     assert_eq!(
-        f.blobs.local.get(f.space, f.file).await,
-        Err(FileBlobStorageError::NotFound)
+        tokio::time::timeout(Duration::from_secs(5), sweep)
+            .await
+            .expect("sweep after upload")
+            .expect("sweep task")
+            .expect("sweep"),
+        0
     );
+    assert_eq!(f.cursor().await, 2);
+    assert_eq!(f.read("GET").await.status(), StatusCode::OK);
     assert!(f.queued().await.is_empty());
-    assert_eq!(f.upload(b"retry").await.status(), StatusCode::CREATED);
+    assert_eq!(f.upload(b"retry").await.status(), StatusCode::NO_CONTENT);
     f.finish().await;
 }
 
@@ -1323,5 +1329,136 @@ async fn cancelling_sweep_during_queue_completion_cannot_erase_a_later_tombstone
         f.blobs.get(f.space, f.file).await.expect("new orphan"),
         b"new ciphertext"
     );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn review_failed_replay_then_tombstone_starts_a_fresh_deletion_grace_period() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    assert_eq!(f.upload(b"ciphertext").await.status(), StatusCode::CREATED);
+    f.metadata.fail_commit.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.upload(b"ciphertext").await.status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    f.age_queue().await;
+    // An old failed replay intent must not bypass the tombstone's 24h grace.
+    f.tombstone(1).await;
+    let cutoff = SystemTime::now() - Duration::from_secs(86400);
+    assert_eq!(
+        sweep_file_deletions(f.db.clone(), f.blobs.clone(), cutoff, 100)
+            .await
+            .expect("grace sweep"),
+        0
+    );
+    assert_eq!(
+        f.blobs
+            .local
+            .get(f.space, f.file)
+            .await
+            .expect("retained object"),
+        b"ciphertext"
+    );
+    assert_eq!(f.queued().await.len(), 1);
+    f.age_queue().await;
+    assert_eq!(
+        sweep_file_deletions(f.db.clone(), f.blobs.clone(), cutoff, 100)
+            .await
+            .expect("expired sweep"),
+        1
+    );
+    assert!(f.queued().await.is_empty());
+    f.finish().await;
+}
+
+struct DispatchedStore {
+    inner: Arc<FaultBlobs>,
+    gate: Arc<Gate>,
+}
+#[async_trait]
+impl FileBlobStorage for DispatchedStore {
+    async fn store(
+        &self,
+        space: Uuid,
+        file: Uuid,
+        payload: &[u8],
+    ) -> Result<bool, FileBlobStorageError> {
+        let inner = self.inner.clone();
+        let gate = self.gate.clone();
+        let payload = payload.to_vec();
+        tokio::spawn(async move {
+            gate.pause().await;
+            inner.store(space, file, &payload).await
+        })
+        .await
+        .map_err(|_| FileBlobStorageError::Internal)?
+    }
+    async fn get(&self, space: Uuid, file: Uuid) -> Result<Vec<u8>, FileBlobStorageError> {
+        self.inner.get(space, file).await
+    }
+    async fn delete(&self, space: Uuid, file: Uuid) -> Result<bool, FileBlobStorageError> {
+        self.inner.delete(space, file).await
+    }
+}
+
+#[tokio::test]
+async fn review_cancelled_dispatched_upload_keeps_collector_locked_until_metadata_commits() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    FileStorageTrait::schedule_file_deletions(&*f.db, f.space, &[f.file])
+        .await
+        .expect("older failed attempt");
+    f.age_queue().await;
+    let gate = Arc::new(Gate::default());
+    let blobs = Arc::new(DispatchedStore {
+        inner: f.blobs.clone(),
+        gate: gate.clone(),
+    });
+    let app = router(
+        ApiState::new(f.db.clone())
+            .with_websocket(Arc::new(build_validator()))
+            .with_sync_storage(f.db.clone())
+            .with_file_sync_storage_adapter(f.metadata.clone())
+            .with_file_blob_storage_adapter(blobs.clone()),
+    );
+    let upload = tokio::spawn(app.oneshot(put_file_request(
+        f.space,
+        f.file,
+        f.record,
+        b"late ciphertext",
+    )));
+    gate.wait().await;
+    upload.abort();
+    assert!(upload.await.expect_err("cancelled request").is_cancelled());
+    assert_eq!(
+        f.blobs.local.get(f.space, f.file).await,
+        Err(FileBlobStorageError::NotFound)
+    );
+    let sweep = tokio::spawn(sweep_file_deletions(
+        f.db.clone(),
+        blobs,
+        SystemTime::now(),
+        100,
+    ));
+    f.wait_for_file_lock_waiter().await;
+    gate.release();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), sweep)
+            .await
+            .expect("sweep finished")
+            .expect("sweep task")
+            .expect("sweep"),
+        0
+    );
+    assert_eq!(f.cursor().await, 2);
+    assert!(f.queued().await.is_empty());
+    assert_eq!(
+        f.blobs.local.get(f.space, f.file).await.expect("object"),
+        b"late ciphertext"
+    );
+    assert_eq!(f.read("GET").await.status(), StatusCode::OK);
     f.finish().await;
 }

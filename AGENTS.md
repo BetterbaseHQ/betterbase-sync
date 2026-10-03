@@ -146,6 +146,7 @@ File routes are only registered when file storage is configured.
 - **CBOR serialization**: `minicbor-serde`. Use `serde_bytes` for byte fields, `skip_serializing_if` for optional/zero-value fields.
 - **Test isolation**: each DB test gets its own PostgreSQL schema (`test_{uuid}`), auto-created by its test helper. Direct `cargo test` returns `None` gracefully without `DATABASE_URL`, unless `BB_TEST_REQUIRE_DB=1`. `just test`, `just check`, and `just coverage` enforce DB tests and automatically provision and remove a dedicated PostgreSQL container on a random loopback port. A supplied `DATABASE_URL` is used without managing that database's lifecycle.
 - **Coverage**: `just coverage` and CI require LLVM line/region/function coverage overall and per crate, plus production line coverage for every library crate and binary to exceed 90%. Production counters exclude tests. Stable Rust reports currently have no branch counters.
+- **Lifecycle regressions**: test failure/cancellation followed by retry, tombstone/collection, or recovery. Gate both before and after backend dispatch, including work that outlives its awaiting future; assert final metadata, bytes, timestamps, tokens, and resource ownership. Confirm new regressions fail against the previous implementation when practical.
 - **API tests**: use stub trait impls (`StubHealth`, `StubValidator`) + `tower::ServiceExt::oneshot` to test routes without a running server.
 - **Async**: `#[tokio::test]` for async tests, `async_trait` for trait methods.
 - Workspace edition: 2021, MSRV: 1.88.

@@ -80,6 +80,15 @@ pub(super) struct SubscriptionRegistration {
     committed: bool,
 }
 impl SubscriptionRegistration {
+    pub(super) fn restore_transient(&self, space: &str) {
+        let mut spaces = self.spaces.write().expect("subscription tokens");
+        if let Some(Some(token)) = self.previous.get(space) {
+            spaces.insert(space.to_owned(), token.clone());
+        } else {
+            spaces.remove(space);
+        }
+    }
+
     pub(super) fn commit(mut self) {
         self.committed = true;
     }

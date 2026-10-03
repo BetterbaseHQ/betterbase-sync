@@ -1092,3 +1092,143 @@ async fn concurrent_calls_recover_from_a_reset_without_closing_each_others_repla
     .expect("bounded recovery");
     manager.close().await;
 }
+
+#[tokio::test]
+async fn review_transient_restore_failure_preserves_cached_tokens_for_recovery() {
+    use betterbase_sync_core::protocol::{CborValue, WsSpaceError, WsSubscribedSpace};
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut peer = MockFederationPeer::spawn(move |_| {
+        let attempt = count.fetch_add(1, Ordering::SeqCst);
+        let result = if attempt == 1 {
+            SubscribeResult {
+                spaces: vec![],
+                errors: vec![WsSpaceError {
+                    space: "space-1".into(),
+                    error: "internal".into(),
+                }],
+            }
+        } else {
+            SubscribeResult {
+                spaces: vec![WsSubscribedSpace {
+                    id: "space-1".into(),
+                    cursor: 0,
+                    epoch: 0,
+                    rewrap_epoch: None,
+                    token: format!("fst-{attempt}"),
+                    peers: vec![],
+                }],
+                errors: vec![],
+            }
+        };
+        MockPeerReply::Respond {
+            result: CborValue::from_serializable(&result).expect("result"),
+            chunks: vec![],
+        }
+    })
+    .await;
+    let manager = test_manager(peer.addr());
+    manager
+        .subscribe(
+            "peer.test",
+            &peer.ws_url,
+            &[WsSubscribeSpace {
+                id: "space-1".into(),
+                since: 0,
+                ucan: "ucan".into(),
+                token: String::new(),
+                presence: false,
+            }],
+        )
+        .await
+        .expect("initial subscribe");
+    peer.require_request().await;
+    assert!(
+        matches!(manager.restore_subscriptions("peer.test", &peer.ws_url).await,
+        Err(super::FederationPeerError::Rpc(error)) if error.code == "internal")
+    );
+    peer.require_request().await;
+    assert_eq!(
+        peer_tokens(&manager, "peer.test")
+            .await
+            .get("space-1")
+            .map(String::as_str),
+        Some("fst-0")
+    );
+    manager
+        .restore_subscriptions("peer.test", &peer.ws_url)
+        .await
+        .expect("recovered restore");
+    let params: betterbase_sync_core::protocol::SubscribeParams =
+        decode_params(peer.require_request().await.params);
+    assert_eq!(params.spaces[0].token, "fst-0");
+    assert_eq!(
+        peer_tokens(&manager, "peer.test")
+            .await
+            .get("space-1")
+            .map(String::as_str),
+        Some("fst-2")
+    );
+    manager.close().await;
+}
+
+#[tokio::test]
+async fn review_mixed_subscribe_errors_keep_only_previously_cached_transient_tokens() {
+    use betterbase_sync_core::protocol::{CborValue, WsSpaceError, WsSubscribedSpace};
+    let mut peer = MockFederationPeer::spawn(|_| MockPeerReply::Respond {
+        result: CborValue::from_serializable(&SubscribeResult {
+            spaces: vec![WsSubscribedSpace {
+                id: "accepted".into(),
+                cursor: 0,
+                epoch: 0,
+                rewrap_epoch: None,
+                token: "new-fst".into(),
+                peers: vec![],
+            }],
+            errors: vec![
+                WsSpaceError {
+                    space: "existing".into(),
+                    error: "internal".into(),
+                },
+                WsSpaceError {
+                    space: "tentative".into(),
+                    error: "internal".into(),
+                },
+                WsSpaceError {
+                    space: "revoked".into(),
+                    error: "forbidden".into(),
+                },
+            ],
+        })
+        .expect("result"),
+        chunks: vec![],
+    })
+    .await;
+    let manager = test_manager(peer.addr());
+    let connection = manager.get_or_create_peer("peer.test", &peer.ws_url).await;
+    connection
+        .set_space_tokens(HashMap::from([
+            ("existing".into(), "cached-fst".into()),
+            ("revoked".into(), "revoked-fst".into()),
+        ]))
+        .await;
+    let spaces = ["accepted", "existing", "tentative", "revoked"].map(|id| WsSubscribeSpace {
+        id: id.into(),
+        since: 0,
+        ucan: "ucan".into(),
+        token: String::new(),
+        presence: false,
+    });
+    manager
+        .subscribe("peer.test", &peer.ws_url, &spaces)
+        .await
+        .expect("partial success");
+    peer.require_request().await;
+    assert_eq!(
+        peer_tokens(&manager, "peer.test").await,
+        HashMap::from([
+            ("accepted".into(), "new-fst".into()),
+            ("existing".into(), "cached-fst".into()),
+        ])
+    );
+    manager.close().await;
+}

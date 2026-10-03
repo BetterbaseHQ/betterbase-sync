@@ -178,6 +178,13 @@ impl FederationPeerManager {
                     .map(|error| error.space.clone())
                     .collect();
                 peer.remove_space_tokens(&rejected).await;
+                // Transient failures retain earlier FSTs for the next restore,
+                // while new tentative subscriptions stay outside the gate.
+                for error in &result.errors {
+                    if error.error == betterbase_sync_core::protocol::ERR_CODE_INTERNAL {
+                        registration.restore_transient(&error.space);
+                    }
+                }
             }
             let mut token_by_space = HashMap::with_capacity(result.spaces.len());
             for space in &result.spaces {

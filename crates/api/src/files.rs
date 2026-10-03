@@ -502,97 +502,105 @@ pub(crate) async fn put_file(
         Err(error) => return error.into_response(),
     };
 
-    let _file_lock = match sync_storage.lock_file(space_id, file_id).await {
+    let file_lock = match sync_storage.lock_file(space_id, file_id).await {
         Ok(guard) => guard,
         Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     };
-    match sync_storage.record_exists(space_id, record_id).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
+    // Dispatched backend writes can outlive the request future. Keep the lock
+    // and cleanup/metadata bookkeeping owned until the entire upload finishes.
+    let operation = tokio::spawn(async move {
+        let _file_lock = file_lock;
+        match sync_storage.record_exists(space_id, record_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
+            }
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         }
-        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
-    }
 
-    // Persist cleanup intent before writing bytes. Failed or cancelled uploads
-    // remain collectible; a successful metadata commit clears it atomically.
-    if sync_storage
-        .schedule_file_deletions(space_id, &[file_id])
-        .await
-        .is_err()
-    {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-    }
-
-    // Returns whether the object was newly created; the AUD-027 flow below
-    // no longer branches on it — both first attempts and retries of an
-    // interrupted upload run the same idempotent metadata commit.
-    let _created = match file_storage.store(space_id, file_id, &body).await {
-        Ok(created) => created,
-        Err(FileBlobStorageError::TooLarge) => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
-        }
-        Err(FileBlobStorageError::Internal) => {
+        // Persist cleanup intent before writing bytes. Failed or cancelled uploads
+        // remain collectible; a successful metadata commit clears it atomically.
+        if sync_storage
+            .schedule_file_deletions(space_id, &[file_id])
+            .await
+            .is_err()
+        {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
-        Err(FileBlobStorageError::NotFound) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-    };
-    // AUD-027: an existing object may be the only survivor of an
-    // interrupted attempt — bytes stored, process lost before metadata
-    // committed. `!created` must NOT be acknowledged early: fall through
-    // to the idempotent commit, which distinguishes "this call newly
-    // committed metadata" (Some(cursor) — acknowledge and broadcast) from
-    // "already fully recorded" (None — plain idempotent replay).
-    let cursor = match commit_uploaded_file(
-        sync_storage.as_ref(),
-        space_id,
-        file_id,
-        record_id,
-        file_size,
-        &wrapped_dek,
-    )
-    .await
-    {
-        Ok(Some(cursor)) => cursor,
-        Ok(None) => return StatusCode::NO_CONTENT.into_response(),
-        Err(FileCommitError::RecordNotFound) => {
-            return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
-        }
-        Err(FileCommitError::EpochStale) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "file key generation stale — re-encrypt under the current epoch",
-            );
-        }
-        Err(FileCommitError::Storage) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-    };
 
-    if let Some(broker) = state.realtime_broker() {
-        let space_hex = space_id.as_simple().to_string();
-        crate::ws::broadcast_to_space(
-            &broker,
-            &space_hex,
-            "file",
-            WsFileData {
-                space: space_hex.clone(),
-                cursor,
-                files: vec![WsFileEntry {
-                    id: file_id.to_string(),
-                    record_id: record_id.to_string(),
-                    size: file_size,
-                    wrapped_dek: Some(wrapped_dek),
-                    deleted: false,
-                }],
-            },
+        // Returns whether the object was newly created; the AUD-027 flow below
+        // no longer branches on it — both first attempts and retries of an
+        // interrupted upload run the same idempotent metadata commit.
+        let _created = match file_storage.store(space_id, file_id, &body).await {
+            Ok(created) => created,
+            Err(FileBlobStorageError::TooLarge) => {
+                return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
+            }
+            Err(FileBlobStorageError::Internal) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+            Err(FileBlobStorageError::NotFound) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+        };
+        // AUD-027: an existing object may be the only survivor of an
+        // interrupted attempt — bytes stored, process lost before metadata
+        // committed. `!created` must NOT be acknowledged early: fall through
+        // to the idempotent commit, which distinguishes "this call newly
+        // committed metadata" (Some(cursor) — acknowledge and broadcast) from
+        // "already fully recorded" (None — plain idempotent replay).
+        let cursor = match commit_uploaded_file(
+            sync_storage.as_ref(),
+            space_id,
+            file_id,
+            record_id,
+            file_size,
+            &wrapped_dek,
         )
-        .await;
-    }
+        .await
+        {
+            Ok(Some(cursor)) => cursor,
+            Ok(None) => return StatusCode::NO_CONTENT.into_response(),
+            Err(FileCommitError::RecordNotFound) => {
+                return error_response(StatusCode::BAD_REQUEST, "record not found in this space");
+            }
+            Err(FileCommitError::EpochStale) => {
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "file key generation stale — re-encrypt under the current epoch",
+                );
+            }
+            Err(FileCommitError::Storage) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+            }
+        };
 
-    StatusCode::CREATED.into_response()
+        if let Some(broker) = state.realtime_broker() {
+            let space_hex = space_id.as_simple().to_string();
+            crate::ws::broadcast_to_space(
+                &broker,
+                &space_hex,
+                "file",
+                WsFileData {
+                    space: space_hex.clone(),
+                    cursor,
+                    files: vec![WsFileEntry {
+                        id: file_id.to_string(),
+                        record_id: record_id.to_string(),
+                        size: file_size,
+                        wrapped_dek: Some(wrapped_dek),
+                        deleted: false,
+                    }],
+                },
+            )
+            .await;
+        }
+
+        StatusCode::CREATED.into_response()
+    });
+    operation
+        .await
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
 }
 
 pub(crate) async fn get_file(
