@@ -26,7 +26,7 @@ use uuid::Uuid;
 use crate::ApiState;
 
 const WRAPPED_DEK_LENGTH: usize = 44;
-const MAX_FILE_SIZE: usize = 100 * 1024 * 1024;
+pub(crate) const MAX_FILE_SIZE: usize = 100 * 1024 * 1024;
 
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FilePathParams {
@@ -72,6 +72,11 @@ pub(crate) trait FileSyncStorage: Send + Sync {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
+    ) -> Result<Option<i64>, StorageError>;
+    async fn tombstone_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
     ) -> Result<Option<i64>, StorageError>;
     async fn get_file_metadata(
         &self,
@@ -127,6 +132,14 @@ where
         FileStorageTrait::record_file(self, space_id, file_id, record_id, size, wrapped_dek).await
     }
 
+    async fn tombstone_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<Option<i64>, StorageError> {
+        FileStorageTrait::tombstone_file(self, space_id, file_id).await
+    }
+
     async fn get_file_metadata(
         &self,
         space_id: Uuid,
@@ -144,6 +157,10 @@ where
 pub enum FileBlobStorageError {
     NotFound,
     TooLarge,
+    /// An object already exists under this id with different ciphertext.
+    /// File objects are immutable (ADR: files-create-tombstone) — a
+    /// replacement must use a fresh id, not overwrite a live one.
+    Conflict,
     Internal,
 }
 
@@ -210,7 +227,34 @@ impl FileBlobStorage for ObjectStoreFileBlobStorage {
                 if matches!(error, object_store::Error::AlreadyExists { .. })
                     || rendered.contains("AlreadyExists")
                 {
-                    Ok(false)
+                    // An object already exists. Immutable-content contract:
+                    // byte-identical payloads are idempotent retries (the
+                    // AUD-027 crash-retry flow); different ciphertext is a
+                    // conflict the caller must see, not silently keep-old-
+                    // bytes. The comparison is ciphertext-only — the server
+                    // learns nothing beyond equality of blobs it already
+                    // holds. A size fast-path keeps the read cost off the
+                    // common mismatch case.
+                    let stored_meta = self
+                        .store
+                        .get_opts(&location, GetOptions::new().with_head(true))
+                        .await
+                        .map_err(|e| {
+                            if matches!(e, object_store::Error::NotFound { .. }) {
+                                FileBlobStorageError::NotFound
+                            } else {
+                                FileBlobStorageError::Internal
+                            }
+                        })?;
+                    if stored_meta.meta.size != payload.len() as u64 {
+                        return Err(FileBlobStorageError::Conflict);
+                    }
+                    let stored = self.get(space_id, file_id).await?;
+                    if stored == payload {
+                        Ok(false)
+                    } else {
+                        Err(FileBlobStorageError::Conflict)
+                    }
                 } else if matches!(error, object_store::Error::NotFound { .. }) {
                     Err(FileBlobStorageError::NotFound)
                 } else {
@@ -261,6 +305,8 @@ enum FileCommitError {
     /// The wrapped DEK's epoch is below the space's minimum key
     /// generation — the client must re-encrypt under the current epoch.
     EpochStale,
+    /// The space's file storage quota is exhausted.
+    QuotaExceeded,
     Storage,
 }
 
@@ -450,8 +496,25 @@ async fn commit_uploaded_file<S: FileSyncStorage + ?Sized>(
         .map_err(|error| match error {
             StorageError::RecordNotFound => FileCommitError::RecordNotFound,
             StorageError::EpochStale => FileCommitError::EpochStale,
+            StorageError::QuotaExceeded => FileCommitError::QuotaExceeded,
             _ => FileCommitError::Storage,
         })
+}
+
+/// Bounds concurrent upload bodies in memory. Wraps only `put_file` (reads
+/// are not memory-heavy), acquiring a permit for the full handler run —
+/// extractor buffering included. When no concurrency limit is configured
+/// (unit tests, custom embeddings) the gate is a pass-through.
+pub(crate) async fn upload_gate(
+    State(state): State<ApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(permits) = state.upload_permits() else {
+        return next.run(request).await;
+    };
+    let _permit = permits.acquire_owned().await;
+    next.run(request).await
 }
 
 pub(crate) async fn put_file(
@@ -536,6 +599,16 @@ pub(crate) async fn put_file(
             Err(FileBlobStorageError::TooLarge) => {
                 return error_response(StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 100 MB limit");
             }
+            Err(FileBlobStorageError::Conflict) => {
+                // Immutability contract made honest: the caller attempted to
+                // write different bytes under a live id. Bytes, metadata, and
+                // cursor are unchanged. (Any cleanup intent queued above is a
+                // no-op — the sweep's live-metadata guard clears it.)
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "file already exists with different content — use a new file id",
+                );
+            }
             Err(FileBlobStorageError::Internal) => {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
             }
@@ -570,6 +643,12 @@ pub(crate) async fn put_file(
                     "file key generation stale — re-encrypt under the current epoch",
                 );
             }
+            Err(FileCommitError::QuotaExceeded) => {
+                return error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "space file storage quota exceeded",
+                );
+            }
             Err(FileCommitError::Storage) => {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
             }
@@ -597,6 +676,97 @@ pub(crate) async fn put_file(
         }
 
         StatusCode::CREATED.into_response()
+    });
+    operation
+        .await
+        .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
+}
+
+/// DELETE /api/v1/spaces/{space_id}/files/{id} — tombstone one file.
+///
+/// The file API's mutability model is create + tombstone (objects are
+/// immutable once written): replacing content is a fresh id, and this route
+/// is how producers reclaim superseded generations. The soft-deleted
+/// metadata row streams through cursor-based pull (`deleted: true`) so
+/// peers drop their references, and the object is removed by the AUD-039
+/// grace-period sweep — never inline, so in-flight downloads and the
+/// re-upload race keep their existing guarantees. A re-upload of the same
+/// id resurrects the row and clears the deletion intent atomically.
+pub(crate) async fn delete_file(
+    State(state): State<ApiState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(path): Path<FilePathParams>,
+    headers: HeaderMap,
+) -> Response {
+    if !has_scope(&auth.scope, "files") {
+        return error_response(StatusCode::FORBIDDEN, "files scope required");
+    }
+
+    let (space_id, file_id) = match parse_ids(&path) {
+        Ok(ids) => ids,
+        Err(error) => return error.into_response(),
+    };
+
+    let Some(sync_storage) = state.file_sync_storage() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+
+    if let Err(response) = authorize_space(
+        sync_storage.as_ref(),
+        &auth,
+        &headers,
+        space_id,
+        Permission::Write,
+    )
+    .await
+    {
+        return response.into_response();
+    }
+
+    let file_lock = match sync_storage.lock_file(space_id, file_id).await {
+        Ok(guard) => guard,
+        Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+    };
+    let operation = tokio::spawn(async move {
+        let _file_lock = file_lock;
+        // Read the live metadata first so the tombstone event carries the
+        // owning record id and size (clients key eviction off the entry).
+        let metadata = match sync_storage.get_file_metadata(space_id, file_id).await {
+            Ok(metadata) => metadata,
+            Err(StorageError::FileNotFound) => {
+                return error_response(StatusCode::NOT_FOUND, "file not found");
+            }
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        };
+        let cursor = match sync_storage.tombstone_file(space_id, file_id).await {
+            Ok(Some(cursor)) => cursor,
+            // Tombstoned concurrently between read and commit — idempotent 404.
+            Ok(None) => return error_response(StatusCode::NOT_FOUND, "file not found"),
+            Err(_) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        };
+
+        if let Some(broker) = state.realtime_broker() {
+            let space_hex = space_id.as_simple().to_string();
+            crate::ws::broadcast_to_space(
+                &broker,
+                &space_hex,
+                "file",
+                WsFileData {
+                    space: space_hex.clone(),
+                    cursor,
+                    files: vec![WsFileEntry {
+                        id: file_id.to_string(),
+                        record_id: metadata.record_id.to_string(),
+                        size: metadata.size,
+                        wrapped_dek: None,
+                        deleted: true,
+                    }],
+                },
+            )
+            .await;
+        }
+
+        StatusCode::NO_CONTENT.into_response()
     });
     operation
         .await
@@ -1011,6 +1181,8 @@ mod tests {
     struct StubFileSyncStorage {
         record_exists: bool,
         metadata: Mutex<HashMap<(Uuid, Uuid), FileMetadata>>,
+        /// Soft-deleted ids (tombstone_file) — mirrors the files.deleted flag.
+        deleted: Mutex<HashSet<(Uuid, Uuid)>>,
         personal_spaces: [Uuid; 2],
         shared_spaces: HashMap<Uuid, Vec<u8>>,
         revoked_ucans: HashMap<Uuid, HashSet<String>>,
@@ -1099,7 +1271,12 @@ mod tests {
                 return Err(error);
             }
             let mut guard = self.metadata.lock().expect("metadata lock");
-            if guard.contains_key(&(space_id, file_id)) {
+            let deleted = self
+                .deleted
+                .lock()
+                .expect("deleted lock")
+                .contains(&(space_id, file_id));
+            if guard.contains_key(&(space_id, file_id)) && !deleted {
                 return Ok(None);
             }
             let metadata = FileMetadata {
@@ -1110,6 +1287,35 @@ mod tests {
                 cursor: 1,
             };
             guard.insert((space_id, file_id), metadata);
+            if deleted {
+                self.deleted
+                    .lock()
+                    .expect("deleted lock")
+                    .remove(&(space_id, file_id));
+            }
+            Ok(Some(1))
+        }
+
+        async fn tombstone_file(
+            &self,
+            space_id: Uuid,
+            file_id: Uuid,
+        ) -> Result<Option<i64>, StorageError> {
+            let guard = self.metadata.lock().expect("metadata lock");
+            let live = guard.contains_key(&(space_id, file_id))
+                && !self
+                    .deleted
+                    .lock()
+                    .expect("deleted lock")
+                    .contains(&(space_id, file_id));
+            drop(guard);
+            if !live {
+                return Ok(None);
+            }
+            self.deleted
+                .lock()
+                .expect("deleted lock")
+                .insert((space_id, file_id));
             Ok(Some(1))
         }
 
@@ -1118,6 +1324,14 @@ mod tests {
             space_id: Uuid,
             file_id: Uuid,
         ) -> Result<FileMetadata, StorageError> {
+            if self
+                .deleted
+                .lock()
+                .expect("deleted lock")
+                .contains(&(space_id, file_id))
+            {
+                return Err(StorageError::FileNotFound);
+            }
             self.metadata
                 .lock()
                 .expect("metadata lock")
@@ -1148,8 +1362,14 @@ mod tests {
             payload: &[u8],
         ) -> Result<bool, FileBlobStorageError> {
             let mut files = self.files.lock().expect("blob lock");
-            if files.contains_key(&(space_id, file_id)) {
-                return Ok(false);
+            if let Some(existing) = files.get(&(space_id, file_id)) {
+                // Mirrors the object-store contract: identical bytes are an
+                // idempotent retry; different bytes are a conflict.
+                return if existing == payload {
+                    Ok(false)
+                } else {
+                    Err(FileBlobStorageError::Conflict)
+                };
             }
             files.insert((space_id, file_id), payload.to_vec());
             Ok(true)
@@ -1476,6 +1696,196 @@ mod tests {
             .await
             .expect("dispatch request");
         assert_eq!(second.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn put_file_with_conflicting_bytes_returns_409_and_keeps_state() {
+        // Immutability contract made honest: a second PUT of different bytes
+        // under a live id must be rejected — bytes, metadata, and cursor
+        // unchanged — never a silent keep-old-bytes success.
+        let (app, sync_storage, blob_storage) = file_app_with_handles(true);
+        let space_id = personal_space_user1();
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+
+        let first = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, b"first"))
+            .await
+            .expect("dispatch request");
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, b"second"))
+            .await
+            .expect("dispatch request");
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+
+        // Stored bytes and metadata are untouched by the rejected attempt.
+        assert_eq!(
+            blob_storage.get(space_id, file_id).await.expect("bytes"),
+            b"first"
+        );
+        assert!(sync_storage
+            .get_file_metadata(space_id, file_id)
+            .await
+            .is_ok());
+
+        // Byte-identical replay is still the idempotent 204 path.
+        let replay = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, b"first"))
+            .await
+            .expect("dispatch request");
+        assert_eq!(replay.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn put_file_body_above_default_axum_limit_succeeds() {
+        // Regression (GH betterbase#8): axum's DefaultBodyLimit (2 MiB) used
+        // to reject bodies before the handler's own 100 MiB cap ran.
+        let app = file_app(true);
+        let payload = vec![7u8; 3 * 1024 * 1024];
+        let response = app
+            .oneshot(put_file_request(
+                personal_space_user1(),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                &payload,
+            ))
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn put_file_declared_length_over_limit_is_rejected() {
+        let app = file_app(true);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/api/v1/spaces/{}/files/{}",
+                        personal_space_user1(),
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-user1")
+                    .header(CONTENT_LENGTH, (MAX_FILE_SIZE + 1).to_string())
+                    .header("X-Record-ID", Uuid::new_v4().to_string())
+                    .header("X-Wrapped-DEK", STANDARD.encode([1u8; WRAPPED_DEK_LENGTH]))
+                    .body(Body::from("small"))
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn put_file_quota_exceeded_maps_to_413() {
+        let (app, sync_storage, _blob_storage) = file_app_with_handles(true);
+        *sync_storage.fail_record_file.lock().expect("fail lock") =
+            Some(StorageError::QuotaExceeded);
+        let response = app
+            .oneshot(put_file_request(
+                personal_space_user1(),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                b"quota me",
+            ))
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn delete_file_tombstones_then_reupload_resurrects() {
+        let (app, sync_storage, blob_storage) = file_app_with_handles(true);
+        let space_id = personal_space_user1();
+        let file_id = Uuid::new_v4();
+        let record_id = Uuid::new_v4();
+
+        let put = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, b"payload"))
+            .await
+            .expect("dispatch request");
+        assert_eq!(put.status(), StatusCode::CREATED);
+
+        let delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/spaces/{space_id}/files/{file_id}"))
+                    .header(AUTHORIZATION, "Bearer files-user1")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        // Tombstoned: metadata hidden, idempotent re-delete 404s.
+        assert_eq!(
+            sync_storage
+                .get_file_metadata(space_id, file_id)
+                .await
+                .unwrap_err(),
+            StorageError::FileNotFound
+        );
+        let redelete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/spaces/{space_id}/files/{file_id}"))
+                    .header(AUTHORIZATION, "Bearer files-user1")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(redelete.status(), StatusCode::NOT_FOUND);
+
+        // Re-upload of the same id and bytes resurrects the file.
+        let resurrect = app
+            .clone()
+            .oneshot(put_file_request(space_id, file_id, record_id, b"payload"))
+            .await
+            .expect("dispatch request");
+        assert_eq!(resurrect.status(), StatusCode::CREATED);
+        assert!(sync_storage
+            .get_file_metadata(space_id, file_id)
+            .await
+            .is_ok());
+        assert_eq!(
+            blob_storage.get(space_id, file_id).await.expect("bytes"),
+            b"payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_file_requires_files_scope() {
+        let app = file_app(true);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/v1/spaces/{}/files/{}",
+                        personal_space_user1(),
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer sync-user1")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -1835,6 +2245,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_space_delete_without_ucan_returns_unauthorized() {
+        // DELETE mirrors PUT's authorization: shared spaces require a
+        // validated UCAN Write chain, not just a valid bearer token.
+        let shared_space_id =
+            Uuid::parse_str("a3c49ffe-8226-4f7d-9f31-c01a9e77b404").expect("uuid");
+        let root_issuer = TestIssuer::new();
+        let bearer_issuer = TestIssuer::new();
+        let app = file_app_with_shared_space(
+            true,
+            shared_space_id,
+            root_issuer.compressed_public_key().to_vec(),
+            bearer_issuer.did,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/v1/spaces/{shared_space_id}/files/{}",
+                        Uuid::new_v4()
+                    ))
+                    .header(AUTHORIZATION, "Bearer files-shared-user")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("dispatch request");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn shared_space_put_without_ucan_returns_unauthorized() {
         let shared_space_id =
             Uuid::parse_str("6dfe56d8-7987-439f-b044-ea19e633ef46").expect("uuid");
@@ -2039,6 +2482,7 @@ mod tests {
         let sync_storage = Arc::new(StubFileSyncStorage {
             record_exists,
             metadata: Mutex::new(HashMap::new()),
+            deleted: Mutex::new(HashSet::new()),
             personal_spaces: [personal_space_user1(), personal_space_user2()],
             shared_spaces: HashMap::new(),
             revoked_ucans: HashMap::new(),
@@ -2114,6 +2558,7 @@ mod tests {
         let sync_storage = Arc::new(StubFileSyncStorage {
             record_exists,
             metadata: Mutex::new(HashMap::new()),
+            deleted: Mutex::new(HashSet::new()),
             personal_spaces: [personal_space_user1(), personal_space_user2()],
             shared_spaces,
             revoked_ucans,

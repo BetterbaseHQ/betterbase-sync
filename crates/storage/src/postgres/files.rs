@@ -3,7 +3,9 @@ use std::time::SystemTime;
 use uuid::Uuid;
 
 use super::PostgresStorage;
-use crate::{FileDekRecord, FileMetadata, FileStorage, StorageError};
+use crate::{FileDekRecord, FileMetadata, FileQuota, FileStorage, StorageError};
+
+use sqlx::{Postgres, Transaction};
 
 pub(super) const WRAPPED_DEK_LENGTH: usize = 44;
 
@@ -80,24 +82,50 @@ impl FileStorage for PostgresStorage {
             }
         }
 
-        let result = sqlx::query(
-            r#"
-            INSERT INTO files (space_id, id, record_id, size, wrapped_dek, cursor)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (space_id, id) DO NOTHING
-            "#,
-        )
-        .bind(space_id)
-        .bind(file_id)
-        .bind(record_id)
-        .bind(size)
-        .bind(wrapped_dek)
-        .bind(new_cursor)
-        .execute(tx.as_mut())
-        .await
-        .map_err(|error| StorageError::Database(error.to_string()))?;
+        // A live row means idempotent replay (no state change); a soft-deleted
+        // row is resurrected by this upload (the sweep's re-upload guard:
+        // committing metadata makes the object live again). The per-file
+        // advisory lock serializes this against tombstones and other uploads.
+        let existing: Option<bool> =
+            sqlx::query_scalar("SELECT deleted FROM files WHERE space_id = $1 AND id = $2")
+                .bind(space_id)
+                .bind(file_id)
+                .fetch_optional(tx.as_mut())
+                .await
+                .map_err(|error| StorageError::Database(error.to_string()))?;
 
-        let created = result.rows_affected() != 0;
+        let created = match existing {
+            // Live row — idempotent replay of a fully-recorded upload.
+            Some(false) => false,
+            // New row (or resurrection): enforce the per-space quota against
+            // live files before allocating any storage for it.
+            Some(true) | None => {
+                enforce_file_quota(&mut tx, space_id, &self.file_quota, size).await?;
+                sqlx::query(
+                    r#"
+                    INSERT INTO files (space_id, id, record_id, size, wrapped_dek, cursor)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (space_id, id) DO UPDATE SET
+                        deleted = FALSE,
+                        record_id = EXCLUDED.record_id,
+                        size = EXCLUDED.size,
+                        wrapped_dek = EXCLUDED.wrapped_dek,
+                        cursor = EXCLUDED.cursor
+                    "#,
+                )
+                .bind(space_id)
+                .bind(file_id)
+                .bind(record_id)
+                .bind(size)
+                .bind(wrapped_dek)
+                .bind(new_cursor)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|error| StorageError::Database(error.to_string()))?;
+                true
+            }
+        };
+
         if created {
             sqlx::query("UPDATE spaces SET cursor = $2 WHERE id = $1")
                 .bind(space_id)
@@ -120,6 +148,71 @@ impl FileStorage for PostgresStorage {
         Ok(created.then_some(new_cursor))
     }
 
+    async fn tombstone_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
+    ) -> Result<Option<i64>, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        let cursor = super::get_space_cursor_for_update(&mut tx, space_id).await?;
+        let new_cursor = cursor + 1;
+
+        // Soft-delete: the row stays (wrapped DEK dropped — the CHECK allows
+        // NULL only for deleted rows) so the tombstone streams through
+        // cursor-based pull; the object is queued for grace-period removal
+        // in the same transaction (AUD-039 crash-safety shape).
+        let tombstoned: Option<Uuid> = sqlx::query_scalar(
+            r#"
+            UPDATE files
+            SET deleted = TRUE, wrapped_dek = NULL, cursor = $3
+            WHERE space_id = $1 AND id = $2 AND deleted = FALSE
+            RETURNING id
+            "#,
+        )
+        .bind(space_id)
+        .bind(file_id)
+        .bind(new_cursor)
+        .fetch_optional(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        if tombstoned.is_none() {
+            tx.rollback()
+                .await
+                .map_err(|error| StorageError::Database(error.to_string()))?;
+            return Ok(None);
+        }
+
+        sqlx::query("UPDATE spaces SET cursor = $2 WHERE id = $1")
+            .bind(space_id)
+            .bind(new_cursor)
+            .execute(tx.as_mut())
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        // Refresh any prior intent so the grace period starts at this
+        // tombstone (mirrors the record-cascade path).
+        sqlx::query(
+            "INSERT INTO pending_file_deletions (space_id, file_id) VALUES ($1, $2)
+             ON CONFLICT (space_id, file_id) DO UPDATE SET scheduled_at = EXCLUDED.scheduled_at",
+        )
+        .bind(space_id)
+        .bind(file_id)
+        .execute(tx.as_mut())
+        .await
+        .map_err(|error| StorageError::Database(error.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        Ok(Some(new_cursor))
+    }
+
     async fn get_file_metadata(
         &self,
         space_id: Uuid,
@@ -129,7 +222,7 @@ impl FileStorage for PostgresStorage {
             r#"
             SELECT id, record_id, size, wrapped_dek, cursor
             FROM files
-            WHERE space_id = $1 AND id = $2
+            WHERE space_id = $1 AND id = $2 AND deleted = FALSE
             "#,
         )
         .bind(space_id)
@@ -152,7 +245,7 @@ impl FileStorage for PostgresStorage {
 
     async fn file_exists(&self, space_id: Uuid, file_id: Uuid) -> Result<bool, StorageError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM files WHERE space_id = $1 AND id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM files WHERE space_id = $1 AND id = $2 AND deleted = FALSE)",
         )
         .bind(space_id)
         .bind(file_id)
@@ -173,6 +266,7 @@ impl FileStorage for PostgresStorage {
             FROM files
             WHERE space_id = $1
               AND cursor > $2
+              AND deleted = FALSE
             ORDER BY cursor ASC, id ASC
             "#,
         )
@@ -230,7 +324,7 @@ impl FileStorage for PostgresStorage {
             // record-DEK rewrap path.
             let result = sqlx::query(
                 "UPDATE files SET wrapped_dek = $1 \
-                 WHERE id = $2 AND space_id = $3 \
+                 WHERE id = $2 AND space_id = $3 AND deleted = FALSE \
                  AND ($4::bytea IS NULL OR wrapped_dek = $4)",
             )
             .bind(&dek.wrapped_dek)
@@ -348,7 +442,7 @@ impl FileStorage for PostgresStorage {
             Err(StorageError::SpaceNotFound) => return Ok(()),
             Err(error) => return Err(error),
         }
-        sqlx::query("DELETE FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2 AND EXISTS(SELECT 1 FROM files WHERE space_id = $1 AND id = $2)")
+        sqlx::query("DELETE FROM pending_file_deletions WHERE space_id = $1 AND file_id = $2 AND EXISTS(SELECT 1 FROM files WHERE space_id = $1 AND id = $2 AND deleted = FALSE)")
             .bind(space_id).bind(file_id).execute(tx.as_mut()).await
             .map_err(|error| StorageError::Database(error.to_string()))?;
         tx.commit()
@@ -369,6 +463,52 @@ impl FileStorage for PostgresStorage {
             .map_err(|error| StorageError::Database(error.to_string()))?;
         Ok(())
     }
+}
+
+/// Reject a new live file when it would push the space past its quota.
+/// Runs inside the caller's transaction (the space row is already locked,
+/// so concurrent commits serialize behind it and cannot overshoot).
+///
+/// Counts live files PLUS tombstoned files whose objects are still in the
+/// deletion queue: their bytes occupy storage until the grace-period sweep
+/// completes, so a create→delete churn loop cannot exceed the physical
+/// bound by cycling through the grace window.
+async fn enforce_file_quota(
+    tx: &mut Transaction<'_, Postgres>,
+    space_id: Uuid,
+    quota: &FileQuota,
+    incoming_size: i64,
+) -> Result<(), StorageError> {
+    if quota.max_files.is_none() && quota.max_bytes.is_none() {
+        return Ok(());
+    }
+    let (live_count, live_bytes): (i64, i64) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)::BIGINT, COALESCE(SUM(size), 0)::BIGINT
+        FROM files
+        WHERE space_id = $1
+          AND (deleted = FALSE
+               OR EXISTS (SELECT 1 FROM pending_file_deletions p
+                          WHERE p.space_id = files.space_id
+                            AND p.file_id = files.id))
+        "#,
+    )
+    .bind(space_id)
+    .fetch_one(tx.as_mut())
+    .await
+    .map_err(|error| StorageError::Database(error.to_string()))?;
+
+    if let Some(max_files) = quota.max_files {
+        if live_count >= i64::from(max_files) {
+            return Err(StorageError::QuotaExceeded);
+        }
+    }
+    if let Some(max_bytes) = quota.max_bytes {
+        if live_bytes.saturating_add(incoming_size) > max_bytes {
+            return Err(StorageError::QuotaExceeded);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -404,7 +544,180 @@ mod tests {
     use std::collections::HashSet;
 
     use super::super::test_support::*;
-    use crate::{FileDekRecord, FileStorage, SpaceStorage, StorageError};
+    use crate::{FileDekRecord, FileQuota, FileStorage, SpaceStorage, StorageError};
+
+    #[tokio::test]
+    async fn file_quota_rejects_new_commits_past_limits() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let storage = storage.with_file_quota(FileQuota {
+            max_files: Some(2),
+            max_bytes: Some(150),
+        });
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id = create_record(&storage, space_id).await;
+
+        storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                100,
+                &wrapped_dek(1),
+            )
+            .await
+            .expect("first file within quota");
+        // Second file fits the byte budget exactly (100 + 50 = 150).
+        storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                50,
+                &wrapped_dek(2),
+            )
+            .await
+            .expect("second file exactly at byte quota");
+        // Third file trips the count limit even though bytes are free-ish.
+        assert_eq!(
+            storage
+                .record_file(
+                    space_id,
+                    uuid::Uuid::new_v4(),
+                    record_id,
+                    1,
+                    &wrapped_dek(3)
+                )
+                .await
+                .unwrap_err(),
+            StorageError::QuotaExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn tombstone_file_hides_queues_and_frees_quota() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let storage = storage.with_file_quota(FileQuota {
+            max_files: Some(1),
+            max_bytes: None,
+        });
+        let space_id = uuid::Uuid::new_v4();
+        create_space(&storage, space_id).await;
+        let record_id = create_record(&storage, space_id).await;
+        let file_id = uuid::Uuid::new_v4();
+
+        storage
+            .record_file(space_id, file_id, record_id, 10, &wrapped_dek(7))
+            .await
+            .expect("record file");
+
+        // Tombstone: hidden from reads, queued for GC, idempotent.
+        let cursor = storage
+            .tombstone_file(space_id, file_id)
+            .await
+            .expect("tombstone")
+            .expect("cursor");
+        assert!(cursor > 0);
+        assert_eq!(
+            storage
+                .get_file_metadata(space_id, file_id)
+                .await
+                .unwrap_err(),
+            StorageError::FileNotFound
+        );
+        assert!(!storage
+            .file_exists(space_id, file_id)
+            .await
+            .expect("exists"));
+        assert_eq!(
+            storage
+                .tombstone_file(space_id, file_id)
+                .await
+                .expect("idempotent tombstone"),
+            None
+        );
+        let pending = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                10,
+            )
+            .await
+            .expect("pending");
+        assert!(pending
+            .iter()
+            .any(|item| item.space_id == space_id && item.file_id == file_id));
+
+        // Deleted files do not count against the quota: resurrecting the
+        // tombstoned id (live count 0 → 1) fits under max_files = 1.
+        let resurrect_cursor = storage
+            .record_file(space_id, file_id, record_id, 12, &wrapped_dek(9))
+            .await
+            .expect("resurrect")
+            .expect("resurrect cursor");
+        assert!(resurrect_cursor > cursor);
+        assert!(storage
+            .file_exists(space_id, file_id)
+            .await
+            .expect("exists"));
+        let metadata = storage
+            .get_file_metadata(space_id, file_id)
+            .await
+            .expect("live again");
+        assert_eq!(metadata.size, 12);
+        let pending = storage
+            .pending_file_deletions(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                10,
+            )
+            .await
+            .expect("pending");
+        assert!(!pending
+            .iter()
+            .any(|item| item.space_id == space_id && item.file_id == file_id));
+
+        // Tombstone again: while the object awaits grace-period removal it
+        // still counts against the quota (its bytes occupy storage until
+        // the sweep completes), so a create→delete churn loop cannot cycle
+        // past the limit through the grace window.
+        storage
+            .tombstone_file(space_id, file_id)
+            .await
+            .expect("second tombstone");
+        assert_eq!(
+            storage
+                .record_file(
+                    space_id,
+                    uuid::Uuid::new_v4(),
+                    record_id,
+                    10,
+                    &wrapped_dek(8),
+                )
+                .await
+                .unwrap_err(),
+            StorageError::QuotaExceeded
+        );
+
+        // Once the sweep completes the deletion (queue row removed, object
+        // gone), the slot frees for a different id.
+        storage
+            .complete_file_deletion(space_id, file_id)
+            .await
+            .expect("sweep completion");
+        storage
+            .record_file(
+                space_id,
+                uuid::Uuid::new_v4(),
+                record_id,
+                10,
+                &wrapped_dek(8),
+            )
+            .await
+            .expect("quota freed after sweep");
+    }
 
     #[tokio::test]
     async fn record_file_roundtrip() {

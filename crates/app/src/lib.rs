@@ -11,7 +11,7 @@ use betterbase_sync_api::ApiState;
 use betterbase_sync_auth::{normalize_issuer, MultiValidator, MultiValidatorConfig};
 use betterbase_sync_core::protocol::{WsPresenceLeaveData, RPC_NOTIFICATION};
 use betterbase_sync_realtime::broker::{BrokerConfig, MultiBroker};
-use betterbase_sync_storage::{migrate_with_pool, PostgresStorage};
+use betterbase_sync_storage::{migrate_with_pool, FileQuota, PostgresStorage};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::ObjectStore;
@@ -37,6 +37,12 @@ pub struct AppConfig {
     /// Grace period between a record tombstone and physical file-object
     /// removal (AUD-039). Covers in-flight downloads and re-upload races.
     pub file_deletion_grace: Duration,
+    /// Per-space file quota enforced at metadata commit. Bounds total
+    /// encrypted storage any single account/space can allocate.
+    pub file_quota: FileQuota,
+    /// Concurrent upload bodies buffered in memory. Each upload can hold up
+    /// to 100 MiB (body + object-store copy); this bounds the product.
+    pub upload_concurrency: usize,
     pub identity_hash_key: Option<Vec<u8>>,
     federation: federation::FederationRuntimeConfig,
 }
@@ -99,6 +105,12 @@ impl AppConfig {
         config.file_storage = parse_file_storage(FileStorageEnv::from_env())?;
         config.file_deletion_grace =
             parse_deletion_grace(std::env::var("FILE_DELETION_GRACE_SECS").ok())?;
+        config.file_quota = parse_file_quota(
+            std::env::var("SYNC_FILE_QUOTA_MAX_FILES").ok(),
+            std::env::var("SYNC_FILE_QUOTA_MAX_BYTES").ok(),
+        )?;
+        config.upload_concurrency =
+            parse_upload_concurrency(std::env::var("SYNC_UPLOAD_CONCURRENCY").ok())?;
         config.identity_hash_key =
             parse_identity_hash_key(std::env::var("IDENTITY_HASH_KEY").ok())?;
         config.federation =
@@ -125,6 +137,8 @@ impl AppConfig {
             audiences,
             file_storage: FileStorageConfig::Disabled,
             file_deletion_grace: DEFAULT_FILE_DELETION_GRACE,
+            file_quota: DEFAULT_FILE_QUOTA,
+            upload_concurrency: DEFAULT_UPLOAD_CONCURRENCY,
             identity_hash_key: None,
             federation: federation::FederationRuntimeConfig::default(),
         })
@@ -133,6 +147,70 @@ impl AppConfig {
 
 /// Default tombstone-to-erasure window: 24 hours.
 const DEFAULT_FILE_DELETION_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Default per-space quota: 10,000 live files, 10 GiB of stored ciphertext.
+/// Deliberately on by default — bounded-by-default storage is part of the
+/// availability promise once 100 MiB bodies are accepted. `0` disables.
+const DEFAULT_FILE_QUOTA: FileQuota = FileQuota {
+    max_files: Some(10_000),
+    max_bytes: Some(10 * 1024 * 1024 * 1024),
+};
+
+/// Default concurrent buffered uploads (see AppConfig::upload_concurrency).
+const DEFAULT_UPLOAD_CONCURRENCY: usize = 8;
+
+fn parse_file_quota(
+    max_files: Option<String>,
+    max_bytes: Option<String>,
+) -> anyhow::Result<FileQuota> {
+    // Tri-state per axis: unset → default; "0" → explicitly unlimited;
+    // >0 → the given limit. Values beyond u32::MAX are rejected rather
+    // than truncated (a truncated file count would reject everything).
+    let parse_limit = |raw: Option<String>, name: &str| -> anyhow::Result<Option<Option<i64>>> {
+        let Some(raw) = raw.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let value: i64 = raw
+            .parse()
+            .map_err(|error| anyhow::anyhow!("invalid {name} value {raw:?}: {error}"))?;
+        if value < 0 {
+            return Err(anyhow::anyhow!("{name} must be >= 0"));
+        }
+        if value > u32::MAX as i64 {
+            return Err(anyhow::anyhow!("{name} must be <= {}", u32::MAX));
+        }
+        Ok(Some((value > 0).then_some(value)))
+    };
+
+    let max_files = parse_limit(max_files, "SYNC_FILE_QUOTA_MAX_FILES")?;
+    let max_bytes = parse_limit(max_bytes, "SYNC_FILE_QUOTA_MAX_BYTES")?;
+    Ok(FileQuota {
+        max_files: match max_files {
+            // "0" — unlimited.
+            None => DEFAULT_FILE_QUOTA.max_files,
+            Some(explicit) => explicit.map(|v| v as u32),
+        },
+        max_bytes: match max_bytes {
+            None => DEFAULT_FILE_QUOTA.max_bytes,
+            Some(explicit) => explicit,
+        },
+    })
+}
+
+fn parse_upload_concurrency(value: Option<String>) -> anyhow::Result<usize> {
+    let Some(raw) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
+        return Ok(DEFAULT_UPLOAD_CONCURRENCY);
+    };
+    let parsed: usize = raw.parse().map_err(|error| {
+        anyhow::anyhow!("invalid SYNC_UPLOAD_CONCURRENCY value {raw:?}: {error}")
+    })?;
+    if parsed == 0 {
+        return Err(anyhow::anyhow!(
+            "SYNC_UPLOAD_CONCURRENCY must be greater than zero"
+        ));
+    }
+    Ok(parsed)
+}
 
 fn parse_deletion_grace(value: Option<String>) -> anyhow::Result<Duration> {
     let Some(raw) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()) else {
@@ -150,7 +228,11 @@ fn parse_deletion_grace(value: Option<String>) -> anyhow::Result<Duration> {
 }
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
-    let storage = Arc::new(PostgresStorage::connect(&config.database_url).await?);
+    let storage = Arc::new(
+        PostgresStorage::connect(&config.database_url)
+            .await?
+            .with_file_quota(config.file_quota),
+    );
     migrate_with_pool(storage.pool()).await?;
     let broker = Arc::new(MultiBroker::new(BrokerConfig::default()));
     let validator = Arc::new(MultiValidator::new(MultiValidatorConfig {
@@ -161,6 +243,7 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let mut api_state = ApiState::new(storage.clone())
         .with_websocket(validator)
         .with_realtime_broker(broker)
+        .with_upload_concurrency(config.upload_concurrency)
         .with_sync_storage(storage.clone());
     // Abort background workers when serving fails or this future is cancelled.
     let mut background_tasks = tokio::task::JoinSet::new();

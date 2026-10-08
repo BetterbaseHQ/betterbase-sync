@@ -113,11 +113,24 @@ All v1 routes are immutable contracts. Every response includes `X-Protocol-Versi
 
 | Method | Path | Description |
 |---|---|---|
-| PUT | `/api/v1/spaces/{space_id}/files/{id}` | Upload encrypted file |
+| PUT | `/api/v1/spaces/{space_id}/files/{id}` | Upload encrypted file (create-only) |
 | GET | `/api/v1/spaces/{space_id}/files/{id}` | Download encrypted file |
 | HEAD | `/api/v1/spaces/{space_id}/files/{id}` | File metadata |
+| DELETE | `/api/v1/spaces/{space_id}/files/{id}` | Tombstone file (grace-period removal) |
 
 File routes are only registered when file storage is configured.
+
+**File objects are immutable** (create + tombstone; see the platform ADR
+`docs/adr/2026-10-08-files-immutable-create-tombstone.md`). A PUT under a
+live id with byte-identical ciphertext is an idempotent replay (204);
+different ciphertext is rejected with 409 — replacement content must use a
+new file id. DELETE soft-deletes the metadata row (the tombstone streams
+through cursor-based pull) and queues the object for grace-period
+removal; re-uploading the same id resurrects it. Per-space storage quotas
+(`SYNC_FILE_QUOTA_MAX_FILES` / `SYNC_FILE_QUOTA_MAX_BYTES`, counting live
+files plus those awaiting grace-period removal) and the upload concurrency
+bound (`SYNC_UPLOAD_CONCURRENCY`) bound what a single authenticated account
+can allocate.
 
 Uploads and garbage collection serialize per file using PostgreSQL advisory locks across server workers. Uploads queue cleanup before writing objects and clear that entry atomically when metadata commits, so failed uploads remain collectible. Once an upload owns its file lock, request cancellation lets its write and metadata bookkeeping finish before releasing the lock. Metadata commits recheck that the parent record is live in the same space. Collection rechecks the current queue entry's age and metadata while holding the file lock.
 

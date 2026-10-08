@@ -128,6 +128,8 @@ File routes are only registered when file storage is configured.
 - `FILE_STORAGE_PATH` -- Path for local backend (default `./data/files`)
 - `FILE_S3_ENDPOINT`, `FILE_S3_ACCESS_KEY`, `FILE_S3_SECRET_KEY`, `FILE_S3_BUCKET` -- Required for S3
 - `FILE_S3_REGION` (default `us-east-1`), `FILE_S3_USE_SSL` (default `true`)
+- `SYNC_FILE_QUOTA_MAX_FILES` / `SYNC_FILE_QUOTA_MAX_BYTES` -- Per-space quota enforced at metadata commit: live files plus tombstoned files still awaiting grace-period removal (their bytes occupy storage until swept). Defaults 10000 / 10 GiB; `0` disables an axis. Over-quota uploads get 413.
+- `SYNC_UPLOAD_CONCURRENCY` -- Concurrent upload bodies buffered in memory, each up to 100 MiB (default 8). Excess uploads queue on the route.
 
 **Federation:**
 - `FEDERATION_TRUSTED_DOMAINS` -- Comma-separated peer domains

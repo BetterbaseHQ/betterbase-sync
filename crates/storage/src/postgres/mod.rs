@@ -17,13 +17,15 @@ mod test_support;
 
 use sqlx::PgPool;
 
-use crate::StorageError;
+use crate::{FileQuota, StorageError};
 
 #[derive(Clone)]
 pub struct PostgresStorage {
     pool: PgPool,
     // Lock waiters must not exhaust the pool used by the lock holder's metadata queries.
     file_lock_pool: PgPool,
+    // Per-space file quota enforced at metadata commit (record_file).
+    file_quota: FileQuota,
 }
 
 impl PostgresStorage {
@@ -42,7 +44,15 @@ impl PostgresStorage {
         Self {
             pool,
             file_lock_pool,
+            file_quota: FileQuota::default(),
         }
+    }
+
+    /// Set the per-space file quota (enforced on new metadata commits).
+    #[must_use]
+    pub fn with_file_quota(mut self, quota: FileQuota) -> Self {
+        self.file_quota = quota;
+        self
     }
 
     #[must_use]

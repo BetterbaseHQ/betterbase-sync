@@ -16,6 +16,9 @@ const CONFIG_VARS: &[&str] = &[
     "FILE_S3_REGION",
     "FILE_S3_USE_SSL",
     "FILE_DELETION_GRACE_SECS",
+    "SYNC_FILE_QUOTA_MAX_FILES",
+    "SYNC_FILE_QUOTA_MAX_BYTES",
+    "SYNC_UPLOAD_CONCURRENCY",
     "IDENTITY_HASH_KEY",
     "FEDERATION_TRUSTED_DOMAINS",
     "FEDERATION_TRUSTED_KEYS",
@@ -59,22 +62,34 @@ fn environment_configuration_is_read_without_mutating_other_tests() {
                 assert_eq!(config.federation.quota_limits.max_records_per_hour, 5);
                 assert_eq!(config.federation.quota_limits.max_bytes_per_hour, 6);
                 assert_eq!(config.federation.quota_limits.max_invitations_per_hour, 7);
+                assert_eq!(config.file_quota.max_files, Some(3));
+                assert_eq!(config.file_quota.max_bytes, Some(1024));
+                assert_eq!(config.upload_concurrency, 2);
             }
             "legacy" => {
                 assert!(
                     matches!(config.file_storage,FileStorageConfig::Local{ref path} if path==&PathBuf::from("config-legacy"))
                 );
             }
+            "zero-quota" => {
+                // "0" explicitly disables an axis (tri-state), rather than
+                // falling back to the default.
+                assert_eq!(config.file_quota.max_files, None);
+                assert_eq!(config.file_quota.max_bytes, Some(1024));
+                assert_eq!(config.upload_concurrency, DEFAULT_UPLOAD_CONCURRENCY);
+            }
             "default" => {
                 assert_eq!(config.listen_addr, "0.0.0.0:5379".parse().expect("address"));
                 assert!(matches!(config.file_storage, FileStorageConfig::Disabled));
                 assert_eq!(config.file_deletion_grace, DEFAULT_FILE_DELETION_GRACE);
+                assert_eq!(config.file_quota, DEFAULT_FILE_QUOTA);
+                assert_eq!(config.upload_concurrency, DEFAULT_UPLOAD_CONCURRENCY);
             }
             _ => panic!("unexpected mode"),
         }
         return;
     }
-    for mode in ["full", "legacy", "default"] {
+    for mode in ["full", "legacy", "zero-quota", "default"] {
         let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"));
         child.args([
             "--exact",
@@ -97,6 +112,9 @@ fn environment_configuration_is_read_without_mutating_other_tests() {
                 ("FILE_STORAGE", "none"),
                 ("FILE_FS_PATH", "wrong-legacy"),
                 ("FILE_DELETION_GRACE_SECS", "7"),
+                ("SYNC_FILE_QUOTA_MAX_FILES", "3"),
+                ("SYNC_FILE_QUOTA_MAX_BYTES", "1024"),
+                ("SYNC_UPLOAD_CONCURRENCY", "2"),
                 ("FEDERATION_TRUSTED_DOMAINS", "PEER.example"),
                 ("FEDERATION_FST_SECRET", " current "),
                 ("FEDERATION_FST_PREVIOUS_SECRET", " previous "),
@@ -114,6 +132,10 @@ fn environment_configuration_is_read_without_mutating_other_tests() {
             child
                 .env("FILE_STORAGE", "fs")
                 .env("FILE_FS_PATH", "config-legacy");
+        } else if mode == "zero-quota" {
+            child
+                .env("SYNC_FILE_QUOTA_MAX_FILES", "0")
+                .env("SYNC_FILE_QUOTA_MAX_BYTES", "1024");
         }
         let result = child.output().expect("config child");
         assert!(

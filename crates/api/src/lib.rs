@@ -9,7 +9,8 @@ use axum::http::header::AUTHORIZATION;
 use axum::middleware::{self, Next};
 use axum::routing::{get, put};
 use axum::{
-    extract::State, http::StatusCode, response::IntoResponse, response::Response, Json, Router,
+    extract::State, handler::Handler, http::StatusCode, response::IntoResponse, response::Response,
+    Json, Router,
 };
 use betterbase_sync_auth::{AuthError, TokenValidator};
 use betterbase_sync_core::protocol::ErrorResponse;
@@ -77,6 +78,11 @@ pub struct ApiState {
     realtime_broker: Option<Arc<MultiBroker>>,
     presence_registry: Option<Arc<ws::PresenceRegistry>>,
     identity_hash_key: Option<Arc<[u8]>>,
+    /// Bounds concurrent file uploads. Each upload buffers up to
+    /// MAX_FILE_SIZE in memory (Bytes extractor) plus a copy for the object
+    /// store; without a bound, a single authenticated client can exhaust
+    /// memory with parallel maximum-size bodies.
+    upload_permits: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Clone)]
@@ -107,6 +113,7 @@ impl ApiState {
             realtime_broker: None,
             presence_registry: None,
             identity_hash_key: None,
+            upload_permits: None,
         }
     }
 
@@ -210,6 +217,16 @@ impl ApiState {
 
     pub(crate) fn federation_quota_tracker(&self) -> Arc<FederationQuotaTracker> {
         Arc::clone(&self.federation_quota_tracker)
+    }
+
+    #[must_use]
+    pub fn with_upload_concurrency(mut self, permits: usize) -> Self {
+        self.upload_permits = Some(Arc::new(tokio::sync::Semaphore::new(permits)));
+        self
+    }
+
+    pub(crate) fn upload_permits(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        self.upload_permits.clone()
     }
 
     #[must_use]
@@ -323,9 +340,17 @@ pub fn router(state: ApiState) -> Router {
     if files_enabled {
         app = app.route(
             "/api/v1/spaces/{space_id}/files/{id}",
-            put(files::put_file)
-                .get(files::get_file)
-                .head(files::head_file),
+            put(files::put_file.layer(middleware::from_fn_with_state(
+                state.clone(),
+                files::upload_gate,
+            )))
+            .get(files::get_file)
+            .head(files::head_file)
+            .delete(files::delete_file)
+            // The handler enforces MAX_FILE_SIZE (100 MiB); raise axum's
+            // default 2 MiB buffer cap to match, or larger uploads 413
+            // before the handler's own limit ever runs.
+            .layer(axum::extract::DefaultBodyLimit::max(files::MAX_FILE_SIZE)),
         );
     }
 

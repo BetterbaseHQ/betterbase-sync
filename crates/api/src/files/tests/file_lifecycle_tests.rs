@@ -126,6 +126,9 @@ impl FileSyncStorage for FaultMetadata {
         }
         FileStorageTrait::record_file(&*self.db, space, file, record, size, dek).await
     }
+    async fn tombstone_file(&self, space: Uuid, file: Uuid) -> Result<Option<i64>, StorageError> {
+        FileStorageTrait::tombstone_file(&*self.db, space, file).await
+    }
     async fn get_file_metadata(
         &self,
         space: Uuid,
@@ -536,6 +539,70 @@ async fn tombstone_during_upload_cannot_recreate_file_metadata() {
 }
 
 #[tokio::test]
+async fn delete_route_tombstones_streams_pull_and_collects_after_grace() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    assert_eq!(f.upload(b"ciphertext").await.status(), StatusCode::CREATED);
+
+    // DELETE via the route: tombstone + queue intent, atomically.
+    let delete = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/spaces/{}/files/{}", f.space, f.file))
+                .header(AUTHORIZATION, "Bearer files-user1")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("dispatch request");
+    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+    assert_eq!(f.read("GET").await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(f.queued().await.len(), 1);
+
+    // The tombstone streams through cursor-based pull (deleted: true), so
+    // offline peers learn the file is gone on their next incremental pull.
+    let pull =
+        f.db.stream_pull(f.space, 1)
+            .await
+            .expect("stream pull")
+            .collect()
+            .await
+            .expect("collect pull");
+    let entry = pull
+        .entries
+        .iter()
+        .find(|entry| entry.file.as_ref().is_some_and(|file| file.id == f.file))
+        .expect("file entry in pull");
+    let file = entry.file.as_ref().expect("file");
+    assert!(file.deleted);
+
+    // Grace elapses: the sweep removes the object and completes the queue.
+    f.age_queue().await;
+    assert_eq!(
+        sweep_file_deletions(f.db.clone(), f.blobs.clone(), SystemTime::now(), 100)
+            .await
+            .expect("sweep"),
+        1
+    );
+    assert_eq!(
+        f.blobs.local.get(f.space, f.file).await,
+        Err(FileBlobStorageError::NotFound)
+    );
+    assert!(f.queued().await.is_empty());
+
+    // With the object gone, re-uploading the same id — even with fresh
+    // bytes — recreates it (no immutability conflict against a void).
+    assert_eq!(f.upload(b"fresh bytes").await.status(), StatusCode::CREATED);
+    let response = f.read("GET").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn tombstone_hides_file_immediately_and_gc_obeys_grace_period() {
     let Some(f) = Fixture::new().await else {
         return;
@@ -828,7 +895,10 @@ async fn cancelled_upload_finishes_bookkeeping_before_releasing_lock() {
     assert_eq!(f.cursor().await, 2);
     assert_eq!(f.read("GET").await.status(), StatusCode::OK);
     assert!(f.queued().await.is_empty());
-    assert_eq!(f.upload(b"retry").await.status(), StatusCode::NO_CONTENT);
+    // Byte-identical replay of the completed upload is the idempotent 204;
+    // different bytes under the live id now surface as 409 (covered by
+    // put_file_with_conflicting_bytes_returns_409_and_keeps_state).
+    assert_eq!(f.upload(b"orphan").await.status(), StatusCode::NO_CONTENT);
     f.finish().await;
 }
 

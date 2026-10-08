@@ -86,6 +86,8 @@ pub enum StorageError {
     InvalidWrappedDek,
     #[error("file size must be non-negative")]
     InvalidFileSize,
+    #[error("space file storage quota exceeded")]
+    QuotaExceeded,
     #[error("storage unavailable")]
     Unavailable,
     #[error("database error: {0}")]
@@ -99,6 +101,17 @@ pub enum StorageError {
 // ---------------------------------------------------------------------------
 // Domain types
 // ---------------------------------------------------------------------------
+
+/// Per-space file storage quota, enforced transactionally at metadata
+/// commit. `None` fields are unlimited. Counted against live (non-deleted)
+/// files only — tombstoned rows cost nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FileQuota {
+    /// Maximum number of live files per space.
+    pub max_files: Option<u32>,
+    /// Maximum total live file bytes per space.
+    pub max_bytes: Option<i64>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
@@ -381,7 +394,9 @@ pub trait FileStorage: Send + Sync {
         file_id: Uuid,
     ) -> Result<FileOperationLock, StorageError>;
     /// Records file metadata and advances the space cursor.
-    /// Returns `Some(cursor)` when a new record is created, `None` when the file already exists (idempotent).
+    /// Returns `Some(cursor)` when a new record is created (or a soft-deleted
+    /// row is resurrected), `None` when the file already exists live
+    /// (idempotent replay).
     async fn record_file(
         &self,
         space_id: Uuid,
@@ -389,6 +404,16 @@ pub trait FileStorage: Send + Sync {
         record_id: Uuid,
         size: i64,
         wrapped_dek: &[u8],
+    ) -> Result<Option<i64>, StorageError>;
+    /// Soft-deletes one file: the metadata row is kept (wrapped DEK dropped)
+    /// so the tombstone streams through cursor-based pull, and the object is
+    /// queued for grace-period removal (AUD-039 machinery). Returns
+    /// `Some(cursor)` when this call tombstoned the file, `None` when it was
+    /// already gone (idempotent).
+    async fn tombstone_file(
+        &self,
+        space_id: Uuid,
+        file_id: Uuid,
     ) -> Result<Option<i64>, StorageError>;
     async fn get_file_metadata(
         &self,

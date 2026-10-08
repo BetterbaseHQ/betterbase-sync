@@ -90,7 +90,10 @@ pub(super) async fn send_pull_entry(
                     id: file.id.to_string(),
                     record_id: file.record_id.to_string(),
                     size: file.size,
-                    wrapped_dek: Some(file.wrapped_dek.clone()),
+                    // Tombstones carry no wrapper (soft-deleted rows have a
+                    // NULL wrapped_dek; the default-vec would serialize as
+                    // an empty blob clients could mistake for a wrapper).
+                    wrapped_dek: (!file.deleted).then(|| file.wrapped_dek.clone()),
                     cursor: file.cursor,
                     deleted: file.deleted,
                 },
@@ -215,6 +218,8 @@ mod tests {
         assert_eq!(chunk.data.cursor, 9);
         assert_eq!(chunk.data.size, 0);
         assert!(chunk.data.deleted);
-        assert_eq!(chunk.data.wrapped_dek, Some(vec![255; 44]));
+        // Tombstones carry no wrapper: soft-deleted rows hold a NULL
+        // wrapped_dek, and the wire shape must not suggest one exists.
+        assert_eq!(chunk.data.wrapped_dek, None);
     }
 }
