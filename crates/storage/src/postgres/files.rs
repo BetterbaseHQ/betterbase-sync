@@ -98,9 +98,13 @@ impl FileStorage for PostgresStorage {
             // Live row — idempotent replay of a fully-recorded upload.
             Some(false) => false,
             // New row (or resurrection): enforce the per-space quota against
-            // live files before allocating any storage for it.
+            // live files before allocating any storage for it. The incoming
+            // id's own pending-deletion intent is excluded — a resurrection
+            // clears that intent in this same transaction and revives the
+            // existing row, so it replaces its own claim instead of adding
+            // one (and for a fresh id there is no row to exclude).
             Some(true) | None => {
-                enforce_file_quota(&mut tx, space_id, &self.file_quota, size).await?;
+                enforce_file_quota(&mut tx, space_id, file_id, &self.file_quota, size).await?;
                 sqlx::query(
                     r#"
                     INSERT INTO files (space_id, id, record_id, size, wrapped_dek, cursor)
@@ -472,10 +476,14 @@ impl FileStorage for PostgresStorage {
 /// Counts live files PLUS tombstoned files whose objects are still in the
 /// deletion queue: their bytes occupy storage until the grace-period sweep
 /// completes, so a create→delete churn loop cannot exceed the physical
-/// bound by cycling through the grace window.
+/// bound by cycling through the grace window. The incoming file's own
+/// pending intent is excluded from that count — a resurrection (the
+/// AUD-039 re-upload guard) clears the intent and revives the same row in
+/// this transaction, replacing its claim rather than adding a new one.
 async fn enforce_file_quota(
     tx: &mut Transaction<'_, Postgres>,
     space_id: Uuid,
+    incoming_file_id: Uuid,
     quota: &FileQuota,
     incoming_size: i64,
 ) -> Result<(), StorageError> {
@@ -490,10 +498,12 @@ async fn enforce_file_quota(
           AND (deleted = FALSE
                OR EXISTS (SELECT 1 FROM pending_file_deletions p
                           WHERE p.space_id = files.space_id
-                            AND p.file_id = files.id))
+                            AND p.file_id = files.id
+                            AND p.file_id <> $2))
         "#,
     )
     .bind(space_id)
+    .bind(incoming_file_id)
     .fetch_one(tx.as_mut())
     .await
     .map_err(|error| StorageError::Database(error.to_string()))?;
